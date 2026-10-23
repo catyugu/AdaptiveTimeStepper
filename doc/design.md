@@ -80,11 +80,14 @@ and large enough to advance floating-point time.
 
 Unit tests cover polynomial reproduction, controller rules, convergence,
 rejection, restart, invalid input and history-copy failure. CTest also runs
-three examples. The [COMSOL regressions](comsol-alignment.md) compare 21 recorded
+four examples. The [scalar COMSOL regressions](comsol-alignment.md) compare 21 recorded
 scalar configurations, totaling 1,336 output samples, including times, states,
 derivatives, failure counts and logged orders. Reference data is never injected
 into the numerical solve.
 
-These regressions validate the recorded configurations, rather than arbitrary
-nonlinear or coupled models. Regenerating references requires COMSOL; running
-the C++ tests does not.
+The [thermoelastic regression](multiphysics.md) additionally compares 161
+COMSOL states of a reciprocal three-variable coupled system, including all
+internal times, states, derivatives and solver counts. These regressions
+validate the recorded configurations, rather than arbitrary nonlinear or
+continuum multiphysics models. Regenerating references requires COMSOL;
+running the C++ tests does not.

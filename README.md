@@ -47,8 +47,11 @@ correction form to reduce cancellation. Return `{false, iterations}` when
 the solve fails; the stepper retries at a quarter of the step size.
 
 Runnable examples cover [heat conduction](examples/heat_equation.cpp),
-a [first-order oscillator](examples/second_order.cpp) and a
-[nonlinear reaction system](examples/vector_state.cpp).
+a [first-order oscillator](examples/second_order.cpp), a
+[nonlinear reaction system](examples/vector_state.cpp) and an
+[electrical–thermal–mechanical motor](examples/coupled_motor.cpp).
+The [coupled cases](doc/multiphysics.md) also include a thermoelastic
+COMSOL trajectory regression.
 
 ## Use in a project
 
@@ -94,21 +97,21 @@ error with zero weight has infinite norm. Mismatched vector sizes are rejected.
 
 ## Settings and output
 
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| `min_order`, `max_order` | 1, 5 | Adaptive order range; startup uses available history |
-| `relative_tolerance` | 1e-2 | Relative error weight |
-| `absolute_factor` | 0.1 | Absolute tolerance factor |
-| `scale_absolute_tolerance` | true | Enable scaled absolute weights |
-| `first_step_fraction` | 1e-3 | Initial step as a fraction of the run span |
-| `max_step_fraction` | 0.1 | Maximum step fraction; ≤ 0 disables the constraint |
-| `min_step_fraction` | 1e-10 | Minimum step as a fraction of the span |
-| `init_step_fraction` | 1e-3 | Artificial initialization step factor |
-| `step_mode` | `free` | Step placement |
-| `store_mode` | `interpolate` | Output selection |
-| `interpolate_end_time` | true | Allow an internal step past the final time |
-| `manual_step`, `manual_order` | 0, 2 | Fixed step and target order in manual mode |
-| `derivative_orders` | 1 | Derivative levels available to the solve, up to 3 |
+| Setting                       | Default       | Meaning                                              |
+| :---------------------------- | ------------- | ---------------------------------------------------- |
+| `min_order`, `max_order`      | 1, 5          | Adaptive order range; startup uses available history |
+| `relative_tolerance`          | 1e-2          | Relative error weight                                |
+| `absolute_factor`             | 0.1           | Absolute tolerance factor                            |
+| `scale_absolute_tolerance`    | true          | Enable scaled absolute weights                       |
+| `first_step_fraction`         | 1e-3          | Initial step as a fraction of the run span           |
+| `max_step_fraction`           | 0.1           | Maximum step fraction; ≤ 0 disables the constraint   |
+| `min_step_fraction`           | 1e-10         | Minimum step as a fraction of the span               |
+| `init_step_fraction`          | 1e-3          | Artificial initialization step factor                |
+| `step_mode`                   | `free`        | Step placement                                       |
+| `store_mode`                  | `interpolate` | Output selection                                     |
+| `interpolate_end_time`        | true          | Allow an internal step past the final time           |
+| `manual_step`, `manual_order` | 0, 2          | Fixed step and target order in manual mode           |
+| `derivative_orders`           | 1             | Derivative levels available to the solve, up to 3    |
 
 ### Why the default maximum order is 5
 
@@ -162,7 +165,7 @@ cmake --install build --prefix .cache/install
 ```
 
 Tests cover polynomial stencils, control rules, convergence, rejection, restart,
-output modes, invalid inputs and recorded COMSOL trajectories. The three
+output modes, invalid inputs and recorded COMSOL trajectories. The four
 examples also run under CTest. COMSOL is needed only to regenerate reference data.
 
 ## Scope and documentation
@@ -180,6 +183,7 @@ equivalence for arbitrary models.
 
 - [Design](doc/design.md): ownership, trial history and numerical boundaries.
 - [COMSOL alignment](doc/comsol-alignment.md): measured configurations and reproduction.
+- [Coupled multiphysics](doc/multiphysics.md): thermoelastic COMSOL comparison and motor example.
 - [Research notes](doc/research/comsol-time-dependent-solver.md): source quotations
   and the original documentation investigation.
 

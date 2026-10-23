@@ -12,7 +12,7 @@ trajectories, rather than accepting a band around the step count.
 It reads time, state and derivative directly through `getPVals`, `getU` and
 `getUDot`. Data-export time labels were unsuitable: they round the time, and
 the final label `10` may be an interpolated value from a step ending past 10.
-`tools/comsol/run.py` validates the exports against `exp(-t)`
+`tools/comsol/run_decay.py` validates the exports against `exp(-t)`
 and the solver log, then writes `test/reference/comsol_trajectories.hpp`.
 The 1,336 samples in that file come from COMSOL, not from this library.
 
@@ -180,7 +180,7 @@ documented classical formula; first-order systems use the validated BDF path.
 ## Reproduce
 
 ```text
-python tools/comsol/run.py --directory .cache/comsol-reference
+python tools/comsol/run_decay.py --directory .cache/comsol-reference
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DATSTEP_WARNINGS_AS_ERRORS=ON
 cmake --build build
 ctest --test-dir build --output-on-failure
