@@ -83,10 +83,10 @@ Ten configurations of the same model, and the accepted steps each run took
 | steps taken by solver: intermediate | 37 | 33 | −11 % |
 | maximum step constant 0.05 s | 204 | 204 | 0 % |
 
-Two of them agree exactly, the maximum step among them — where the step is the
-constraint's and not the controller's. The rest differ by 16 to 42 %, always in
-the same direction: this library takes *fewer*, larger steps than COMSOL after
-the startup.
+One of them agrees exactly: the maximum step, where the step is the constraint's
+and not the controller's. The rest differ by 11 to 42 %, always in the same
+direction — this library takes *fewer*, larger steps than COMSOL after the
+startup.
 
 ## Why it does not agree exactly
 
