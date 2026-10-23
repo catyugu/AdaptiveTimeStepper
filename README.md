@@ -1,5 +1,9 @@
 # AdaptiveTimeStepper
 
+[![CI](https://github.com/catyugu/AdaptiveTimeStepper/actions/workflows/ci.yml/badge.svg)](https://github.com/catyugu/AdaptiveTimeStepper/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/catyugu/AdaptiveTimeStepper)](https://github.com/catyugu/AdaptiveTimeStepper/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 COMSOL's adaptive BDF time stepping as a library: variable order 1 to 5,
 variable step size, a local error test, and the four step modes of the
 Time-Dependent Solver — with no dependency beyond the C++20 standard library,
