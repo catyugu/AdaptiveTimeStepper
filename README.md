@@ -1,4 +1,4 @@
-﻿# AdaptiveTimeStepper
+# AdaptiveTimeStepper
 
 [![CI](https://github.com/catyugu/AdaptiveTimeStepper/actions/workflows/ci.yml/badge.svg)](https://github.com/catyugu/AdaptiveTimeStepper/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -189,6 +189,11 @@ The library does not provide algebraic solvers, events, generalized alpha or
 Runge–Kutta methods. Matching recorded COMSOL trajectories also requires
 matching its algebraic solve strategy; the scalar references do not establish
 equivalence for arbitrary models.
+
+Version 1.0 freezes the public surface: `atstep/atstep.hpp`, with
+`atstep/stepper.hpp` and `atstep/settings.hpp`. Everything under
+`atstep/detail` is the implementation of those headers and carries no
+compatibility promise.
 
 - [Design](doc/design.md): ownership, history and numerical boundaries.
 - [COMSOL alignment](doc/comsol-alignment.md): measured configurations and reproduction.
