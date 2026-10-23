@@ -128,8 +128,7 @@ TEST_CASE(
     {0.25, 0.25, 0.25, 0.25, 0.25, 0.25}, // constant
     {0.25, 0.5, 0.125, 0.3, 0.2, 0.4}, // growing and shrinking
     {1e-3, 2e-3, 4e-3, 8e-3, 1.6e-2, 3.2e-2}, // the startup doubling
-    {0.7, 0.05, 0.05, 0.9, 0.9, 0.9}, // a rejected step, then a settled
-                                      // one
+    {0.7, 0.05, 0.05, 0.9, 0.9, 0.9}, // a rejection, then a settled sequence
   };
 
   for (const auto& steps : sequences) {

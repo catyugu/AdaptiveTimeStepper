@@ -45,7 +45,7 @@ IDA, of the SUNDIALS suite.
 | Step modes | `free`, `intermediate`, `strict`, `manual` |
 | Store modes | `interpolate`, `closest`, `steps` |
 | Tolerances | relative, absolute (plain or scaled), weighted RMS over the state |
-| Initialization | the artificial backward-Euler step of consistent initialization |
+| Initialization | two artificial backward-Euler steps of consistent initialization |
 | Dependencies | none |
 
 ## Install
@@ -65,7 +65,7 @@ With FetchContent:
 include(FetchContent)
 FetchContent_Declare(AdaptiveTimeStepper
     GIT_REPOSITORY https://github.com/catyugu/AdaptiveTimeStepper.git
-    GIT_TAG v0.1.0)
+    GIT_TAG v0.2.0)
 FetchContent_MakeAvailable(AdaptiveTimeStepper)
 target_link_libraries(my_target PRIVATE AdaptiveTimeStepper::AdaptiveTimeStepper)
 ```

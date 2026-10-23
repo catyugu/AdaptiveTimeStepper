@@ -100,28 +100,25 @@ namespace atstep {
   /// The differentiation weights of one BDF step, and the coefficients its
   /// error estimate is formed with.
   ///
-  /// The state is known at the levels `t_{n+1}` (the level being solved for)
-  /// and `t_{n+1-j}`, `j = 1..k`, and `h_j = t_{n+2-j} - t_{n+1-j}` is the
-  /// step that reached the level `j - 1` from the level `j`. The p-th time
-  /// derivative at `t_{n+1}` of the polynomial through those `k + 1` levels
-  /// is
+  /// The state is known at the levels `t_{n+1}` (the level being solved for) and
+  /// `t_{n+1-j}`, `j = 1..k`, and `h_j = t_{n+2-j} - t_{n+1-j}` is the step that
+  /// reached the level `j - 1` from the level `j`. The p-th time derivative at
+  /// `t_{n+1}` of the polynomial through those `k + 1` levels is
   ///
   ///     y^(p)(t_{n+1}) = sum_{j=0..k} weights(p)[j] * y_{n+1-j},   p = 0..d,
   ///
   /// with `weights(0) = {1, 0, ..., 0}` (the polynomial reproduces the level
   /// itself) and `weights(1)` the classical BDF formula. The weights of a
-  /// variable step are what keeps a run of order `k` at order `k` when the
-  /// step size changes: they differentiate that polynomial exactly, at any
-  /// steps.
+  /// variable step are what keeps a run of order `k` at order `k` when the step
+  /// size changes: they differentiate that polynomial exactly, at any steps.
   ///
   /// Because a BDF step is implicit, a residual `F(t, y, y', y'')` assembled
   /// with these weights is linear in the unknown `y_{n+1}` through
   /// `weights(p)[0]`.
   ///
-  /// The error-test coefficients are IDA's, the solver COMSOL's BDF is:
-  /// `sigma` scales the correction of a step into the error estimate at a
-  /// given order, and `ck` is the scale of the test the step is actually held
-  /// to.
+  /// The error-test coefficients are IDA's, the solver COMSOL's BDF is: `sigma`
+  /// scales the correction of a step into the error estimate at a given order,
+  /// and `ck` is the scale of the test the step is actually held to.
   class StepFormula {
   public:
     /// The first-order formula of the step `h`: backward Euler, with the

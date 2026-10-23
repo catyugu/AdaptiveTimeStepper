@@ -30,8 +30,8 @@ namespace atstep {
   /// member gets one by overloading this function in this namespace:
   ///
   ///     namespace atstep {
-  ///         inline void axpy(std::vector<float>& y, double a, const
-  ///         std::vector<float>& x)
+  ///         inline void axpy(std::vector<float>& y, double a,
+  ///                          const std::vector<float>& x)
   ///         {
   ///             for (std::size_t i = 0; i < y.size(); ++i) y[i] += a * x[i];
   ///         }
@@ -56,31 +56,29 @@ namespace atstep {
       y[i] += a * x[i];
   }
 
-  /// The norm a step's error is measured in: COMSOL's weighted root mean
-  /// square,
+  /// The norm a step's error is measured in: COMSOL's weighted root mean square,
   ///
   ///     ||e|| = sqrt( (1/N) sum_i ( e_i / (A + R |y_i|) )^2 ),
   ///
   /// with `R` the relative tolerance, `A` the absolute one, `N` the number of
-  /// degrees of freedom, and `y` the state the error is taken against. It is
-  /// the norm of COMSOL's error test, whose every variable of a coupled
-  /// system shares one mean square: `N` counts all of them.
+  /// degrees of freedom, and `y` the state the error is taken against. It is the
+  /// norm of COMSOL's error test, whose every variable of a coupled system
+  /// shares one mean square: `N` counts all of them.
   ///
-  /// `A` has COMSOL's two methods of its absolute tolerance. With `scaled`
-  /// off it is `R * absolute_factor`: the plain reading of its "Factor"
-  /// method, and the form a run of a physical field is held to. With it on it
-  /// is its *scaled* absolute tolerance,
+  /// `A` has COMSOL's two methods of its absolute tolerance. With `scaled` off
+  /// it is `R * absolute_factor`: the plain reading of its "Factor" method, and
+  /// the form a run of a physical field is held to. With it on it is its
+  /// *scaled* absolute tolerance,
   ///
   ///     A = R * absolute_factor * (beta + ||y||_2),
   ///     beta = (1 - e^(-j/5)) ||y||_inf + e^(-j/5) if 0 < ||y||_inf < 1,
   ///     else 1,
   ///
   /// where j is the number of accepted time steps (zero at initialization).
-  ///
-  /// which keeps the absolute tolerance proportional to the magnitude of the
-  /// state rather than a fixed floor. On a scalar state of order one the two
-  /// differ by a factor of two, and that factor is the difference between the
-  /// first step of a run and COMSOL's own (see doc/comsol-alignment.md).
+  /// It keeps the absolute tolerance proportional to the magnitude of the state
+  /// rather than a fixed floor. On a scalar state of order one the two differ by
+  /// a factor of two, and that factor is the difference between the first step
+  /// of a run and COMSOL's own (see doc/comsol-alignment.md).
   ///
   /// A state is expected to expose its degrees of freedom as `size()` and
   /// `operator[]`. A distributed or blocked state passes a norm of its own

@@ -21,21 +21,18 @@ namespace atstep {
     /// The step is the solver's own. An output time a step stepped over is
     /// reported by interpolating the scheme's polynomial there.
     free,
-    /// The step is the solver's own, but every subinterval between two
-    /// output
+    /// The step is the solver's own, but every subinterval between two output
     /// times holds at least one step.
     intermediate,
     /// Every step ends at an output time.
     strict,
-    /// A step of the model's own, with the time-step error test switched
-    /// off.
+    /// A step of the model's own, with the time-step error test switched off.
     manual,
   };
 
   /// Which times the result is stored at: COMSOL's "Times to store".
   enum class StoreMode {
-    /// The output times, interpolated from the steps that stepped over
-    /// them.
+    /// The output times, interpolated from the steps that stepped over them.
     interpolate,
     /// The solver step closest to each output time.
     closest,
@@ -107,16 +104,15 @@ namespace atstep {
     /// The step of `StepMode::manual`, in the time unit of the run.
     double manual_step = 0.0;
 
-    /// The artificial backward-Euler step of consistent initialization, as
-    /// a fraction of the first step: COMSOL's "Fraction of initial step for
-    /// Backward Euler", 0.001. Its increment is the time derivative the
-    /// initial-step rule reads.
+    /// The artificial backward-Euler steps of consistent initialization, as a
+    /// fraction of the first step: COMSOL's "Fraction of initial step for
+    /// Backward Euler", 0.001. The run takes two of them; the increment of the
+    /// second is the time derivative the initial-step rule reads.
     double init_step_fraction = 1e-3;
 
     /// How many derivative levels the step formula reports (see
-    /// `StepFormula::weights`): 1 for a first-order-in-time equation, 2 for
-    /// one with a second time derivative (`M u'' + C u' + K u = f`), up
-    /// to 3.
+    /// `StepFormula::weights`): 1 for a first-order-in-time equation, 2 for one
+    /// with a second time derivative (`M u'' + C u' + K u = f`), up to 3.
     int derivative_orders = 1;
   };
 

@@ -934,8 +934,7 @@ namespace atstep {
           break;
         }
         case StoreMode::steps:
-          break; // the output times are only counted here, not
-                 // stored
+          break; // the output times are only counted, not stored
         }
         ++next;
       }

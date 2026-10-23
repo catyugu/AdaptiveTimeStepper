@@ -13,8 +13,7 @@
 
 namespace atstep {
 
-  /// The local error estimates of one step, and the value the step is held
-  /// to.
+  /// The local error estimates of one step, and the value the step is held to.
   ///
   /// They are IDA's (`IDATestError`), which is the solver COMSOL's BDF is.
   /// With `k` the order of the step and `ee` its correction — the difference
@@ -25,8 +24,7 @@ namespace atstep {
   ///     at     = sigma_k   ||ee_k||      the order the step was taken at
   ///     below  = sigma_k-1 ||ee_k-1||    one order lower, where it exists
   ///     below2 = sigma_k-2 ||ee_k-2||    two orders lower, where it exists
-  ///     above  = ||ee_k - ee_k-1|| / (k + 2), the estimate at the order
-  ///     above
+  ///     above  = ||ee_k - ee_k-1|| / (k + 2), the estimate at the order above
   ///
   /// `test` is `ck ||ee_k||`, and the step is accepted while it is at most
   /// one: `ck` differs from `sigma_k` only when the step size changed, and
@@ -60,21 +58,18 @@ namespace atstep {
   ///   order is lowered, every step is taken one order higher and at twice
   ///   the size: `phase` 0. COMSOL's own log of a BDF run shows it — steps of
   ///   0.006, 0.012, 0.024, 0.048, 0.096 s over a 10 s span.
-  /// - **The deadbeat band.** A step that met the tolerance is not grown by
-  /// the
+  /// - **The deadbeat band.** A step that met the tolerance is not grown by the
   ///   asymptotic formula: the factor is the clamp of
   ///   `(2 error + 1e-4)^(-1/(q+1))` to [0.5, 0.9] below one, one inside the
   ///   band (1, 2), and 2 above it. A step therefore doubles only while its
-  ///   estimate sits below `2^-(q+2)` of the tolerance and is held at its
-  ///   size otherwise.
+  ///   estimate sits below `2^-(q+2)` of the tolerance and is held at its size
+  ///   otherwise.
   /// - **A rejected step** is retried at `0.9 (2 error + 1e-4)^(-1/(q+1))` of
-  /// its
-  ///   size, at most 0.9 and at least 0.25 of it, at the order the estimate
-  ///   favours; a second rejection takes a quarter of the step, and a third
-  ///   one the order 1.
+  ///   its size, at most 0.9 and at least 0.25 of it, at the order the estimate
+  ///   favours; a second rejection takes a quarter of the step, and a third one
+  ///   the order 1.
   /// - **The order** is reconsidered only after `q + 2` steps at a constant
-  /// order
-  ///   and step size, and not on the step after a change of order. The
+  ///   order and step size, and not on the step after a change of order. The
   ///   estimates it reads are the truncation error norms `terr_j = (j + 1)
   ///   err_j`: the order is lowered when the lower one is smaller, and raised
   ///   when the one above is at most half of the one in use (at the order 1)
@@ -326,7 +321,7 @@ namespace atstep {
     }
     else if (order_ + 1 >= ns_ or kdiff == 1) {
       action = Action::maintain; // the step has not settled, or the
-                                 // order just changed
+      // order just changed
     }
     else if (order_ == 1) {
       const double terr_k = 2.0 * errors.at;
