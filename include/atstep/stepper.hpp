@@ -446,6 +446,8 @@ namespace atstep {
       controller_ = StepController(settings_, span);
       started_ = false;
       pending_ = false;
+      table_scaled_ = false;
+      scaled_order_ = 0;
       if constexpr (std::is_same_v<Norm, WeightedRmsNorm>)
         norm_.step_index = 0;
       has_previous_ee_ = false;
@@ -661,12 +663,12 @@ namespace atstep {
       last_order_ = attempt.order_;
       if (fixed_leading()) {
         const auto k = static_cast<std::size_t>(attempt.order_);
-        trial_phi_[k + 1] = ee_;
-        atstep::axpy(trial_phi_[k], 1.0, ee_);
+        phi_[k + 1] = ee_;
+        atstep::axpy(phi_[k], 1.0, ee_);
         for (std::size_t j = k; j > 0; --j)
-          atstep::axpy(trial_phi_[j - 1], 1.0, trial_phi_[j]);
-        phi_ = trial_phi_;
+          atstep::axpy(phi_[j - 1], 1.0, phi_[j]);
         psi_ = trial_psi_;
+        table_scaled_ = false; // the rescaled table is the accepted one now
       }
       controller_.accept(attempt.errors_, attempt.step_);
       scale_reference_ = work_;
@@ -687,6 +689,7 @@ namespace atstep {
         throw std::logic_error("atstep: the solve of the step did not converge "
                                "(see reject_convergence)");
       pending_ = false;
+      restore_table();
       controller_.reject(attempt.errors_, attempt.step_);
     }
 
@@ -699,6 +702,7 @@ namespace atstep {
           "atstep: the solve of the step converged; reject it for its error "
           "test instead");
       pending_ = false;
+      restore_table();
       controller_.reject_convergence(attempt.step_);
     }
 
@@ -888,15 +892,15 @@ namespace atstep {
         double coefficient = 1.0;
         double slope = 0.0;
         double gamma = delta / psi_[0];
-        interpolated_ = phi_[0];
+        interpolated_ = accepted_column(0);
         if (derivative == 1)
-          atstep::axpy(interpolated_, -1.0, phi_[0]);
+          atstep::axpy(interpolated_, -1.0, accepted_column(0));
         for (int j = 1; j <= last_order_; ++j) {
           slope = slope * gamma + coefficient / psi_[static_cast<std::size_t>(j - 1)];
           coefficient *= gamma;
           atstep::axpy(interpolated_,
             derivative == 0 ? coefficient : slope,
-            phi_[static_cast<std::size_t>(j)]);
+            accepted_column(static_cast<std::size_t>(j)));
           gamma = (delta + psi_[static_cast<std::size_t>(j - 1)]) / psi_[static_cast<std::size_t>(j)];
         }
         return interpolated_;
@@ -983,13 +987,21 @@ namespace atstep {
 
     void prepare_fixed_leading(double step, int order)
     {
-      trial_phi_ = phi_;
+      restore_table();
       trial_psi_ = psi_;
       if (controller_.steps() == 0) {
         trial_psi_[0] = step;
-        trial_phi_[1] = derivative_;
-        atstep::axpy(trial_phi_[1], step / probe_ - 1.0, derivative_);
+        phi_[1] = derivative_;
+        atstep::axpy(phi_[1], step / probe_ - 1.0, derivative_);
       }
+      // The attempt rescales the columns in place, and keeps the accepted
+      // ones to put back if it is dropped.
+      for (int i = 1; i <= order; ++i) {
+        const auto j = static_cast<std::size_t>(i);
+        phi_before_[j - 1] = phi_[j];
+      }
+      scaled_order_ = order;
+      table_scaled_ = true;
       predictor_ = phi_[0];
       derivative_history_ = phi_[0];
       atstep::axpy(derivative_history_, -1.0, phi_[0]);
@@ -1012,16 +1024,36 @@ namespace atstep {
           alpha0 -= alpha;
         harmonic += 1.0 / static_cast<double>(i);
         sigma_[j] = static_cast<double>(i) * sigma_[j - 1] * alpha;
-        State column = trial_phi_[j];
-        atstep::axpy(trial_phi_[j], beta - 1.0, column);
-        atstep::axpy(predictor_, 1.0, trial_phi_[j]);
-        atstep::axpy(derivative_history_, gamma, trial_phi_[j]);
+        const State column = phi_[j];
+        atstep::axpy(phi_[j], beta - 1.0, column);
+        atstep::axpy(predictor_, 1.0, phi_[j]);
+        atstep::axpy(derivative_history_, gamma, phi_[j]);
       }
       trial_psi_[static_cast<std::size_t>(order)] = distance;
       ck_ = std::max(alpha, std::abs(alpha - harmonic - alpha0));
       cj_ = harmonic / step;
       derivative_predictor_ = derivative_history_;
       atstep::axpy(derivative_history_, -cj_, predictor_);
+    }
+
+    /// Put the table back as the accepted steps left it.
+    void restore_table()
+    {
+      if (not table_scaled_)
+        return;
+      for (std::size_t j = 1; j <= static_cast<std::size_t>(scaled_order_); ++j)
+        phi_[j] = phi_before_[j - 1];
+      table_scaled_ = false;
+    }
+
+    /// The column `j` of the accepted table. While an attempt is pending the
+    /// rescaled columns of it sit in `phi_`, and the accepted ones are the
+    /// saved: a dense output reads the commit the run has, not the attempt.
+    const State& accepted_column(std::size_t j) const
+    {
+      return table_scaled_ and j >= 1 and j <= static_cast<std::size_t>(scaled_order_)
+        ? phi_before_[j - 1]
+        : phi_[j];
     }
 
     void require_started() const
@@ -1073,15 +1105,15 @@ namespace atstep {
         errors.at = sigma_[k] * enorm;
         scratch_ = ee_;
         if (order >= 2) {
-          atstep::axpy(scratch_, 1.0, trial_phi_[k]);
+          atstep::axpy(scratch_, 1.0, phi_[k]);
           errors.below = sigma_[k - 1] * error_norm(scratch_);
         }
         if (order >= 3) {
-          atstep::axpy(scratch_, 1.0, trial_phi_[k - 1]);
+          atstep::axpy(scratch_, 1.0, phi_[k - 1]);
           errors.below2 = sigma_[k - 2] * error_norm(scratch_);
         }
         scratch_ = ee_;
-        atstep::axpy(scratch_, -1.0, trial_phi_[k + 1]);
+        atstep::axpy(scratch_, -1.0, phi_[k + 1]);
         errors.above = error_norm(scratch_) / static_cast<double>(order + 2);
         return errors;
       }
@@ -1187,8 +1219,16 @@ namespace atstep {
     State derivative_predictor_ {};
     State last_derivative_ {};
     State scale_reference_ {};
+    /// The columns of the first-order table: `phi_[j]` is the j-th scaled
+    /// difference of the accepted steps, and `phi_[0]` the level the predictor
+    /// extrapolates from — which the solve's own state need not equal in its
+    /// last bits. An attempt rescales `phi_[1..order]` in place.
     std::array<State, max_levels> phi_ {};
-    std::array<State, max_levels> trial_phi_ {};
+    /// The accepted columns an attempt rescale, and how many of them: a step
+    /// that is not committed puts them back, so the table is held once.
+    std::array<State, max_order> phi_before_ {};
+    bool table_scaled_ = false;
+    int scaled_order_ = 0;
     std::array<double, max_levels> psi_ {};
     std::array<double, max_levels> trial_psi_ {};
     std::array<double, max_levels> sigma_ {};

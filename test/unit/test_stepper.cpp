@@ -567,6 +567,44 @@ TEST_CASE("stepper: restarting reproduces the complete adaptive trajectory")
   }
 }
 
+TEST_CASE("stepper: a dropped attempt puts the table of the accepted steps back")
+{
+  // The attempt rescales the divided-difference columns in place, so a
+  // rejection, or an attempt a caller walks away from, has to leave the table
+  // exactly as the accepted steps left it: neither the dense output of the
+  // run nor the step the same size produces may move.
+  atstep::TimeStepper<Scalar> stepper(manual_settings(3, 0.25), solve_decay);
+  stepper.start(0.0, Scalar {1.0}, 10.0);
+  for (int i = 0; i < 5; ++i) {
+    auto piece = stepper.attempt(0.25);
+    stepper.accept(std::move(piece));
+  }
+  // A twin that sees only the accepted steps: what the next step and the
+  // dense output are before any attempt rescales the table.
+  atstep::TimeStepper<Scalar> twin = stepper;
+  const double between = stepper.time() - 0.1;
+  const double accepted = stepper.interpolate(between).value;
+  const double slope = stepper.interpolate(between, 1).value;
+  const double next = twin.attempt(0.25).state().value;
+
+  // A step of another size rescales the table; the run's dense output stays
+  // the accepted one, and rejection puts the table back.
+  auto dropped = stepper.attempt(0.4);
+  CHECK(dropped.solved());
+  CHECK_NEAR(stepper.interpolate(between).value, accepted, 0.0);
+  CHECK_NEAR(stepper.interpolate(between, 1).value, slope, 0.0);
+  stepper.reject(std::move(dropped));
+
+  // An attempt nothing settles leaves the table rescaled as well; the next
+  // attempt restores it, and produces the twin's step.
+  auto abandoned = stepper.attempt(0.4);
+  CHECK(abandoned.solved());
+  auto step = stepper.attempt(0.25);
+  CHECK(step.solved());
+  CHECK_NEAR(step.state().value, next, 0.0);
+  CHECK_NEAR(stepper.interpolate(between).value, accepted, 0.0);
+}
+
 TEST_CASE("stepper: a rejected trial does not alter the accepted BDF history")
 {
   bool failing = false;

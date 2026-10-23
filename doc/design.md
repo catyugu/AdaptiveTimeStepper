@@ -34,19 +34,29 @@ Custom states implement `axpy`; custom norms implement `norm(error, reference)`.
 ## Accepted and trial history
 
 First-order integration stores scaled divided-difference columns and step
-distances. Each attempt rescales a copy, forms the predictor and derivative
-predictor, then solves. The leading derivative coefficient is `H_k/h`, where
+distances. Each attempt rescales the columns in place and keeps the accepted
+values of the columns it overwrote, then forms the predictor and derivative
+predictor and solves. The leading derivative coefficient is `H_k/h`, where
 `H_k = 1 + 1/2 + ... + 1/k`. Error estimates use the solved-state correction
-and trial columns.
+and the rescaled columns.
+
+The table is therefore held once, not twice: `max_order` accepted columns stand
+in for the second copy of the whole table, which is what a step costs in state
+copies rather than resident memory. A rejection, and an attempt a caller walks
+away from, put them back; until an attempt is committed, the dense output of
+the run reads the accepted columns.
 
 Acceptance commits trial history; rejection preserves accepted history.
-Only one set of trial buffers exists, and one attempt is pending at a time:
+One attempt is pending at a time:
 `attempt` returns a move-only `TrialStep` carrying the attempt's identity, and
 `accept`, `reject` or `reject_convergence` settle that identity once. A handle
 of an older attempt, of another stepper, or of an attempt already settled is
 refused, and so is accepting a step whose solve failed or whose error test did
 not pass. `start` resets numerical history, tolerance indexing and the pending
 attempt.
+
+The stepper's own buffers are 23 states — the eleven of a step, the seven
+columns and the five it can overwrite — plus the levels the history keeps.
 
 `StepController` consumes scalar estimates independently of state and equation
 types. It implements startup growth, settled-step order selection and retries.
