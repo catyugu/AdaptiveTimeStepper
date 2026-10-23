@@ -9,11 +9,10 @@
 
 namespace atstep {
 
-  /// The highest BDF order, the highest derivative level, and the number of
-  /// time levels a formula reads. The orders are COMSOL's: its BDF runs at 1
-  /// to 5.
+  /// The highest BDF order, and the number of time levels the scaled-difference
+  /// table holds: the scheme reads the columns `0..max_order + 1`. The orders
+  /// are COMSOL's: its BDF runs at 1 to 5.
   inline constexpr int max_order = 5;
-  inline constexpr int max_derivative = 3;
   inline constexpr int max_levels = max_order + 2;
 
   /// How the solver places its steps relative to the output times of the
@@ -125,16 +124,6 @@ namespace atstep {
     /// Backward Euler", 0.001. The run takes two of them; the increment of the
     /// second is the time derivative the initial-step rule reads.
     double init_step_fraction = 1e-3;
-
-    /// How many derivative levels the step formula reports (see
-    /// `StepFormula::weights`): 1 for a first-order-in-time equation, 2 for one
-    /// with a second time derivative (`M u'' + C u' + K u = f`), up to 3.
-    ///
-    /// It also selects the formulation, not only how many weights the solve is
-    /// given: one uses the fixed-leading BDF history, above one the classical
-    /// stencil of `StepFormula`, whose convergence on a directly discretized
-    /// second derivative is first order (see the scope note in the README).
-    int derivative_orders = 1;
   };
 
   /// Reject a setting a run cannot be built from. The message names the
@@ -204,11 +193,6 @@ namespace atstep {
       detail::reject_setting("init_step_fraction",
         "not positive",
         settings.init_step_fraction);
-    if (settings.derivative_orders < 1 or settings.derivative_orders > max_derivative)
-      detail::reject_setting(
-        "derivative_orders",
-        "outside 1..3",
-        static_cast<double>(settings.derivative_orders));
     if (settings.step_mode == StepMode::manual and not(settings.manual_step > 0.0))
       detail::reject_setting("manual_step",
         "not a positive step of a manual run",

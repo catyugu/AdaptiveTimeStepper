@@ -19,21 +19,28 @@
 #include <string>
 #include <type_traits>
 #include <utility>
-#include <variant>
 
 namespace atstep {
 
   /// What a step's solve is told about the step.
   ///
-  /// A first-order equation uses the affine derivative `cj*y + known`, with
-  /// `cj = derivative_weight()` and `known = derivative_history()`. Thus
-  /// `M y' + K y = f` at `request.time` is
+  /// The equation is first order in time, and the step holds its derivative to
+  /// the affine form
+  ///
+  ///     y' = cj*y + known,   cj = derivative_weight(),
+  ///                          known = derivative_history(),
+  ///
+  /// so that `M y' + K y = f` at `request.time` is
   ///
   ///     (cj M + K) y_{n+1} = f(t_{n+1}) - M known.
   ///
-  /// `derivative(y, out)` evaluates it in correction form. Direct
-  /// higher-derivative equations retain the classical level-based formula and
-  /// its weights.
+  /// `derivative(y, out)` evaluates the same form in correction form,
+  /// `predictor' + cj (y - predictor)`: the correction is small where the
+  /// predictor is good, which is where the cancellation of the direct form
+  /// would bite. A nonlinear residual uses either. `cj` is positive, and the
+  /// same for every degree of freedom: the Jacobian of the step is `cj M + K`
+  /// (the derivative of the residual with respect to `y`), and a solve that
+  /// reuses a factorization from an earlier `cj` uses `request.step_index`.
   ///
   /// A request borrows the stepper's states. It is valid for the solve
   /// callback's own call and never after: a solve that stores a reference to
@@ -41,23 +48,13 @@ namespace atstep {
   template <class State>
   class StepRequest {
   public:
-    struct ClassicalDerivative {
-      const detail::StepFormula& formula;
-    };
-
-    struct BdfDerivative {
-      const State& predictor;
-      const State& derivative_predictor;
-      double leading;
-    };
-
-    using Derivative = std::variant<ClassicalDerivative, BdfDerivative>;
-
     StepRequest(double new_time,
       double step_size,
       int step_order,
-      Derivative derivative_formula,
-      const detail::Levels<State>& levels,
+      const State& predictor,
+      const State& derivative_predictor,
+      double leading,
+      const State& previous,
       const State& derivative_history,
       State& derivative_scratch,
       const State& absolute_scale,
@@ -68,8 +65,10 @@ namespace atstep {
       , order(step_order)
       , step_index(accepted_steps)
       , initializing(initialization)
-      , derivative_(std::move(derivative_formula))
-      , levels_(levels)
+      , predictor_(predictor)
+      , derivative_predictor_(derivative_predictor)
+      , leading_(leading)
+      , previous_(previous)
       , derivative_history_(derivative_history)
       , derivative_scratch_(derivative_scratch)
       , absolute_scale_(absolute_scale)
@@ -87,91 +86,42 @@ namespace atstep {
       return absolute_scale_;
     }
 
-    /// The weight `y^(derivative)` carries on the state being solved for.
-    double derivative_weight(int derivative = 1) const
+    /// The weight `y'` carries on the state being solved for.
+    double derivative_weight() const noexcept
     {
-      if (const auto* bdf = std::get_if<BdfDerivative>(&derivative_)) {
-        require_first_derivative(derivative);
-        return bdf->leading;
-      }
-      return std::get<ClassicalDerivative>(derivative_)
-        .formula.weights(derivative)[0];
+      return leading_;
     }
 
-    /// The known term of the first derivative: `y' = cj*y + known`.
+    /// The known term of the derivative: `y' = cj*y + known`.
     const State& derivative_history() const noexcept
     {
       return derivative_history_;
     }
 
-    /// The known term of the derivative level `derivative`, written to `out`.
-    /// A level above the first is the classical stencil's, which a first-order
-    /// run does not have.
-    void derivative_history(int derivative, State& out) const
+    /// `out = y'` of the state `y`. `out` is a state of the caller's and may
+    /// not be one of this request's.
+    void derivative(const State& y, State& out) const
     {
-      if (std::holds_alternative<BdfDerivative>(derivative_)) {
-        require_first_derivative(derivative);
-        out = derivative_history_;
-        return;
-      }
-      if (derivative == 1) {
-        out = derivative_history_;
-        return;
-      }
-      const auto weights = std::get<ClassicalDerivative>(derivative_)
-                             .formula.weights(derivative);
-      out = previous();
-      detail::axpy(out, weights[1] - 1.0, previous());
-      for (std::size_t j = 2; j < weights.size(); ++j)
-        detail::axpy(out, weights[j], previous(j - 1));
+      derivative_scratch_ = y;
+      detail::axpy(derivative_scratch_, -1.0, predictor_);
+      out = derivative_predictor_;
+      detail::axpy(out, leading_, derivative_scratch_);
     }
 
-    /// `out = y^(derivative)` of the state `y`. `out` is a state of the
-    /// caller's and may not be one of this request's.
-    ///
-    /// A first-order equation evaluates its derivative in correction form,
-    /// `predictor' + cj (y - predictor)`, rather than as `cj y + known`: the
-    /// correction is small where the predictor is good, which is where the
-    /// cancellation of the direct form would bite.
-    void derivative(const State& y, State& out, int derivative = 1) const
+    /// The state the run has accepted — the one the error weights and the
+    /// relative tolerance are measured against. A solve that stores it reads
+    /// the next step's value.
+    const State& previous() const noexcept
     {
-      if (const auto* bdf = std::get_if<BdfDerivative>(&derivative_)) {
-        require_first_derivative(derivative);
-        derivative_scratch_ = y;
-        detail::axpy(derivative_scratch_, -1.0, bdf->predictor);
-        out = bdf->derivative_predictor;
-        detail::axpy(out, bdf->leading, derivative_scratch_);
-        return;
-      }
-      derivative_history(derivative, out);
-      detail::axpy(out, derivative_weight(derivative), y);
-    }
-
-    /// Views are valid for the solve callback; the stepper owns their
-    /// states.
-    ///
-    /// Level 0 is the state the run has accepted. A first-order equation
-    /// keeps no level behind it — the fixed-leading table holds them — so an
-    /// older level is there only for a higher-derivative equation, which
-    /// starts this request's classical stencil.
-    const State& previous(std::size_t level = 0) const
-    {
-      return levels_.state(level);
+      return previous_;
     }
 
   private:
-    static void require_first_derivative(int derivative)
-    {
-      if (derivative != 1)
-        throw std::invalid_argument("atstep: this BDF request supports "
-                                    "only the first derivative");
-    }
-
-    Derivative derivative_;
-    const detail::Levels<State>& levels_;
+    const State& predictor_;
+    const State& derivative_predictor_;
+    double leading_ = 0.0;
+    const State& previous_;
     const State& derivative_history_;
-    /// The difference `y - predictor` of the correction form, borrowed from
-    /// the stepper.
     State& derivative_scratch_;
     const State& absolute_scale_;
   };
@@ -221,7 +171,7 @@ namespace atstep {
     double final_time = 0.0;
   };
 
-  /// Advances a state in time with COMSOL's adaptive BDF method.
+  /// Advances a first-order-in-time state with COMSOL's adaptive BDF method.
   ///
   /// The caller owns the equations: it is given the weights of the step and
   /// solves the system they define, with its own operator, its own linear
@@ -250,6 +200,12 @@ namespace atstep {
   /// `y` comes in holding the predictor of the step — the extrapolation of
   /// the history, which is a good initial guess — and must leave holding the
   /// solution of the step.
+  ///
+  /// An equation of the second order in time goes to `SecondOrderStepper`
+  /// (see `second_order.hpp`): the library introduces the velocity the BDF
+  /// kernel needs, and the solve is given the same condensed system of the
+  /// displacement alone. A third or higher derivative is the caller's to turn
+  /// into a first-order system of this one.
   ///
   /// An integrator is neither copyable nor movable: a run is one object's
   /// state from `start` to its last step, and `start` begins it again. The
@@ -286,9 +242,6 @@ namespace atstep {
         norm_.scaled = settings_.scale_absolute_tolerance;
         norm_.scale = settings_.absolute_scale;
       }
-      // The formulation does not change, so the levels a run keeps are known
-      // before it starts: the newest alone, or the whole stencil's.
-      levels_.reserve(fixed_leading() ? 1U : static_cast<std::size_t>(max_levels));
     }
 
     /// Prepare the run: the state at `time`, integrated to `end_time`.
@@ -312,52 +265,43 @@ namespace atstep {
       started_ = false;
       if constexpr (std::is_same_v<Norm, detail::WeightedRmsNorm>)
         norm_.step_index = 0;
-      has_previous_correction_ = false;
-      previous_order_ = 0;
       last_order_ = 1;
-      work_.derivative = initial;
-      detail::axpy(work_.derivative, -1.0, initial);
       probe_ = 1.0;
 
-      levels_.reset(time, initial);
+      accepted_.commit(time, initial);
       work_.scale_reference = initial;
 
-      // An equation of the second order in time has no derivative inside
-      // the state, so there is nothing for the initialization step to
-      // measure: the run starts from the span rule and a constant
-      // predictor, and the equation should be given the derivative of its
-      // state, or written as a first-order system in `(y, y')`, which is
-      // how COMSOL states it.
-      const double probe = settings_.derivative_orders >= 2
-        ? 0.0
-        : (settings_.step_mode == StepMode::manual
-              ? settings_.manual_step
-              : span)
-          * settings_.first_step_fraction * settings_.init_step_fraction;
-      if (probe <= 0.0) {
-        controller_.begin(controller_.first_step(0.0));
-        started_ = true;
-        return;
-      }
+      const double probe = (settings_.step_mode == StepMode::manual
+                               ? settings_.manual_step
+                               : span)
+        * settings_.first_step_fraction * settings_.init_step_fraction;
+      if (not(probe > 0.0))
+        throw std::invalid_argument(
+          "atstep: the initialization step of the run is too small to represent");
+      const double cj = 1.0 / probe;
 
-      const detail::StepFormula probe_formula(1,
-        std::span<const double>(&probe, 1),
-        settings_.derivative_orders);
       // COMSOL's backward-Euler initialization advances twice. Its stored
       // initial state is the second result, labeled with the start time.
-      work_.solution = initial;
       for (int j = 1; j <= 2; ++j) {
-        classical_derivative_history(probe_formula, work_.derivative_history);
+        // A backward-Euler step of the level: the level itself is the
+        // predictor, and its derivative is zero.
+        work_.predictor = accepted_.state();
+        work_.derivative_predictor = work_.predictor;
+        detail::axpy(work_.derivative_predictor, -1.0, work_.predictor);
+        work_.derivative_history = work_.derivative_predictor;
+        detail::axpy(work_.derivative_history, -cj, work_.predictor);
+        work_.solution = work_.predictor;
         StepRequest<State> request {
           time + static_cast<double>(j) * probe,
           probe,
           1,
-          typename StepRequest<State>::ClassicalDerivative {
-            probe_formula},
-          levels_,
+          work_.predictor,
+          work_.derivative_predictor,
+          cj,
+          accepted_.state(),
           work_.derivative_history,
           work_.scratch,
-          levels_.state(0),
+          accepted_.state(),
           0,
           true};
         const SolveOutcome outcome = solve_(request, work_.solution);
@@ -365,8 +309,8 @@ namespace atstep {
           throw std::runtime_error(
             "atstep: the initialization step of the run at t = " + std::to_string(time) + " did not converge");
         work_.scratch = work_.solution;
-        detail::axpy(work_.scratch, -1.0, levels_.state(0));
-        levels_.reset(request.time, work_.solution);
+        detail::axpy(work_.scratch, -1.0, accepted_.state());
+        accepted_.commit(request.time, work_.solution);
       }
 
       // The time derivative the first step is read from and predicted by:
@@ -381,26 +325,23 @@ namespace atstep {
       // state and a time derivative and no history at all.
       work_.derivative = work_.scratch;
       probe_ = probe;
-      levels_.reset(time + 2.0 * probe, work_.solution);
       work_.scale_reference = work_.solution;
       controller_.begin(controller_.first_step(derivative_norm));
-      if (fixed_leading()) {
-        work_.last_derivative = work_.derivative;
-        detail::axpy(work_.last_derivative, 1.0 / probe - 1.0, work_.derivative);
-        // Zero only the columns the configured order can reach: the scheme
-        // reads `phi[0..max_order+1]`, and a state allocated here is a
-        // state held for the whole run.
-        for (int j = 0; j <= settings_.max_order + 1; ++j) {
-          State& column = table_.phi[static_cast<std::size_t>(j)];
-          column = work_.solution;
-          detail::axpy(column, -1.0, work_.solution);
-        }
-        table_.phi[0] = work_.solution;
-        detail::axpy(
-          table_.phi[1], controller_.step_size() / probe, work_.derivative);
-        table_.psi.fill(0.0);
-        table_.psi[0] = controller_.step_size();
+      work_.last_derivative = work_.derivative;
+      detail::axpy(work_.last_derivative, 1.0 / probe - 1.0, work_.derivative);
+      // Zero only the columns the configured order can reach: the scheme
+      // reads `phi[0..max_order+1]`, and a state allocated here is a
+      // state held for the whole run.
+      for (int j = 0; j <= settings_.max_order + 1; ++j) {
+        State& column = table_.phi[static_cast<std::size_t>(j)];
+        column = work_.solution;
+        detail::axpy(column, -1.0, work_.solution);
       }
+      table_.phi[0] = work_.solution;
+      detail::axpy(
+        table_.phi[1], controller_.step_size() / probe, work_.derivative);
+      table_.psi.fill(0.0);
+      table_.psi[0] = controller_.step_size();
       started_ = true;
     }
 
@@ -421,7 +362,7 @@ namespace atstep {
     double time() const
     {
       require_started();
-      return levels_.time(0);
+      return accepted_.time();
     }
 
     /// The current solution: the newest accepted level's state. It is the
@@ -429,14 +370,7 @@ namespace atstep {
     const State& state() const
     {
       require_started();
-      return levels_.state(0);
-    }
-
-    /// The number of accepted levels the run keeps: the newest alone for a
-    /// first-order equation, the whole stencil's for a higher-derivative one.
-    std::size_t history_size() const noexcept
-    {
-      return levels_.size();
+      return accepted_.state();
     }
 
     /// The step size and order of the next step.
@@ -479,12 +413,12 @@ namespace atstep {
         settings_, output_times, start_time_, end_time_);
 
       RunReport report;
-      double time = levels_.time(0);
+      double time = accepted_.time();
 
       // COMSOL labels the state left by consistent initialization with
       // the requested start time; the initialization solves are not
       // accepted steps.
-      store(start_time_, levels_.state(0), false, hooks, report);
+      store(start_time_, accepted_.state(), false, hooks, report);
 
       while (time < end_time_) {
         const StepRecord record = take_step(&schedule, &report);
@@ -496,11 +430,10 @@ namespace atstep {
         report.last_step = record.step;
         report.final_time = time;
         if (hooks.on_step)
-          hooks.on_step(record, levels_.state(0));
+          hooks.on_step(record, accepted_.state());
         for (const auto& stored : schedule.stores(time))
           store(stored.time,
-            stored.interpolated ? interpolate(stored.time)
-                                : levels_.state(0),
+            stored.interpolated ? interpolate(stored.time) : accepted_.state(),
             stored.interpolated,
             hooks,
             report);
@@ -519,37 +452,23 @@ namespace atstep {
       if (derivative < 0 or derivative > 1)
         throw std::invalid_argument(
           "atstep: interpolation supports value or first derivative");
-      if (fixed_leading()) {
-        if (derivative == 1 and time == levels_.time(0))
-          return work_.last_derivative;
-        const double delta = time - levels_.time(0);
-        double coefficient = 1.0;
-        double slope = 0.0;
-        double gamma = delta / table_.psi[0];
-        work_.interpolated = table_.phi[0];
-        if (derivative == 1)
-          detail::axpy(work_.interpolated, -1.0, table_.phi[0]);
-        for (int j = 1; j <= last_order_; ++j) {
-          slope = slope * gamma + coefficient / table_.psi[static_cast<std::size_t>(j - 1)];
-          coefficient *= gamma;
-          detail::axpy(work_.interpolated,
-            derivative == 0 ? coefficient : slope,
-            table_.phi[static_cast<std::size_t>(j)]);
-          gamma = (delta + table_.psi[static_cast<std::size_t>(j - 1)]) / table_.psi[static_cast<std::size_t>(j)];
-        }
-        return work_.interpolated;
+      if (derivative == 1 and time == accepted_.time())
+        return work_.last_derivative;
+      const double delta = time - accepted_.time();
+      double coefficient = 1.0;
+      double slope = 0.0;
+      double gamma = delta / table_.psi[0];
+      work_.interpolated = table_.phi[0];
+      if (derivative == 1)
+        detail::axpy(work_.interpolated, -1.0, table_.phi[0]);
+      for (int j = 1; j <= last_order_; ++j) {
+        slope = slope * gamma + coefficient / table_.psi[static_cast<std::size_t>(j - 1)];
+        coefficient *= gamma;
+        detail::axpy(work_.interpolated,
+          derivative == 0 ? coefficient : slope,
+          table_.phi[static_cast<std::size_t>(j)]);
+        gamma = (delta + table_.psi[static_cast<std::size_t>(j - 1)]) / table_.psi[static_cast<std::size_t>(j)];
       }
-      const std::size_t count = std::min<std::size_t>(
-        static_cast<std::size_t>(last_order_) + 1, levels_.size());
-      std::array<double, max_levels> nodes {};
-      for (std::size_t j = 0; j < count; ++j)
-        nodes[j] = levels_.time(j) - time;
-      const auto weights = detail::lagrange_derivative(
-        std::span<const double>(nodes.data(), count),
-        0.0,
-        derivative);
-      combine(work_.interpolated,
-        std::span<const double>(weights.data(), count));
       return work_.interpolated;
     }
 
@@ -574,11 +493,9 @@ namespace atstep {
       std::array<double, max_levels> beta {};
       std::array<double, max_levels> psi {};
       std::array<double, max_levels> sigma {};
-      /// The classical stencil, which a first-order run does not build.
-      detail::StepFormula formula;
     };
 
-    /// The columns of the first-order table: `phi[j]` is the j-th scaled
+    /// The columns of the fixed-leading table: `phi[j]` is the j-th scaled
     /// difference of the accepted steps, and `phi[0]` the level the predictor
     /// extrapolates from — which the solve's own state need not equal in its
     /// last bits. Only `accept` writes a column of it beyond the first step; an
@@ -596,7 +513,6 @@ namespace atstep {
       State predictor {};
       State solution {};
       State correction {};
-      State previous_correction {};
       State scratch {};
       State interpolated {};
       State derivative_history {};
@@ -613,7 +529,7 @@ namespace atstep {
     /// @param[in,out] report the counters of the run, or nullptr.
     StepRecord take_step(detail::StepSchedule* schedule, RunReport* report)
     {
-      const double from = levels_.time(0);
+      const double from = accepted_.time();
       for (;;) {
         double step = controller_.step_size();
         std::optional<double> boundary;
@@ -662,17 +578,16 @@ namespace atstep {
     }
 
     /// Solve the step of size `step` and estimate its error. The accepted
-    /// levels and table are read, not written, apart from the first step's
+    /// level and table are read, not written, apart from the first step's
     /// column, which the attempt states: only `accept` commits a step.
     Trial attempt(double step)
     {
-      const double next_time = levels_.time(0) + step;
+      const double next_time = accepted_.time() + step;
       if (not std::isfinite(step) or not(step > 0.0)
-        or not std::isfinite(next_time) or not(next_time > levels_.time(0)))
+        or not std::isfinite(next_time) or not(next_time > accepted_.time()))
         throw std::invalid_argument("atstep: step must be finite, positive and advance time");
 
-      // Both formulations use the same history bound on startup order: an
-      // order-k step reads k levels, and the run has one level per accepted
+      // An order-k step reads k levels, and the run has one level per accepted
       // step on top of the one it started from.
       const int available = std::min(
         controller_.steps() + 1, max_levels);
@@ -683,15 +598,17 @@ namespace atstep {
       trial.step = step;
       trial.time = next_time;
       trial.order = order;
+      prepare(trial);
 
-      auto derivative = prepare(trial);
       work_.solution = work_.predictor;
       StepRequest<State> request {
         next_time,
         step,
         order,
-        std::move(derivative),
-        levels_,
+        work_.predictor,
+        work_.derivative_predictor,
+        trial.cj,
+        accepted_.state(),
         work_.derivative_history,
         work_.scratch,
         work_.scale_reference,
@@ -702,10 +619,8 @@ namespace atstep {
         return trial;
       trial.solved = true;
 
-      if (fixed_leading() or controller_.error_controlled()) {
-        work_.correction = work_.solution;
-        detail::axpy(work_.correction, -1.0, work_.predictor);
-      }
+      work_.correction = work_.solution;
+      detail::axpy(work_.correction, -1.0, work_.predictor);
       if (not controller_.error_controlled()) {
         trial.passed = true;
         return trial;
@@ -719,40 +634,26 @@ namespace atstep {
     /// and order.
     void accept(const Trial& trial)
     {
-      if (fixed_leading()) {
-        work_.last_derivative = work_.derivative_predictor;
-        detail::axpy(work_.last_derivative, trial.cj, work_.correction);
-      }
-      levels_.push(trial.time, work_.solution);
+      work_.last_derivative = work_.derivative_predictor;
+      detail::axpy(work_.last_derivative, trial.cj, work_.correction);
+      accepted_.commit(trial.time, work_.solution);
       last_order_ = trial.order;
-      if (fixed_leading()) {
-        const auto k = static_cast<std::size_t>(trial.order);
-        // The factors the trial read are the factors the table keeps: the
-        // rescaled column of the order it is at is a scalar multiple of the
-        // accepted one, so a dropped attempt has nothing to put back.
-        for (std::size_t j = 1; j <= k; ++j)
-          detail::axpy(
-            table_.phi[j], trial.beta[j] - 1.0, table_.phi[j]);
-        table_.phi[k + 1] = work_.correction;
-        detail::axpy(table_.phi[k], 1.0, work_.correction);
-        for (std::size_t j = k; j > 0; --j)
-          detail::axpy(table_.phi[j - 1], 1.0, table_.phi[j]);
-        table_.psi = trial.psi;
-      }
+      const auto k = static_cast<std::size_t>(trial.order);
+      // The factors the trial read are the factors the table keeps: the
+      // rescaled column of the order it is at is a scalar multiple of the
+      // accepted one, so a dropped attempt has nothing to put back.
+      for (std::size_t j = 1; j <= k; ++j)
+        detail::axpy(
+          table_.phi[j], trial.beta[j] - 1.0, table_.phi[j]);
+      table_.phi[k + 1] = work_.correction;
+      detail::axpy(table_.phi[k], 1.0, work_.correction);
+      for (std::size_t j = k; j > 0; --j)
+        detail::axpy(table_.phi[j - 1], 1.0, table_.phi[j]);
+      table_.psi = trial.psi;
       controller_.accept(trial.errors, trial.step);
       work_.scale_reference = work_.solution;
       if constexpr (std::is_same_v<Norm, detail::WeightedRmsNorm>)
         norm_.step_index = static_cast<std::size_t>(controller_.steps());
-      if (not fixed_leading() and controller_.error_controlled()) {
-        work_.previous_correction = work_.correction;
-        previous_order_ = trial.order;
-        has_previous_correction_ = true;
-      }
-    }
-
-    bool fixed_leading() const
-    {
-      return settings_.derivative_orders == 1;
     }
 
     void require_started() const
@@ -762,44 +663,9 @@ namespace atstep {
           "atstep: the run has not been started (see start)");
     }
 
-    /// The known term of the first derivative of the classical stencil: the
-    /// combination of the accepted levels, without the level being solved for.
-    void classical_derivative_history(const detail::StepFormula& formula,
-      State& out) const
-    {
-      const auto weights = formula.weights(1);
-      out = levels_.state(0);
-      detail::axpy(out, weights[1] - 1.0, levels_.state(0));
-      for (std::size_t j = 2; j < weights.size(); ++j)
-        detail::axpy(out, weights[j], levels_.state(j - 1));
-    }
-
     /// Fill the trial's coefficients, the predictor the solve starts from, the
-    /// derivative's predictor and the known term of the derivative, and return
-    /// the derivative formulation the solve reads.
-    typename StepRequest<State>::Derivative prepare(Trial& trial)
-    {
-      if (fixed_leading()) {
-        prepare_fixed_leading(trial);
-        return typename StepRequest<State>::BdfDerivative {
-          work_.predictor, work_.derivative_predictor, trial.cj};
-      }
-      const std::size_t count = levels_.size();
-      std::array<double, max_levels> steps {};
-      steps[0] = trial.step;
-      for (std::size_t j = 1; j < count; ++j)
-        steps[j] = levels_.time(j - 1) - levels_.time(j);
-      trial.formula = detail::StepFormula(trial.order,
-        std::span<const double>(steps.data(), count),
-        settings_.derivative_orders);
-      predict(trial);
-      classical_derivative_history(trial.formula, work_.derivative_history);
-      return typename StepRequest<State>::ClassicalDerivative {
-        trial.formula};
-    }
-
-    /// The coefficients of a first-order trial, from the accepted table.
-    void prepare_fixed_leading(Trial& trial)
+    /// derivative's predictor and the known term of the derivative.
+    void prepare(Trial& trial)
     {
       trial.psi = table_.psi;
       if (controller_.steps() == 0) {
@@ -850,21 +716,6 @@ namespace atstep {
       detail::axpy(work_.derivative_history, -trial.cj, work_.predictor);
     }
 
-    /// The extrapolation of the history to the new time, in `predictor`. A
-    /// history of a single level is the initial state, and the step from it
-    /// is predicted by the derivative the initialization step measured.
-    void predict(const Trial& trial)
-    {
-      if (levels_.size() == 1) {
-        // `derivative` is the increment of the initialization step, so the
-        // extrapolation of the step being taken is `step / probe` of it.
-        work_.predictor = levels_.state(0);
-        detail::axpy(work_.predictor, trial.step / probe_, work_.derivative);
-        return;
-      }
-      combine(work_.predictor, trial.formula.predictor());
-    }
-
     /// The error estimates of the trial, whose solved state is `solution` and
     /// whose predictor is `predictor`.
     detail::StepErrors estimate(const Trial& trial)
@@ -874,69 +725,31 @@ namespace atstep {
       // attempting a step; every estimate and retry uses those same
       // weights.
       const double enorm = error_norm(work_.correction);
-      if (fixed_leading()) {
-        const auto k = static_cast<std::size_t>(trial.order);
-        errors.test = trial.ck * enorm;
-        errors.at = trial.sigma[k] * enorm;
-        work_.scratch = work_.correction;
-        if (trial.order >= 2) {
-          detail::axpy(work_.scratch, trial.beta[k], table_.phi[k]);
-          errors.below = trial.sigma[k - 1] * error_norm(work_.scratch);
-        }
-        if (trial.order >= 3) {
-          detail::axpy(
-            work_.scratch, trial.beta[k - 1], table_.phi[k - 1]);
-          errors.below2 = trial.sigma[k - 2] * error_norm(work_.scratch);
-        }
-        work_.scratch = work_.correction;
-        detail::axpy(work_.scratch, -1.0, table_.phi[k + 1]);
-        errors.above = error_norm(work_.scratch) / static_cast<double>(trial.order + 2);
-        return errors;
+      const auto k = static_cast<std::size_t>(trial.order);
+      errors.test = trial.ck * enorm;
+      errors.at = trial.sigma[k] * enorm;
+      work_.scratch = work_.correction;
+      if (trial.order >= 2) {
+        detail::axpy(work_.scratch, trial.beta[k], table_.phi[k]);
+        errors.below = trial.sigma[k - 1] * error_norm(work_.scratch);
       }
-      errors.test = trial.formula.ck() * enorm;
-      errors.at = trial.formula.sigma(trial.order) * enorm;
-
-      // The orders below read the polynomial through one level fewer
-      // each, and the estimate above compares this step's correction with
-      // the one the previous step left.
-      if (trial.order >= 2)
-        errors.below = trial.formula.sigma(trial.order - 1) * extrapolation_error(trial.formula.extrapolation(trial.order));
-      if (trial.order >= 3)
-        errors.below2 = trial.formula.sigma(trial.order - 2) * extrapolation_error(trial.formula.extrapolation(trial.order - 1));
-      if (has_previous_correction_ and previous_order_ == trial.order) {
-        work_.scratch = work_.correction;
-        detail::axpy(work_.scratch, -1.0, work_.previous_correction);
-        errors.above = error_norm(work_.scratch) / static_cast<double>(trial.order + 2);
+      if (trial.order >= 3) {
+        detail::axpy(
+          work_.scratch, trial.beta[k - 1], table_.phi[k - 1]);
+        errors.below2 = trial.sigma[k - 2] * error_norm(work_.scratch);
       }
+      work_.scratch = work_.correction;
+      detail::axpy(work_.scratch, -1.0, table_.phi[k + 1]);
+      errors.above = error_norm(work_.scratch) / static_cast<double>(trial.order + 2);
       return errors;
-    }
-
-    /// The weighted norm of `solution - p`, `p` being the polynomial through
-    /// the levels with `weights`.
-    double extrapolation_error(std::span<const double> weights)
-    {
-      combine(work_.scratch, weights);
-      detail::axpy(work_.scratch, -1.0, work_.solution);
-      return error_norm(work_.scratch);
     }
 
     double error_norm(const State& error)
     {
       if constexpr (std::is_same_v<Norm, detail::WeightedRmsNorm>)
-        return norm_(error, levels_.state(0), work_.scale_reference);
+        return norm_(error, accepted_.state(), work_.scale_reference);
       else
-        return norm_(error, levels_.state(0));
-    }
-
-    /// `out = weights[0] y_0 + ... + weights[count - 1] y_{count - 1}`,
-    /// from the levels of the history.
-    void combine(State& out, std::span<const double> weights) const
-    {
-      const std::size_t count = std::min(weights.size(), levels_.size());
-      out = levels_.state(0);
-      detail::axpy(out, weights[0] - 1.0, levels_.state(0));
-      for (std::size_t j = 1; j < count; ++j)
-        detail::axpy(out, weights[j], levels_.state(j));
+        return norm_(error, accepted_.state());
     }
 
     void store(double time,
@@ -956,7 +769,7 @@ namespace atstep {
     Norm norm_;
 
     detail::StepController controller_ {Settings {}, 1.0};
-    detail::Levels<State> levels_;
+    detail::AcceptedLevel<State> accepted_;
     Table table_;
     Workspace work_;
 
@@ -968,10 +781,6 @@ namespace atstep {
 
     /// The order of the last accepted step, which the dense output reads.
     int last_order_ = 1;
-    /// The correction of the last accepted step and its order: the estimate at
-    /// the order above compares against them.
-    bool has_previous_correction_ = false;
-    int previous_order_ = 0;
   };
 
 } // namespace atstep
