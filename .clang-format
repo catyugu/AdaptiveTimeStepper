@@ -1,0 +1,32 @@
+# AdaptiveTimeStepper — COMSOL-style adaptive BDF time stepping
+# SPDX-License-Identifier: MIT
+#
+# LLVM's style, with the indent the headers are written at and pointers bound to
+# the type, as they already are. BreakTemplateDeclarations is spelled the way
+# clang-format 15 and newer spell it; AlwaysBreakTemplateDeclarations is its
+# deprecated former name and errors on clang-format 16+.
+---
+Language: Cpp
+BasedOnStyle: LLVM
+
+Standard: c++20
+IndentWidth: 4
+ContinuationIndentWidth: 4
+AccessModifierOffset: -4
+ColumnLimit: 80
+
+BreakTemplateDeclarations: Yes
+
+PointerAlignment: Left
+DerivePointerAlignment: false
+
+AlignAfterOpenBracket: Align
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+BinPackArguments: false
+BinPackParameters: false
+IndentCaseLabels: false
+NamespaceIndentation: All
+SpaceAfterCStyleCast: false
+SpacesBeforeTrailingComments: 2

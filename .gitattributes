@@ -1,0 +1,13 @@
+# Keep the sources in the repository with LF, whatever the platform checks out.
+* text=auto eol=lf
+
+*.java text eol=lf
+*.py text eol=lf
+*.hpp text eol=lf
+*.cpp text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.txt text eol=lf
+
+# Byte-exact files.
+*.png binary

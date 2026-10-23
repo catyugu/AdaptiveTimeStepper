@@ -1,0 +1,33 @@
+# Build trees — CMakePresets.json puts them under build/, build/check and
+# build/prefix are the same rule.
+build*/
+.cache/
+out/
+
+# Throwaway programs and local experiments.
+scratch/
+
+# Compiler and linker output.
+*.exe
+*.obj
+*.o
+*.a
+*.lib
+*.pdb
+*.ilk
+*.dll
+*.so
+*.dylib
+
+# Editors and tooling.
+.vs/
+.idea/
+.vscode/
+compile_commands.json
+
+# CMake writes this one for the local machine only.
+CMakeUserPresets.json
+
+# OS clutter.
+.DS_Store
+Thumbs.db

@@ -1,0 +1,301 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # --- Linux, the two GCC versions the headers are known to build with --------
+
+  linux-gcc:
+    name: linux-gcc ${{ matrix.compiler }} ${{ matrix.build_type }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc-13, gcc-14]
+        build_type: [Debug, Release]
+    env:
+      CC: ${{ matrix.compiler }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            "$CC" "g++-${CC#gcc-}" ninja-build ccache
+
+      - name: Write the compiler environment
+        run: |
+          echo "CXX=g++-${CC#gcc-}" >> "$GITHUB_ENV"
+          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-linux-gcc-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ github.sha }}
+          restore-keys: |
+            ccache-linux-gcc-${{ matrix.compiler }}-${{ matrix.build_type }}-
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DATSTEP_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  # --- Linux, Clang: two versions, plus one sanitizer run --------------------
+
+  linux-clang:
+    name: linux-clang ${{ matrix.compiler }} ${{ matrix.build_type }} sanitizers=${{ matrix.sanitizers }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [clang-17, clang-18]
+        build_type: [Debug, Release]
+        # Quoted: an unquoted OFF is a YAML boolean, and the value is read back
+        # as a CMake cache variable.
+        sanitizers: ["OFF"]
+        include:
+          - compiler: clang-18
+            build_type: Debug
+            sanitizers: "ON"
+        # The clang-18 Debug build runs once, with the sanitizers on; the
+        # include entry above adds it and this line drops the plain one.
+        exclude:
+          - compiler: clang-18
+            build_type: Debug
+            sanitizers: "OFF"
+    env:
+      CC: ${{ matrix.compiler }}
+      ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1
+      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            "$CC" "clang++-${CC#clang-}" ninja-build ccache
+
+      - name: Write the compiler environment
+        run: |
+          echo "CXX=clang++-${CC#clang-}" >> "$GITHUB_ENV"
+          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-linux-clang-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ matrix.sanitizers }}-${{ github.sha }}
+          restore-keys: |
+            ccache-linux-clang-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ matrix.sanitizers }}-
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DATSTEP_WARNINGS_AS_ERRORS=ON \
+            -DATSTEP_ENABLE_SANITIZERS=${{ matrix.sanitizers }}
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  # --- macOS: arm64 and x86_64, AppleClang ----------------------------------
+
+  macos:
+    name: macos ${{ matrix.os }} ${{ matrix.build_type }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-13 is the x86_64 image. When GitHub retires it, move the
+        # x86_64 row to macos-15-intel; arm64 stays on macos-14 or newer.
+        os: [macos-14, macos-13]
+        build_type: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DATSTEP_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  # --- Windows, MSVC and clang-cl -------------------------------------------
+
+  windows-msvc:
+    name: windows-msvc ${{ matrix.build_type }}
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DATSTEP_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build --config ${{ matrix.build_type }} --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
+
+  windows-clangcl:
+    name: windows-clangcl ${{ matrix.build_type }}
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -T ClangCL -DATSTEP_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build --config ${{ matrix.build_type }} --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
+
+  # --- C++20 pinned, and every header compiled on its own -------------------
+
+  standards:
+    name: standards C++20 and standalone headers
+    runs-on: ubuntu-24.04
+    env:
+      CC: gcc-13
+      CXX: g++-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++-13 ninja-build
+
+      - name: Configure with C++20 pinned
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD=20 \
+            -DCMAKE_CXX_STANDARD_REQUIRED=ON \
+            -DCMAKE_CXX_EXTENSIONS=OFF \
+            -DATSTEP_BUILD_TESTS=OFF \
+            -DATSTEP_BUILD_EXAMPLES=OFF
+
+      - name: Compile every header first in its own translation unit
+        run: |
+          mkdir -p build/standalone
+          for header in include/atstep/*.hpp; do
+            name=$(basename "$header" .hpp)
+            printf '#include <%s>\n\nint main() { return 0; }\n' "${header#include/}" \
+              > "build/standalone/$name.cpp"
+            echo "compiling $header"
+            g++-13 -std=c++20 -pedantic-errors -Wall -Wextra -Werror -I include \
+              -c "build/standalone/$name.cpp" -o "build/standalone/$name.o"
+          done
+
+  # --- The installed package, consumed with find_package ---------------------
+
+  consumer:
+    name: consumer find_package
+    # The install is produced from this checkout; the gate keeps the job from
+    # running when the library does not build at all.
+    needs: [linux-gcc]
+    runs-on: ubuntu-24.04
+    env:
+      CC: gcc-13
+      CXX: g++-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++-13 ninja-build
+
+      - name: Install the library into a prefix
+        run: |
+          cmake -S . -B build/install -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$PWD/build/prefix" \
+            -DATSTEP_BUILD_TESTS=OFF \
+            -DATSTEP_BUILD_EXAMPLES=OFF
+          cmake --build build/install
+          cmake --install build/install
+          find build/prefix -name '*.hpp' -o -name '*.cmake' | sort
+
+      - name: Write the consumer project
+        run: |
+          mkdir -p build/consumer
+          cat > build/consumer/CMakeLists.txt <<'CMAKE'
+          cmake_minimum_required(VERSION 3.20)
+          project(atstep_consumer LANGUAGES CXX)
+
+          find_package(AdaptiveTimeStepper CONFIG REQUIRED)
+
+          add_executable(consumer main.cpp)
+          target_link_libraries(consumer
+              PRIVATE AdaptiveTimeStepper::AdaptiveTimeStepper)
+          CMAKE
+          cat > build/consumer/main.cpp <<'CPP'
+          #include <atstep/atstep.hpp>
+
+          #include <cstdio>
+          #include <vector>
+
+          int main()
+          {
+              atstep::Settings settings;
+              atstep::validate(settings);
+
+              const std::vector<double> steps {0.1, 0.1, 0.1, 0.1};
+              const atstep::StepFormula formula(3, steps);
+              const std::vector<double> levels {1.0, 2.0, 3.0, 4.0};
+
+              double derivative = 0.0;
+              for (std::size_t j = 0; j < formula.weights(1).size(); ++j)
+                  derivative += formula.weights(1)[j] * levels[j];
+
+              std::printf("order %d, y'(t) = %.6f, ck = %.6f\n",
+                  formula.order(), derivative, formula.ck());
+              return formula.order() == 3 ? 0 : 1;
+          }
+          CPP
+
+      - name: Configure, build and run the consumer
+        run: |
+          cmake -S build/consumer -B build/consumer/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$PWD/build/prefix"
+          cmake --build build/consumer/build --parallel
+          ./build/consumer/build/consumer

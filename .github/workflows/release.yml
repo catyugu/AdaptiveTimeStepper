@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: header archives
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check that the tagged tree configures and builds
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DATSTEP_BUILD_TESTS=OFF \
+            -DATSTEP_BUILD_EXAMPLES=OFF
+          cmake --build build
+
+      - name: Build the archives
+        run: |
+          set -eu
+          version="${GITHUB_REF_NAME#v}"
+          root="AdaptiveTimeStepper-${version}"
+
+          rm -rf dist stage
+          mkdir -p dist "stage/headers/${root}" "stage/source/${root}"
+
+          # The header set alone: what a consumer who only wants the include/
+          # tree unpacks.
+          cp -R include "stage/headers/${root}/include"
+
+          # The source archive: the headers and the build files, so a caller can
+          # add_subdirectory, FetchContent or find_package from it.
+          cp -R include "stage/source/${root}/include"
+          cp CMakeLists.txt "stage/source/${root}/"
+          cp LICENSE "stage/source/${root}/"
+          cp -R cmake "stage/source/${root}/cmake"
+
+          tar -czf "dist/AdaptiveTimeStepper-${version}.tar.gz" \
+            -C stage/headers "${root}"
+          tar -czf "dist/AdaptiveTimeStepper-${version}-src.tar.gz" \
+            -C stage/source "${root}"
+
+          echo "version ${version}"
+          tar -tzf "dist/AdaptiveTimeStepper-${version}.tar.gz"
+          tar -tzf "dist/AdaptiveTimeStepper-${version}-src.tar.gz"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/AdaptiveTimeStepper-*.tar.gz
+          fail_on_unmatched_files: true
+          generate_release_notes: true
