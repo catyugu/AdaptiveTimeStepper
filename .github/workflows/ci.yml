@@ -127,9 +127,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-13 is the x86_64 image. When GitHub retires it, move the
-        # x86_64 row to macos-15-intel; arm64 stays on macos-14 or newer.
-        os: [macos-14, macos-13]
+        # macos-14 is arm64, macos-15-intel is x86_64: the two architectures
+        # AppleClang is built for. macos-13 (x86_64) is retired.
+        os: [macos-14, macos-15-intel]
         build_type: [Debug, Release]
     steps:
       - uses: actions/checkout@v4
