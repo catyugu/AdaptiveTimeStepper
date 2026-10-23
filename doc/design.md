@@ -34,17 +34,18 @@ Custom states implement `axpy`; custom norms implement `norm(error, reference)`.
 ## Accepted and trial history
 
 First-order integration stores scaled divided-difference columns and step
-distances. Each attempt rescales the columns in place and keeps the accepted
-values of the columns it overwrote, then forms the predictor and derivative
-predictor and solves. The leading derivative coefficient is `H_k/h`, where
-`H_k = 1 + 1/2 + ... + 1/k`. Error estimates use the solved-state correction
-and the rescaled columns.
+distances. A step size rescales every column the scheme reads by one factor:
+the rescaled column of order `j` is `beta_j * phi_j`, the accepted column
+scaled. A trial therefore holds the factors and no column at all — it reads the
+accepted table and writes nothing, so a rejection, and an attempt a caller walks
+away from, leave it exactly as the accepted steps left it. `accept` rescales the
+columns in place and commits the factors. The lead coefficient is `H_k/h`, where
+`H_k = 1 + 1/2 + ... + 1/k`. Error estimates use the solved-state correction and
+the same factors.
 
-The table is therefore held once, not twice: `max_order` accepted columns stand
-in for the second copy of the whole table, which is what a step costs in state
-copies rather than resident memory. A rejection, and an attempt a caller walks
-away from, put them back; until an attempt is committed, the dense output of
-the run reads the accepted columns.
+The table is therefore never copied and never written speculatively: a trial
+costs a few doubles, not one state. Dense output reads the accepted columns
+whether an attempt is pending or not.
 
 Acceptance commits trial history; rejection preserves accepted history.
 One attempt is pending at a time:
@@ -55,8 +56,11 @@ refused, and so is accepting a step whose solve failed or whose error test did
 not pass. `start` resets numerical history, tolerance indexing and the pending
 attempt.
 
-The stepper's own buffers are 23 states — the eleven of a step, the seven
-columns and the five it can overwrite — plus the levels the history keeps.
+The stepper's own buffers are 18 states — the eleven of a step and the seven
+columns — plus the levels the history keeps. A state is allocated when a step
+first writes it, and the columns follow `max_order`: a run at order 5 holds 24
+states with its history full, one at order 2 holds 21 and one at order 1 holds
+20.
 
 `StepController` consumes scalar estimates independently of state and equation
 types. It implements startup growth, settled-step order selection and retries.
