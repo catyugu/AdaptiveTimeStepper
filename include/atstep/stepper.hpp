@@ -321,6 +321,7 @@ namespace atstep {
         norm_.relative = settings_.relative_tolerance;
         norm_.absolute = settings_.relative_tolerance * settings_.absolute_factor;
         norm_.scaled = settings_.scale_absolute_tolerance;
+        norm_.scale = settings_.absolute_scale;
       }
     }
 

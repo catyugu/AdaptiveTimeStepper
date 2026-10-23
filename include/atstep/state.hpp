@@ -2,11 +2,9 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-#include <algorithm>
 #include <cmath>
 #include <concepts>
 #include <cstddef>
-#include <string_view>
 #include <type_traits>
 #include <vector>
 
@@ -58,27 +56,30 @@ namespace atstep {
 
   /// The norm a step's error is measured in: COMSOL's weighted root mean square,
   ///
-  ///     ||e|| = sqrt( (1/N) sum_i ( e_i / (A + R |y_i|) )^2 ),
+  ///     ||e|| = sqrt( (1/N) sum_i ( e_i / (A_i + R |y_i|) )^2 ),
   ///
-  /// with `R` the relative tolerance, `A` the absolute one, `N` the number of
+  /// with `R` the relative tolerance, `A_i` the absolute one, `N` the number of
   /// degrees of freedom, and `y` the state the error is taken against. It is the
   /// norm of COMSOL's error test, whose every variable of a coupled system
   /// shares one mean square: `N` counts all of them.
   ///
-  /// `A` has COMSOL's two methods of its absolute tolerance. With `scaled` off
+  /// `A_i` has COMSOL's two methods of its absolute tolerance. With `scaled` off
   /// it is `R * absolute_factor`: the plain reading of its "Factor" method, and
   /// the form a run of a physical field is held to. With it on it is its
   /// *scaled* absolute tolerance,
   ///
-  ///     A = R * absolute_factor * (beta + ||y||_2),
-  ///     beta = (1 - e^(-j/5)) ||y||_inf + e^(-j/5) if 0 < ||y||_inf < 1,
-  ///     else 1,
+  ///     A_i = R * absolute_factor * (|y_i| + s_i),
+  ///     s_i = (1 - e^(-j/5)) |y_i| + e^(-j/5) sigma_i,
   ///
-  /// where j is the number of accepted time steps (zero at initialization).
-  /// It keeps the absolute tolerance proportional to the magnitude of the state
-  /// rather than a fixed floor. On a scalar state of order one the two differ by
-  /// a factor of two, and that factor is the difference between the first step
-  /// of a run and COMSOL's own (see doc/comsol-alignment.md).
+  /// where `j` is the number of accepted time steps (zero at initialization) and
+  /// `sigma_i` the scale of the degree of freedom — `scale` below, COMSOL's
+  /// "scale for dependent variable", one by default. So the absolute tolerance
+  /// follows the magnitude of each variable rather than a fixed floor, and it
+  /// tightens as the run proceeds. At the first step `A_i` is
+  /// `R * absolute_factor * (|y_i| + sigma_i)`; a scalar state of magnitude one
+  /// is therefore held twice as tightly as the unscaled method holds it, and
+  /// that factor is the difference between the first step of a run and COMSOL's
+  /// own (see doc/comsol-alignment.md).
   ///
   /// A state is expected to expose its degrees of freedom as `size()` and
   /// `operator[]`. A distributed or blocked state passes a norm of its own
@@ -93,6 +94,8 @@ namespace atstep {
     double absolute = 1e-3;
     bool scaled = false;
     std::size_t step_index = 0;
+    /// `sigma_i`; an index past the end is one.
+    std::vector<double> scale;
 
     template <class State>
       requires requires(const State& s) {
@@ -115,23 +118,14 @@ namespace atstep {
       const std::size_t n = reference.size();
       if (n == 0)
         return 0.0;
-      double limit = absolute;
-      if (scaled) {
-        double square = 0.0;
-        double largest = 0.0;
-        for (std::size_t i = 0; i < n; ++i) {
-          const double value = scale_reference[i];
-          square += value * value;
-          largest = std::max(largest, std::abs(value));
-        }
-        const double decay = std::exp(-0.2 * static_cast<double>(step_index));
-        const double beta = (largest > 0.0 and largest < 1.0)
-          ? (1.0 - decay) * largest + decay
-          : 1.0;
-        limit = absolute * (beta + std::sqrt(square));
-      }
+      const double decay = std::exp(-0.2 * static_cast<double>(step_index));
       double sum = 0.0;
       for (std::size_t i = 0; i < n; ++i) {
+        const double magnitude = std::abs(scale_reference[i]);
+        const double sigma = i < scale.size() ? scale[i] : 1.0;
+        const double limit
+          = scaled ? absolute * ((2.0 - decay) * magnitude + decay * sigma)
+                   : absolute;
         const double weight = limit + relative * std::abs(reference[i]);
         if (weight > 0.0) {
           const double ratio = error[i] / weight;

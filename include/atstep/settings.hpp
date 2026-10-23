@@ -4,6 +4,7 @@
 
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace atstep {
 
@@ -78,14 +79,27 @@ namespace atstep {
     /// of the absolute tolerance, 0.1 by default.
     double absolute_factor = 0.1;
 
-    /// Whether the absolute tolerance is scaled by the magnitude of the
-    /// state, COMSOL's "Scaled" method: `A = R * absolute_factor * (beta +
-    /// ||y||_2)`. It is COMSOL's own default, and the form that reproduces
-    /// the first steps of its solver on a scalar state of order one; off,
-    /// `A` is the fixed `R * absolute_factor`, which is what a run of a
-    /// physical field whose magnitude the mesh changes is easier to reason
-    /// about with.
+    /// Whether the absolute tolerance is scaled by the magnitude of each
+    /// degree of freedom, COMSOL's "Scaled" method:
+    ///
+    ///     A_i = R * absolute_factor * (|y_i| + s_i),
+    ///     s_i = (1 - e^(-j/5)) |y_i| + e^(-j/5) sigma_i,
+    ///
+    /// with `j` the number of accepted steps and `sigma_i` the scale below. It
+    /// is COMSOL's own default; off, `A` is the fixed `R * absolute_factor`,
+    /// which is what a run of a physical field whose magnitude the mesh changes
+    /// is easier to reason about with.
     bool scale_absolute_tolerance = true;
+
+    /// The scale `sigma_i` of each degree of freedom in the scaled absolute
+    /// tolerance above. It is COMSOL's "scale for dependent variable", which
+    /// its solver log prints: one for a variable whose equation moves at a
+    /// moderate rate, and below one for a fast one — a variable obeying
+    /// `v' = -100 v` carries 0.32. COMSOL derives it from the model, and the
+    /// library cannot, so a run of a model COMSOL would scale differently
+    /// passes it here. An empty vector is `sigma_i = 1`, which is the value of
+    /// every configuration of the recorded reference.
+    std::vector<double> absolute_scale;
 
     /// The first step, as a fraction of the span integrated. COMSOL's
     /// "Initial step: Automatic", 0.1% of the end time. The initial
@@ -149,6 +163,10 @@ namespace atstep {
     if (not(settings.absolute_factor >= 0.0))
       detail::reject_setting(
         "absolute_factor", "negative", settings.absolute_factor);
+    for (double scale : settings.absolute_scale)
+      if (not(scale >= 0.0))
+        detail::reject_setting(
+          "absolute_scale", "negative", scale);
     if (not(settings.first_step_fraction > 0.0))
       detail::reject_setting("first_step_fraction",
         "not positive",

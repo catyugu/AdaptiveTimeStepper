@@ -69,18 +69,38 @@ cannot express the confirmed fixed-leading history.
 
 ### Tolerances and output
 
-The scaled absolute tolerance contains `exp(-j/5)`, where `j` counts accepted
-steps. The earlier implementation used `exp(-1/5)` throughout the run.
-The relative part of the weight uses the last accepted internal state and is
-held fixed through retries.
+The weight of the error test is per degree of freedom, and the scaled absolute
+tolerance is
 
-COMSOL also updates the *absolute scale* from the solution returned to the
-caller, including an interpolated solution. Its relative reference remains the
-internal state. This was tested against three alternatives: unchanged scales,
-updating only the absolute scale, and updating both references. Only updating
-the absolute scale reproduced the 35-step interpolated-output run and its
-stored values. Assuming that output cannot affect the internal step sequence
-would miss this COMSOL behavior.
+```text
+A_i = rtol * factor * ( |y_i| + s_i ),
+s_i = (1 - exp(-j/5)) |y_i| + exp(-j/5) * sigma_i,
+```
+
+with `j` the accepted-step count and `sigma_i` a scale of the variable — the
+"Scales for dependent variables" line of the solver log. Three measurements fix
+it, and each of them is a model the recorded reference cannot see:
+
+| Measurement | Result |
+| --- | --- |
+| `u' = -1`, `u(0) = c`, four magnitudes | the first step is `0.5 (A + rtol |y|)` with `A = 2 rtol factor c` to five digits, so the first term is `|y_i|` and the scale of a single dof is its own magnitude |
+| `u' + u = 0`, the recorded 44-step exact run | a constant `sigma = 1` gives 31 steps and `s_i = |y_i|` gives 45; only the `exp(-j/5)` blend gives 44 |
+| `u' = -1e-9 u, v' = -1` and `u' = -u + v, v' = -100 v` | the first step needs `sigma = (1, 1)` and `(1, 0.32)`: the scale is per variable and comes from the model |
+
+An earlier form substituted the state's 2-norm for `|y_i|` and the constant one
+for `sigma_i`. It agrees with the measured form only when `sigma_i = 1`, which is
+every configuration of the reference — the 21 recorded runs are one scalar
+equation, so the difference was invisible to them. Replaying the two models whose
+scale is not one, with the scale passed in, reproduces COMSOL's accepted steps,
+every logged order and its error-test-failure count exactly.
+
+COMSOL also updates the *magnitude inside* `A_i` from the solution returned to
+the caller, including an interpolated solution. Its relative reference remains
+the internal state. This was tested against three alternatives: unchanged
+references, updating only the absolute one, and updating both. Only updating the
+absolute one reproduced the 35-step interpolated-output run and its stored
+values. Assuming that output cannot affect the internal step sequence would miss
+this COMSOL behavior.
 
 ### Initialization and mode constraints
 

@@ -197,20 +197,36 @@ output time. The final output can still be interpolated.
 
 ### Tolerances
 
-A dof is held to `A + R |y_i|`, and the step is accepted while the weighted root
-mean square of its correction is at most one:
+A dof is held to `A_i + R |y_i|`, and the step is accepted while the weighted
+root mean square of its correction is at most one:
 
 ```text
-||e|| = sqrt( (1/N) sum_i ( e_i / (A + R |y_i|) )^2 )
+||e|| = sqrt( (1/N) sum_i ( e_i / (A_i + R |y_i|) )^2 )
 ```
 
-`A` is `R * absolute_factor`, or with `scale_absolute_tolerance` (COMSOL's
-default) the scaled form `R * absolute_factor * (beta + ||y||_2)`, where
-`beta = (1 - exp(-j/5)) ||y||_inf + exp(-j/5)` below unit magnitude and `j`
-counts accepted steps. Interpolated output updates this absolute scale;
-the relative part continues to use the last accepted internal state. Below the
-absolute tolerance there is no accuracy at all — COMSOL's own wording — so a
-solution that decays past it is not held to a relative accuracy.
+`A_i` is `R * absolute_factor`, or with `scale_absolute_tolerance` (COMSOL's
+default) the scaled form
+
+```text
+A_i = R * absolute_factor * ( |y_i| + s_i )
+s_i = (1 - exp(-j/5)) |y_i| + exp(-j/5) * sigma_i
+```
+
+where `j` counts accepted steps. `sigma_i` is the scale of the degree of
+freedom, COMSOL's "scale for dependent variable", which its solver log prints:
+one for a variable that moves at a moderate rate, `0.32` for one obeying
+`v' = -100 v`. COMSOL derives it from the model and the library cannot, so a
+model COMSOL would scale differently sets `Settings::absolute_scale`; empty is
+`sigma_i = 1`.
+
+Both references are measured: `u' = -1, u(0) = c` takes a first step of
+`0.5 (A + R|y|)` with `A = 2 R factor c` for four magnitudes of `c`, which fixes
+the `|y_i|` term and the scale; `u' + u = 0` fixes the `exp(-j/5)` blend, since
+a constant scale fails that run and a purely dynamic one misses it by a step.
+Interpolated output updates the magnitude of `A_i`; the relative part continues
+to use the last accepted internal state. Below the absolute tolerance there is no
+accuracy at all — COMSOL's own wording — so a solution that decays past it is not
+held to a relative accuracy.
 
 ## What comes out
 
