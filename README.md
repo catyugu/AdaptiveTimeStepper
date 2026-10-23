@@ -1,4 +1,4 @@
-# AdaptiveTimeStepper
+﻿# AdaptiveTimeStepper
 
 [![CI](https://github.com/catyugu/AdaptiveTimeStepper/actions/workflows/ci.yml/badge.svg)](https://github.com/catyugu/AdaptiveTimeStepper/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -23,7 +23,7 @@ int main()
     atstep::TimeStepper<State> stepper(atstep::Settings {},
         [](const atstep::StepRequest<State>& request, State& y) {
             // y' = cj*y + known, hence (cj + 1)*y = -known.
-            const auto known = request.derivative_history();
+            const State& known = request.derivative_history();
             y[0] = -known[0] / (request.derivative_weight() + 1.0);
             return atstep::SolveOutcome {true, 1};
         });
@@ -42,8 +42,8 @@ int main()
 The solve receives a predictor in `y` and replaces it with the solved state.
 For `M y' + K y = f`, assemble
 `(cj*M + K)*y = f(request.time) - M*known`.
-In a nonlinear residual, `request.derivative(y)` evaluates the derivative in
-correction form to reduce cancellation. Return `{false, iterations}` when
+In a nonlinear residual, `request.derivative(y, dy)` writes the derivative into
+`dy` in correction form, to reduce cancellation. Return `{false, iterations}` when
 the solve fails; the stepper retries at a quarter of the step size.
 
 Runnable examples cover [heat conduction](examples/heat_equation.cpp),
@@ -114,9 +114,8 @@ error with zero weight has infinite norm. Mismatched vector sizes are rejected.
 | `derivative_orders`           | 1             | Derivative levels the solve is given, 1 to 3         |
 
 `derivative_orders = 1` is the fixed-leading BDF history of the library's own
-method. A higher value switches the same stepping to the classical stencil of
-`StepFormula`, which supplies the second or third derivative the residual asks
-for; the two are different discretizations, and a second derivative taken
+method. A higher value switches the same stepping to a classical stencil, which
+supplies the second or third derivative the residual asks for; the two are different discretizations, and a second derivative taken
 directly from levels converges at first order (see the scope note below).
 
 ### Why the default maximum order is 5
@@ -161,12 +160,9 @@ copy values you want to retain. `interpolate(t, 0)` returns the dense value and
 
 For a caller-driven loop, `advance()` takes one step the error test accepts —
 it retries a step the solve failed or the error test refused — and reports it.
-For a decision of your own, `attempt(h)` returns a `TrialStep` handle: its
-`state()` is the candidate solution, checked before committing it, and exactly
-one of `accept`, `reject` (its error test failed) or `reject_convergence` (its
-solve failed) settles it. The handle is move-only, cannot be copied, and is
-refused once another attempt has been made, so a step cannot be committed
-twice or committed out of order.
+An attempt is the library's own: a step the solve or the test refuses is
+retried inside the call, and the caller is never handed a candidate to commit.
+An integrator is neither copyable nor movable; `start` begins a run again.
 
 ## Build and test
 
@@ -183,9 +179,9 @@ examples also run under CTest. COMSOL is needed only to regenerate reference dat
 
 ## Scope and documentation
 
-First-order systems use fixed-leading BDF history. `StepFormula` separately
-provides classical polynomial derivative weights; reconstructing those weights
-from time levels does not reproduce adaptive fixed-leading BDF history.
+First-order systems use fixed-leading BDF history. Higher-derivative equations
+use classical polynomial derivative weights instead; reconstructing those
+weights from time levels does not reproduce adaptive fixed-leading BDF history.
 Directly discretizing a second derivative has different convergence behavior;
 prefer a first-order system `(u, u')`, as in the oscillator example.
 
@@ -194,7 +190,7 @@ Runge–Kutta methods. Matching recorded COMSOL trajectories also requires
 matching its algebraic solve strategy; the scalar references do not establish
 equivalence for arbitrary models.
 
-- [Design](doc/design.md): ownership, trial history and numerical boundaries.
+- [Design](doc/design.md): ownership, history and numerical boundaries.
 - [COMSOL alignment](doc/comsol-alignment.md): measured configurations and reproduction.
 - [Coupled multiphysics](doc/multiphysics.md): thermoelastic COMSOL comparison and motor example.
 - [Research notes](doc/research/comsol-time-dependent-solver.md): source quotations

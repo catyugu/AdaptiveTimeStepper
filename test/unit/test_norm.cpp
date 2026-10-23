@@ -1,6 +1,6 @@
-// The norm the error is measured in: COMSOL's weighted root mean square, and
+﻿// The norm the error is measured in: COMSOL's weighted root mean square, and
 // the two methods of its absolute tolerance.
-#include "atstep/state.hpp"
+#include "atstep/detail/state.hpp"
 #include "support/check.hpp"
 
 #include <cmath>
@@ -31,7 +31,7 @@ namespace {
 
 TEST_CASE("norm: the weighted root mean square of a uniform error")
 {
-  atstep::WeightedRmsNorm norm;
+  atstep::detail::WeightedRmsNorm norm;
   norm.relative = 1e-2;
   norm.absolute = 1e-3;
 
@@ -49,7 +49,7 @@ TEST_CASE("norm: the weighted root mean square of a uniform error")
 
 TEST_CASE("norm: the weight follows the value of each dof")
 {
-  atstep::WeightedRmsNorm norm;
+  atstep::detail::WeightedRmsNorm norm;
   norm.relative = 1e-2;
   norm.absolute = 1e-3;
 
@@ -69,11 +69,11 @@ TEST_CASE("norm: the scaled tolerance is twice the plain one at a state of "
   // At the first step the scaled absolute tolerance of a dof of magnitude one
   // is R * factor * (1 + 1) = 0.002 against the 0.001 of the plain form, so
   // the same error measures half as much.
-  atstep::WeightedRmsNorm plain;
+  atstep::detail::WeightedRmsNorm plain;
   plain.relative = 1e-2;
   plain.absolute = 1e-3;
 
-  atstep::WeightedRmsNorm scaled;
+  atstep::detail::WeightedRmsNorm scaled;
   scaled.relative = 1e-2;
   scaled.absolute = 1e-3;
   scaled.scaled = true;
@@ -90,7 +90,7 @@ TEST_CASE("norm: the scaled tolerance is R factor (|y| + sigma) at the first "
   // Measured against COMSOL: the first step of `u' = -1`, u(0) = c, is
   // 0.5 (A + R |y|) with A = 2 R factor c, i.e. the scale of a single dof is
   // its own magnitude. The default scale is one.
-  atstep::WeightedRmsNorm norm;
+  atstep::detail::WeightedRmsNorm norm;
   norm.relative = 1e-2;
   norm.absolute = 1e-3;
   norm.scaled = true;
@@ -119,7 +119,7 @@ TEST_CASE("norm: the scale of each degree of freedom is its own")
   // COMSOL prints a scale per dependent variable — one for a variable whose
   // equation moves at a moderate rate, 0.32 for one obeying v' = -100 v. The
   // same error and state therefore weigh differently on the two dofs.
-  atstep::WeightedRmsNorm norm;
+  atstep::detail::WeightedRmsNorm norm;
   norm.relative = 1e-2;
   norm.absolute = 1e-3;
   norm.scaled = true;
@@ -140,7 +140,7 @@ TEST_CASE("norm: the scale of each degree of freedom is its own")
 
 TEST_CASE("norm: the scaled tolerance tightens with the accepted-step index")
 {
-  atstep::WeightedRmsNorm norm;
+  atstep::detail::WeightedRmsNorm norm;
   norm.scaled = true;
   const double magnitude = 1e-4;
   for (std::size_t j : {std::size_t {0},
@@ -164,14 +164,14 @@ TEST_CASE("norm: the scaled tolerance tightens with the accepted-step index")
 
 TEST_CASE("norm: an empty state is no error at all")
 {
-  atstep::WeightedRmsNorm norm;
+  atstep::detail::WeightedRmsNorm norm;
   CHECK_NEAR(norm(std::vector<double> {}, std::vector<double> {}), 0.0, 0.0);
 }
 
 TEST_CASE("norm: interpolation changes the absolute scale but not the relative "
           "reference")
 {
-  atstep::WeightedRmsNorm norm;
+  atstep::detail::WeightedRmsNorm norm;
   norm.scaled = true;
   norm.step_index = 25;
   const double internal = 0.2;
@@ -185,10 +185,10 @@ TEST_CASE("norm: std::vector is a state the stepper takes")
 {
   // The library provides the one operation a state needs for a
   // std::vector<double>, which is the quickest way to try it out.
-  static_assert(atstep::StateVector<std::vector<double>>);
+  static_assert(atstep::detail::StateVector<std::vector<double>>);
   std::vector<double> y {1.0, 2.0};
   const std::vector<double> x {1.0, 1.0};
-  atstep::axpy(y, -0.5, x);
+  atstep::detail::axpy(y, -0.5, x);
   CHECK_NEAR(y[0], 0.5, 1e-15);
   CHECK_NEAR(y[1], 1.5, 1e-15);
 
@@ -200,22 +200,22 @@ TEST_CASE("norm: std::vector is a state the stepper takes")
       v += a * x.v;
     }
   };
-  static_assert(atstep::StateVector<Member>);
+  static_assert(atstep::detail::StateVector<Member>);
 }
 
 TEST_CASE("state: mismatched sizes are rejected before accessing elements")
 {
   std::vector<double> y {1.0, 2.0};
-  CHECK_THROWS(atstep::axpy(y, 1.0, of({3.0})));
+  CHECK_THROWS(atstep::detail::axpy(y, 1.0, of({3.0})));
   CHECK_NEAR(y[0], 1.0, 0.0);
-  atstep::WeightedRmsNorm norm;
+  atstep::detail::WeightedRmsNorm norm;
   CHECK_THROWS(norm(of({1.0}), y));
   CHECK_THROWS(norm(y, y, of({1.0})));
 }
 
 TEST_CASE("norm: a zero weight cannot hide nonzero error")
 {
-  atstep::WeightedRmsNorm norm;
+  atstep::detail::WeightedRmsNorm norm;
   norm.absolute = 0.0;
   CHECK_EQ(norm(of({0.0}), of({0.0})), 0.0);
   CHECK(std::isinf(norm(of({1.0}), of({0.0}))));

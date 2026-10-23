@@ -1,4 +1,4 @@
-// Full-precision COMSOL trajectories: independently generated states,
+﻿// Full-precision COMSOL trajectories: independently generated states,
 // derivatives and solver decisions, checked with matching algebraic solves.
 #include "atstep/stepper.hpp"
 #include "reference/comsol_trajectories.hpp"
@@ -39,6 +39,9 @@ namespace {
     double jacobian_cj = 0.0;
     double last_cj = 0.0;
     double convergence_factor = 20.0;
+    /// The derivative of the residual's evaluation: the only state the solve
+    /// writes besides `y`.
+    State derivative;
 
     atstep::SolveOutcome
     operator()(const atstep::StepRequest<State>& request, State& y)
@@ -55,7 +58,7 @@ namespace {
         jacobian_cj = cj;
         convergence_factor = 20.0;
       }
-      atstep::WeightedRmsNorm norm;
+      atstep::detail::WeightedRmsNorm norm;
       norm.relative = settings.relative_tolerance;
       norm.absolute = norm.relative * settings.absolute_factor;
       norm.scaled = settings.scale_absolute_tolerance;
@@ -63,7 +66,8 @@ namespace {
       double first_norm = 0.0;
       last_cj = cj;
       for (int iteration = 0; iteration < 4; ++iteration) {
-        const double residual = y.u + request.derivative(y).u;
+        request.derivative(y, derivative);
+        const double residual = y.u + derivative.u;
         const double correction = -residual / (jacobian_cj + 1.0) * 2.0 / (1.0 + cj / jacobian_cj);
         y.u += correction;
         const double size = norm(State {correction},
@@ -114,19 +118,23 @@ TEST_CASE("comsol: full-precision trajectories, derivatives, orders and "
       settings.store_mode = atstep::StoreMode::interpolate;
     else if (std::string(reference.store_mode) == "tstepsclosest")
       settings.store_mode = atstep::StoreMode::closest;
-    ComsolDecaySolve chord {settings};
+    ComsolDecaySolve chord;
+    chord.settings = settings;
     double last_derivative = 0.0;
+    State derivative;
     atstep::TimeStepper<State> stepper(
       settings, [&](const atstep::StepRequest<State>& request, State& y) {
         atstep::SolveOutcome outcome;
         if (reference.exact) {
-          const double correction = -(y.u + request.derivative(y).u) / (request.derivative_weight() + 1.0);
+          request.derivative(y, derivative);
+          const double correction = -(y.u + derivative.u) / (request.derivative_weight() + 1.0);
           y.u += correction;
           outcome = {true, 1};
         }
         else
           outcome = chord(request, y);
-        last_derivative = request.derivative(y).u;
+        request.derivative(y, derivative);
+        last_derivative = derivative.u;
         return outcome;
       });
     stepper.start(0.0, State {1.0}, 10.0);

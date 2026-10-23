@@ -72,26 +72,23 @@ namespace {
     return settings;
   }
 
-  /// Integrate y' = -y to `end` at a fixed order and step, priming the
-  /// history with the exact solution, and return the error of the last level.
+  /// Integrate y' = -y to or past `end` at a fixed order and step, priming the
+  /// history with the exact solution, and return the error at the time the run
+  /// reached: a manual step is never cut short, so the error is the scheme's
+  /// own.
   double decay_error(int order, double step, double end)
   {
     atstep::TimeStepper<Scalar> stepper(manual_settings(order, step),
       primed_decay(order + 1));
     stepper.start(0.0, Scalar {1.0}, end);
 
-    double time = stepper.time();
     int guard = 0;
-    while (time < end) {
-      const double piece = std::min(step, end - time);
-      auto attempt = stepper.attempt(piece);
-      CHECK(attempt.solved());
-      stepper.accept(std::move(attempt));
-      time = stepper.time();
+    while (stepper.time() < end) {
+      stepper.advance();
       if (++guard > 100000)
         break;
     }
-    return std::abs(stepper.state().value - exact(end));
+    return std::abs(stepper.state().value - exact(stepper.time()));
   }
 
   /// The observed order of accuracy between two step sizes.
@@ -112,7 +109,11 @@ namespace {
     static atstep::SolveOutcome
     solve(const atstep::StepRequest<Scalar>& request, Scalar& y)
     {
-      const double known = request.derivative_history(2).value + 0.1 * request.derivative_history(1).value;
+      Scalar second;
+      Scalar first;
+      request.derivative_history(2, second);
+      request.derivative_history(1, first);
+      const double known = second.value + 0.1 * first.value;
       y.value = -known / (request.derivative_weight(2) + 0.1 * request.derivative_weight(1) + 1.0);
       return atstep::SolveOutcome {true, 1};
     }
@@ -120,6 +121,35 @@ namespace {
 
 } // namespace
 
+TEST_CASE("request: the derivative is the affine form its weights define")
+{
+  // `derivative` evaluates `cj*y + known` in correction form, where the
+  // correction is small: the two are the same state, which is what a solve may
+  // rely on whichever form it reads.
+  atstep::Settings settings;
+  settings.max_order = 3;
+  double worst = 0.0;
+  int evaluated = 0;
+  atstep::TimeStepper<Scalar> stepper(settings,
+    [&worst, &evaluated](const atstep::StepRequest<Scalar>& request,
+      Scalar& y) {
+      Scalar derivative;
+      request.derivative(y, derivative);
+      Scalar affine = request.derivative_history();
+      atstep::detail::axpy(affine, request.derivative_weight(), y);
+      worst = std::max(
+        worst, std::abs(derivative.value - affine.value));
+      ++evaluated;
+      const Scalar& known = request.derivative_history();
+      y.value = -known.value / (request.derivative_weight() + 1.0);
+      return atstep::SolveOutcome {true, 1};
+    });
+  stepper.start(0.0, Scalar {1.0}, 1.0);
+  const std::vector<double> times {0.0, 0.5, 1.0};
+  stepper.run(times);
+  CHECK(evaluated > 4);
+  CHECK(worst < 1e-12);
+}
 TEST_CASE("stepper: a fixed-step run converges at the order of its formula")
 {
   // Backward Euler to BDF5, each on the step sizes that its own order needs
@@ -173,15 +203,9 @@ TEST_CASE("stepper: a second derivative in the residual is first order, and "
         return Oscillator::solve(request, y);
       });
     stepper.start(0.0, Scalar {1.0}, 2.0);
-    double time = stepper.time();
-    while (time < 2.0) {
-      const double piece = std::min(step, 2.0 - time);
-      auto attempt = stepper.attempt(piece);
-      CHECK(attempt.solved());
-      stepper.accept(std::move(attempt));
-      time = stepper.time();
-    }
-    return std::abs(stepper.state().value - Oscillator::value(2.0));
+    while (stepper.time() < 2.0)
+      stepper.advance();
+    return std::abs(stepper.state().value - Oscillator::value(stepper.time()));
   };
   const double coarse = error(0.05);
   const double fine = error(0.025);
@@ -217,7 +241,7 @@ TEST_CASE("stepper: the inertia of a second-order equation, as a first-order "
   };
 
   const auto solve = [](const atstep::StepRequest<Block>& request, Block& y) {
-    const auto known = request.derivative_history();
+    const Block& known = request.derivative_history();
     const double ru = -known.u;
     const double rv = -known.v;
     // a0*u - v = ru,  u + (a0 + 0.1)*v = rv
@@ -231,15 +255,9 @@ TEST_CASE("stepper: the inertia of a second-order equation, as a first-order "
   const auto error = [&solve](double step) {
     atstep::TimeStepper<Block> stepper(manual_settings(2, step), solve);
     stepper.start(0.0, Block {1.0, 0.0}, 2.0);
-    double time = stepper.time();
-    while (time < 2.0) {
-      const double piece = std::min(step, 2.0 - time);
-      auto attempt = stepper.attempt(piece);
-      CHECK(attempt.solved());
-      stepper.accept(std::move(attempt));
-      time = stepper.time();
-    }
-    return std::abs(stepper.state().u - Oscillator::value(2.0));
+    while (stepper.time() < 2.0)
+      stepper.advance();
+    return std::abs(stepper.state().u - Oscillator::value(stepper.time()));
   };
   const double coarse = error(0.05);
   const double fine = error(0.025);
@@ -304,10 +322,10 @@ TEST_CASE(
   stepper.start(0.0, Scalar {1.0}, 10.0);
   CHECK_EQ(calls, 2);
   CHECK_NEAR(probe, 10.0 * 1e-3 * 1e-3, 1e-12);
-  CHECK_EQ(stepper.history().size(), std::size_t {1});
-  CHECK_NEAR(stepper.history().time(0), 2.0 * probe, 1e-12);
-  CHECK_NEAR(stepper.interpolate(stepper.history().time(0), 1).value,
-    -stepper.history().state(0).value, 2e-10);
+  CHECK_EQ(stepper.history_size(), std::size_t {1});
+  CHECK_NEAR(stepper.time(), 2.0 * probe, 1e-12);
+  CHECK_NEAR(stepper.interpolate(stepper.time(), 1).value,
+    -stepper.state().value, 2e-10);
   // The first step of the run is the one the derivative justifies: the
   // weight of a dof of value one is `0.01 * (1 + 0.1)`, so the derivative is
   // 90.9 and the step is 0.5 / 90.9, well below the 0.01 of the span rule.
@@ -316,17 +334,28 @@ TEST_CASE(
   CHECK_NEAR(stepper.step_size(), 0.5 / (1.0 / 0.012), 1e-6);
 }
 
-TEST_CASE("stepper: the history the scheme reads is bounded")
+TEST_CASE("stepper: the levels a run keeps are the ones its formulation reads")
 {
-  atstep::Settings settings;
-  settings.max_order = 5;
-  atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
+  // A first-order run reads the table of the accepted steps and keeps the
+  // newest level alone; a higher-derivative run reads the levels themselves and
+  // keeps the whole stencil's.
+  atstep::Settings first_order;
+  first_order.max_order = 5;
+  atstep::TimeStepper<Scalar> stepper(first_order, solve_decay);
   stepper.start(0.0, Scalar {1.0}, 10.0);
   std::vector<double> times;
   for (int i = 0; i <= 10; ++i)
     times.push_back(static_cast<double>(i));
   stepper.run(times);
-  CHECK(stepper.history().size() <= static_cast<std::size_t>(atstep::max_levels));
+  CHECK_EQ(stepper.history_size(), std::size_t {1});
+
+  atstep::Settings second_order = manual_settings(2, 0.1);
+  second_order.derivative_orders = 2;
+  atstep::TimeStepper<Scalar> no_table(second_order, Oscillator::solve);
+  no_table.start(0.0, Scalar {Oscillator::value(0.0)}, 1.0);
+  for (int i = 0; i < atstep::max_levels; ++i)
+    no_table.advance();
+  CHECK_EQ(no_table.history_size(), static_cast<std::size_t>(atstep::max_levels));
 }
 
 TEST_CASE("stepper: the interpolation reproduces the polynomial through the "
@@ -345,12 +374,8 @@ TEST_CASE("stepper: the interpolation reproduces the polynomial through the "
       return atstep::SolveOutcome {true, 1};
     });
   stepper.start(0.0, Scalar {cubic(0.0)}, 1.0);
-  double time = stepper.time();
-  while (time < 1.0) {
-    auto attempt = stepper.attempt(0.25);
-    stepper.accept(std::move(attempt));
-    time = stepper.time();
-  }
+  while (stepper.time() < 1.0)
+    stepper.advance();
   // At the newest level: the level itself. A first-order run keeps no level
   // behind it, so an older one is reached through the dense output alone.
   CHECK_NEAR(stepper.interpolate(stepper.time()).value,
@@ -568,137 +593,49 @@ TEST_CASE("stepper: restarting reproduces the complete adaptive trajectory")
   }
 }
 
-TEST_CASE("stepper: a dropped attempt puts the table of the accepted steps back")
+TEST_CASE("stepper: a refused step leaves the accepted history and its dense output alone")
 {
-  // The attempt rescales the divided-difference columns in place, so a
-  // rejection, or an attempt a caller walks away from, has to leave the table
-  // exactly as the accepted steps left it: neither the dense output of the
-  // run nor the step the same size produces may move.
-  atstep::TimeStepper<Scalar> stepper(manual_settings(3, 0.25), solve_decay);
-  stepper.start(0.0, Scalar {1.0}, 10.0);
-  for (int i = 0; i < 5; ++i) {
-    auto piece = stepper.attempt(0.25);
-    stepper.accept(std::move(piece));
-  }
-  // A twin that sees only the accepted steps: what the next step and the
-  // dense output are before any attempt rescales the table.
-  atstep::TimeStepper<Scalar> twin = stepper;
-  const double between = stepper.time() - 0.1;
-  const double accepted = stepper.interpolate(between).value;
-  const double slope = stepper.interpolate(between, 1).value;
-  const double next = twin.attempt(0.25).state().value;
-
-  // A step of another size rescales the table; the run's dense output stays
-  // the accepted one, and rejection puts the table back.
-  auto dropped = stepper.attempt(0.4);
-  CHECK(dropped.solved());
-  CHECK_NEAR(stepper.interpolate(between).value, accepted, 0.0);
-  CHECK_NEAR(stepper.interpolate(between, 1).value, slope, 0.0);
-  stepper.reject(std::move(dropped));
-
-  // An attempt nothing settles leaves the table rescaled as well; the next
-  // attempt restores it, and produces the twin's step.
-  auto abandoned = stepper.attempt(0.4);
-  CHECK(abandoned.solved());
-  auto step = stepper.attempt(0.25);
-  CHECK(step.solved());
-  CHECK_NEAR(step.state().value, next, 0.0);
-  CHECK_NEAR(stepper.interpolate(between).value, accepted, 0.0);
-}
-
-TEST_CASE("stepper: a rejected trial does not alter the accepted BDF history")
-{
+  // An attempt reads the table of the accepted steps and writes none of it, and
+  // a step the solve refuses is retried inside the run rather than reported to
+  // the caller. What the run held before the retries is what it holds after
+  // them: the accepted level, the step it proposes and the dense output.
   bool failing = false;
-  atstep::TimeStepper<Scalar> stepper(atstep::Settings {},
+  atstep::TimeStepper<Scalar> stepper(manual_settings(3, 0.25),
     [&failing](const atstep::StepRequest<Scalar>& request, Scalar& y) {
       if (failing)
         return atstep::SolveOutcome {false, 40};
       return solve_decay(request, y);
     });
   stepper.start(0.0, Scalar {1.0}, 10.0);
-  for (int i = 0; i < 8; ++i) {
-    auto piece = stepper.attempt(stepper.step_size());
-    CHECK(piece.passed());
-    stepper.accept(std::move(piece));
-  }
+  for (int i = 0; i < 5; ++i)
+    stepper.advance();
   const double time = stepper.time();
   const double value = stepper.state().value;
-  const double h = stepper.step_size();
-  // An identical run that never sees the failed attempt: the accepted
-  // history and the step the same size produces must stay the same.
-  atstep::TimeStepper<Scalar> reference = stepper;
+  const double proposed = stepper.step_size();
+  const double between = time - 0.1;
+  const double accepted = stepper.interpolate(between).value;
+  const double slope = stepper.interpolate(between, 1).value;
 
+  // A solve that keeps failing takes the step down to the smallest one the
+  // controller proposes, and then the run gives up.
   failing = true;
-  auto failed = stepper.attempt(h);
-  CHECK(not failed.solved());
-  stepper.reject_convergence(std::move(failed));
+  CHECK_THROWS(stepper.advance());
   CHECK_NEAR(stepper.time(), time, 0.0);
   CHECK_NEAR(stepper.state().value, value, 0.0);
-  CHECK_EQ(stepper.history().size(), reference.history().size());
-  for (std::size_t j = 0;
-    j < std::min(stepper.history().size(), reference.history().size());
-    ++j) {
-    CHECK_NEAR(stepper.history().time(j), reference.history().time(j), 0.0);
-    CHECK_NEAR(
-      stepper.history().state(j).value, reference.history().state(j).value, 0.0);
-  }
+  CHECK_EQ(stepper.history_size(), std::size_t {1});
+  CHECK(stepper.step_size() < proposed);
+  CHECK_NEAR(stepper.interpolate(between).value, accepted, 0.0);
+  CHECK_NEAR(stepper.interpolate(between, 1).value, slope, 0.0);
 
+  // The run carries on once the solve converges again, from the level the
+  // failures left alone.
   failing = false;
-  auto retried = stepper.attempt(h);
-  auto expected = reference.attempt(h);
-  CHECK(retried.solved());
-  CHECK_EQ(retried.order(), expected.order());
-  CHECK_NEAR(retried.state().value, expected.state().value, 0.0);
-  CHECK_NEAR(retried.errors().test, expected.errors().test, 0.0);
-  CHECK_NEAR(retried.errors().at, expected.errors().at, 0.0);
+  const auto record = stepper.advance();
+  CHECK(record.time > time);
+  CHECK(record.error <= 1.0);
+  CHECK_NEAR(stepper.time(), record.time, 0.0);
+  CHECK_NEAR(stepper.state().value, stepper.interpolate(record.time).value, 1e-14);
 }
-
-TEST_CASE("stepper: only the pending attempt can be settled, and only once")
-{
-  atstep::TimeStepper<Scalar> stepper(atstep::Settings {}, solve_decay);
-  CHECK_THROWS(stepper.time());
-  CHECK_THROWS(stepper.state());
-  CHECK_THROWS(stepper.advance());
-  stepper.start(0.0, Scalar {1.0}, 1.0);
-
-  // A stale attempt: the stepper has made another one since, and the state
-  // the older one pointed at is not the one being held.
-  auto stale = stepper.attempt(stepper.step_size());
-  auto fresh = stepper.attempt(stepper.step_size());
-  CHECK_THROWS(stepper.accept(std::move(stale)));
-  CHECK_THROWS(stepper.reject(std::move(stale)));
-  CHECK_THROWS(stepper.reject_convergence(std::move(stale)));
-
-  // A settled attempt is settled for good.
-  CHECK(fresh.passed());
-  stepper.accept(std::move(fresh));
-  CHECK_THROWS(stepper.accept(std::move(fresh)));
-
-  // The settlement the attempt calls for: an accepted step met the error
-  // test, a rejected one did not, and only a failed solve is a convergence
-  // rejection.
-  stepper.start(0.0, Scalar {1.0}, 1.0);
-  auto passed = stepper.attempt(stepper.step_size());
-  CHECK(passed.passed());
-  CHECK_THROWS(stepper.reject_convergence(std::move(passed)));
-}
-
-TEST_CASE("stepper: an attempt whose solve failed cannot be accepted")
-{
-  bool failing = false;
-  atstep::TimeStepper<Scalar> stepper(atstep::Settings {},
-    [&failing](const atstep::StepRequest<Scalar>& request, Scalar& y) {
-      if (failing)
-        return atstep::SolveOutcome {false, 40};
-      return solve_decay(request, y);
-    });
-  stepper.start(0.0, Scalar {1.0}, 1.0);
-  failing = true;
-  auto piece = stepper.attempt(stepper.step_size());
-  CHECK(not piece.solved());
-  CHECK_THROWS(stepper.accept(std::move(piece)));
-}
-
 TEST_CASE("stepper: advance takes one acceptable step and moves the run")
 {
   atstep::Settings settings;
@@ -723,11 +660,15 @@ TEST_CASE("stepper: advance takes one acceptable step and moves the run")
   CHECK(std::abs(other.state().value - exact(other.time())) < 1e-2);
 }
 
-TEST_CASE("history: a failed state copy preserves paired times and states")
+TEST_CASE("levels: a ring of the accepted steps, and a failed copy that leaves it alone")
 {
+  // A level pairs its state with its time in one object, so a copy that throws
+  // cannot leave the two sequences out of step. The ring holds the depth it
+  // was given: the oldest level is the one an accepted step overflows.
   struct State {
-    double value;
+    double value = 0.0;
     bool fail = false;
+    State() = default;
     State(double v, bool throws = false)
       : value(v)
       , fail(throws)
@@ -740,26 +681,38 @@ TEST_CASE("history: a failed state copy preserves paired times and states")
       if (fail)
         throw std::runtime_error("copy failed");
     }
+    State& operator=(const State&) = default;
   };
-  atstep::History<State> history;
-  history.push(1.0, State {2.0});
-  CHECK_THROWS(history.push(2.0, State {3.0, true}));
-  CHECK_THROWS(history.reset(3.0, State {4.0, true}));
-  CHECK_EQ(history.size(), 1U);
-  CHECK_EQ(history.time(0), 1.0);
-  CHECK_EQ(history.state(0).value, 2.0);
-  history.push(2.0, State {3.0});
-  CHECK_EQ(history.times()[1], 1.0);
-  history.keep(1);
-  CHECK_EQ(history.state(0).value, 3.0);
-  CHECK_THROWS(history.state(1));
-  history.pop();
-  history.pop();
-  CHECK(history.empty());
+  atstep::detail::Levels<State> levels;
+  levels.reserve(2);
+  levels.push(1.0, State {2.0});
+  CHECK_THROWS(levels.push(2.0, State {3.0, true}));
+  CHECK_THROWS(levels.reset(3.0, State {4.0, true}));
+  CHECK_EQ(levels.size(), 1U);
+  CHECK_EQ(levels.time(0), 1.0);
+  CHECK_EQ(levels.state(0).value, 2.0);
+
+  levels.push(2.0, State {3.0});
+  CHECK_EQ(levels.size(), 2U);
+  CHECK_EQ(levels.time(1), 1.0);
+  CHECK_EQ(levels.state(1).value, 2.0);
+  levels.push(3.0, State {5.0});
+  CHECK_EQ(levels.size(), 2U);
+  CHECK_EQ(levels.time(0), 3.0);
+  CHECK_EQ(levels.state(0).value, 5.0);
+  CHECK_EQ(levels.state(1).value, 3.0);
+  CHECK_THROWS(levels.state(2));
+
+  levels.reset(4.0, State {6.0});
+  CHECK_EQ(levels.size(), 1U);
+  CHECK_EQ(levels.time(0), 4.0);
+  CHECK_EQ(levels.state(0).value, 6.0);
 }
 
-TEST_CASE("stepper: invalid time increments never reach the solve callback")
+TEST_CASE("stepper: a start time the run cannot integrate from is refused")
 {
+  // The initialization steps are solves of the caller's, so a run that cannot
+  // be built must not reach one.
   int calls = 0;
   atstep::TimeStepper<Scalar> stepper(atstep::Settings {},
     [&](const atstep::StepRequest<Scalar>& request, Scalar& y) {
@@ -769,14 +722,8 @@ TEST_CASE("stepper: invalid time increments never reach the solve callback")
   const double infinity = std::numeric_limits<double>::infinity();
   CHECK_THROWS(stepper.start(-infinity, Scalar {1.0}, 1.0));
   CHECK_THROWS(stepper.start(0.0, Scalar {1.0}, infinity));
+  CHECK_THROWS(stepper.start(1.0, Scalar {1.0}, 1.0));
   CHECK_EQ(calls, 0);
   stepper.start(1.0, Scalar {1.0}, 2.0);
-  CHECK_EQ(calls, 2);
-  for (double step : {0.0, -1.0, infinity,
-         std::numeric_limits<double>::quiet_NaN(),
-         std::numeric_limits<double>::denorm_min()})
-    CHECK_THROWS(stepper.attempt(step));
-  CHECK_EQ(calls, 2);
-  const auto piece = stepper.attempt(stepper.step_size());
-  CHECK(piece.passed());
+  CHECK_EQ(calls, 2); // the two backward-Euler initialization steps
 }
