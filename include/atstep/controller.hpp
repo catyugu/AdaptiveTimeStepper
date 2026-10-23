@@ -80,14 +80,14 @@ namespace atstep {
     /// The order the next step is taken at.
     int order() const
     {
-      return error_controlled() ? order_ : settings_.manual_order;
+      return error_controlled() ? order_ : manual_order_;
     }
 
     /// Whether the local error governs the step. It does not in
     /// `StepMode::manual`, where the step is the model's own.
     bool error_controlled() const
     {
-      return settings_.step_mode != StepMode::manual;
+      return error_controlled_;
     }
 
     /// The smallest step the controller will propose, below which the error
@@ -150,7 +150,15 @@ namespace atstep {
     /// of `error` at `order` (see the deadbeat band above).
     double factor(double error, int order) const;
 
-    Settings settings_;
+    /// The configuration the control reads, taken from `Settings`. The
+    /// state-sized tolerances of one stay with the stepper and the norm.
+    bool error_controlled_ = true;
+    int min_order_ = 1;
+    int max_order_ = 5;
+    int manual_order_ = 2;
+    double manual_step_ = 0.0;
+    double first_step_fraction_ = 1e-3;
+
     double span_ = 0.0;
     double largest_ = 0.0;
     double smallest_ = 0.0;
@@ -193,7 +201,12 @@ namespace atstep {
   } // namespace ida
 
   inline StepController::StepController(const Settings& settings, double span)
-    : settings_(settings)
+    : error_controlled_(settings.step_mode != StepMode::manual)
+    , min_order_(settings.min_order)
+    , max_order_(settings.max_order)
+    , manual_order_(settings.manual_order)
+    , manual_step_(settings.manual_step)
+    , first_step_fraction_(settings.first_step_fraction)
     , span_(span)
     , largest_(span * settings.max_step_fraction)
     , smallest_(span * settings.min_step_fraction)
@@ -210,7 +223,7 @@ namespace atstep {
 
   inline double StepController::first_step(double derivative_norm) const
   {
-    double step = settings_.first_step_fraction * span_;
+    double step = first_step_fraction_ * span_;
     if (derivative_norm > 0.0)
       step = std::min(step, 0.5 / derivative_norm);
     return std::clamp(step, smallest_, largest_);
@@ -219,8 +232,8 @@ namespace atstep {
   inline void StepController::begin(double h)
   {
     h_ = std::clamp(h, smallest_, largest_);
-    manual_ = settings_.manual_step;
-    order_ = std::clamp(settings_.min_order, 1, settings_.max_order);
+    manual_ = manual_step_;
+    order_ = std::clamp(min_order_, 1, max_order_);
     used_order_ = 0;
     used_ = 0.0;
     ns_ = 0;
@@ -232,7 +245,7 @@ namespace atstep {
 
   inline void StepController::begin_attempt(double step, int order)
   {
-    order_ = std::clamp(order, 1, settings_.max_order);
+    order_ = std::clamp(order, 1, max_order_);
     if (step != used_ or order_ != used_order_)
       ns_ = 0;
     ns_ = std::min(ns_ + 1, used_order_ + 2);
@@ -276,7 +289,7 @@ namespace atstep {
       return; // the step and the order are the model's
 
     const int knew = suggested_order(errors);
-    if (knew == order_ - 1 or order_ == settings_.max_order)
+    if (knew == order_ - 1 or order_ == max_order_)
       phase_ = 1;
 
     if (phase_ == 0) {
@@ -298,7 +311,7 @@ namespace atstep {
     if (knew == order_ - 1) {
       action = Action::lower;
     }
-    else if (order_ == settings_.max_order) {
+    else if (order_ == max_order_) {
       action = Action::maintain;
     }
     else if (order_ + 1 >= ns_ or kdiff == 1) {
@@ -331,7 +344,7 @@ namespace atstep {
       --order_;
       next_error = *errors.below;
     }
-    order_ = std::clamp(order_, settings_.min_order, settings_.max_order);
+    order_ = std::clamp(order_, min_order_, max_order_);
     double eta = factor(next_error, order_);
     if (eta >= ida::eta_max_fx)
       eta /= std::max(1.0, eta * step * (1.0 / largest_));
@@ -358,7 +371,7 @@ namespace atstep {
       order_ = 1;
     else if (lower)
       --order_;
-    order_ = std::clamp(order_, settings_.min_order, settings_.max_order);
+    order_ = std::clamp(order_, min_order_, max_order_);
 
     double eta = ida::eta_min_ef;
     if (failures_ == 1) {

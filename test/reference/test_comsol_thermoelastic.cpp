@@ -87,8 +87,7 @@ TEST_CASE("comsol: reciprocal thermoelastic trajectories, derivatives and dissip
     CHECK(current_energy <= previous_energy + 1e-10);
     previous_energy = current_energy;
   };
-  hooks.on_step = [&](const atstep::StepRecord& record) {
-    const State y = stepper.history().state(0);
+  hooks.on_step = [&](const atstep::StepRecord& record, const State& y) {
     // Reciprocal coupling cancels from E': only dissipative losses remain.
     const double rate = 4.0 * y[0] * last_derivative[0] + y[1] * last_derivative[1] + y[2] * last_derivative[2];
     const double loss = 4.5 * y[1] * y[1] + 1.5 * y[2] * y[2];

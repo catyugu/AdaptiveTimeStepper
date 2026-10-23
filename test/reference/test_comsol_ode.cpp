@@ -133,7 +133,7 @@ TEST_CASE("comsol: full-precision trajectories, derivatives, orders and "
     std::vector<comsol::Sample> stored;
     std::vector<atstep::StepRecord> steps;
     atstep::RunHooks<State> hooks;
-    hooks.on_step = [&](const atstep::StepRecord& step) {
+    hooks.on_step = [&](const atstep::StepRecord& step, const State&) {
       steps.push_back(step);
     };
     hooks.on_store = [&](double t, const State& y, bool) {
