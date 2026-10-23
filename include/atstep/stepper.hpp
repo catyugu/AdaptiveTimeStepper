@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -81,15 +82,14 @@ private:
 
 /// What a step's solve is told about the step.
 ///
-/// The weights of the formula are all a first-order-in-time equation needs:
-/// with `a = request.formula->weights(1)`, the residual `M y' + K y = f` at
-/// `request.time` is
+/// A first-order equation uses the affine derivative `cj*y + known`, with
+/// `cj = derivative_weight()` and `known = derivative_history()`. Thus
+/// `M y' + K y = f` at `request.time` is
 ///
-///     sum_{j=0..k} a[j] M y_{n+1-j} + K y_{n+1} = f(t_{n+1}),
+///     (cj M + K) y_{n+1} = f(t_{n+1}) - M known.
 ///
-/// and an equation with a second time derivative reads `weights(2)` for `y''`
-/// as well — `settings.derivative_orders` says how many levels the formula
-/// carries. The levels the weights index are `request.levels`.
+/// `derivative(y)` evaluates it in correction form. Direct higher-derivative
+/// equations retain the classical level-based formula and its weights.
 template <class State>
 struct StepRequest {
     /// The time the step reaches.
@@ -102,6 +102,52 @@ struct StepRequest {
     const StepFormula* formula = nullptr;
     /// The levels behind the step, newest first: `levels->state(0)` is `y_n`.
     const History<State>* levels = nullptr;
+    /// The fixed-leading-coefficient first derivative is cj*y + history.
+    /// These are supplied for first-order systems, including manual steps.
+    /// The level-based formula remains available for higher derivatives.
+    const State* first_derivative_history = nullptr;
+    double cj = 0.0;
+    const State* predicted_state = nullptr;
+    const State* predicted_derivative = nullptr;
+    std::size_t step_index = 0;
+    const State* absolute_scale = nullptr;
+
+    const State& absolute_tolerance_reference() const
+    {
+        return absolute_scale ? *absolute_scale : previous();
+    }
+
+    double derivative_weight(int derivative = 1) const
+    {
+        return derivative == 1 and first_derivative_history
+            ? cj : formula->weights(derivative)[0];
+    }
+
+    State derivative_history(int derivative = 1) const
+    {
+        if (derivative == 1 and first_derivative_history)
+            return *first_derivative_history;
+        const auto weights = formula->weights(derivative);
+        State result = previous();
+        atstep::axpy(result, weights[1] - 1.0, previous());
+        for (std::size_t j = 2; j < weights.size(); ++j)
+            atstep::axpy(result, weights[j], previous(j - 1));
+        return result;
+    }
+
+    State derivative(const State& y, int derivative = 1) const
+    {
+        if (derivative == 1 and predicted_derivative) {
+            State correction = y;
+            atstep::axpy(correction, -1.0, *predicted_state);
+            State result = *predicted_derivative;
+            atstep::axpy(result, cj, correction);
+            return result;
+        }
+        State result = derivative_history(derivative);
+        atstep::axpy(result, derivative_weight(derivative), y);
+        return result;
+    }
 
     /// The level `j` behind the step, 0 being `y_n`.
     const State& previous(std::size_t level = 0) const
@@ -221,8 +267,9 @@ public:
 
     /// Prepare the run: the state at `time`, integrated to `end_time`.
     ///
-    /// The state is advanced by one artificial backward-Euler step of
-    /// `init_step_fraction` of the first step — COMSOL's consistent
+    /// The state is advanced by two artificial backward-Euler steps of
+    /// `init_step_fraction * first_step_fraction` of the span (of the manual
+    /// step in manual mode) — COMSOL's measured consistent
     /// initialization, which reconciles the initial values with the constraints
     /// of the equations and gives the time derivative the first step's size is
     /// read from. That step is a solve of the caller's, and its result is the
@@ -236,9 +283,17 @@ public:
         end_time_ = end_time;
         span_ = end_time - time;
         controller_ = StepController(settings_, span_);
+        if constexpr (std::is_same_v<Norm, WeightedRmsNorm>)
+            norm_.step_index = 0;
+        has_previous_ee_ = false;
+        previous_order_ = 0;
+        last_order_ = 1;
+        derivative_ = initial;
+        atstep::axpy(derivative_, -1.0, initial);
+        probe_ = 1.0;
 
         history_.reset(time, initial);
-        initial_ = initial;
+        scale_reference_ = initial;
 
         // An equation of the second order in time has no derivative inside the
         // state, so there is nothing for the initialization step to measure:
@@ -247,7 +302,8 @@ public:
         // first-order system in `(y, y')`, which is how COMSOL states it.
         const double probe = settings_.derivative_orders >= 2
             ? 0.0
-            : span_ * settings_.first_step_fraction
+            : (settings_.step_mode == StepMode::manual ? settings_.manual_step : span_)
+                * settings_.first_step_fraction
                 * settings_.init_step_fraction;
         if (probe <= 0.0) {
             controller_.begin(controller_.first_step(0.0));
@@ -257,19 +313,24 @@ public:
 
         const StepFormula probe_formula(1,
             std::span<const double>(&probe, 1), settings_.derivative_orders);
-        StepRequest<State> request {time + probe, probe, 1, &probe_formula,
-            &history_};
+        // COMSOL's backward-Euler initialization advances twice. Its stored
+        // initial state is the second result, labeled with the start time.
         work_ = initial;
-        const SolveOutcome outcome = solve_(request, work_);
-        if (not outcome.converged)
-            throw std::runtime_error(
-                "atstep: the initialization step of the run at t = "
-                + std::to_string(time) + " did not converge");
+        for (int j = 1; j <= 2; ++j) {
+            StepRequest<State> request {time + static_cast<double>(j) * probe,
+                probe, 1, &probe_formula, &history_};
+            const SolveOutcome outcome = solve_(request, work_);
+            if (not outcome.converged)
+                throw std::runtime_error(
+                    "atstep: the initialization step of the run at t = "
+                    + std::to_string(time) + " did not converge");
+            scratch_ = work_;
+            atstep::axpy(scratch_, -1.0, history_.state(0));
+            history_.reset(request.time, work_);
+        }
 
         // The time derivative the first step is read from and predicted by:
         // the increment of the initialization step over its size.
-        scratch_ = work_;
-        atstep::axpy(scratch_, -1.0, initial);
         const double derivative_norm = norm_(scratch_, work_) / probe;
 
         // The initialization step is not a level of the scheme: its interval is
@@ -280,8 +341,19 @@ public:
         // no history at all.
         derivative_ = scratch_;
         probe_ = probe;
-        history_.reset(time + probe, work_);
+        history_.reset(time + 2.0 * probe, work_);
+        scale_reference_ = work_;
         controller_.begin(controller_.first_step(derivative_norm));
+        if (fixed_leading()) {
+            for (State& column : phi_) {
+                column = work_;
+                atstep::axpy(column, -1.0, work_);
+            }
+            phi_[0] = work_;
+            atstep::axpy(phi_[1], controller_.step_size() / probe, derivative_);
+            psi_.fill(0.0);
+            psi_[0] = controller_.step_size();
+        }
         started_ = true;
     }
 
@@ -324,10 +396,21 @@ public:
         controller_.begin_attempt(step, order);
         result.order = order;
 
-        predictor(step);
+        if (fixed_leading())
+            prepare_fixed_leading(step, order);
+        else
+            predictor(step);
         work_ = predictor_;
         StepRequest<State> request {result.time, step, order, &formula_,
             &history_};
+        if (fixed_leading()) {
+            request.first_derivative_history = &derivative_history_;
+            request.cj = cj_;
+            request.predicted_state = &predictor_;
+            request.predicted_derivative = &derivative_predictor_;
+            request.step_index = static_cast<std::size_t>(controller_.steps());
+            request.absolute_scale = &scale_reference_;
+        }
         const SolveOutcome outcome = solve_(request, work_);
         result.iterations = outcome.iterations;
         if (not outcome.converged)
@@ -335,6 +418,10 @@ public:
         result.solved = true;
 
         if (not controller_.error_controlled()) {
+            if (fixed_leading()) {
+                ee_ = work_;
+                atstep::axpy(ee_, -1.0, predictor_);
+            }
             result.passed = true;
             return result;
         }
@@ -346,10 +433,26 @@ public:
     /// Commit the step `attempt` produced.
     void accept(const Attempt& attempt)
     {
+        if (fixed_leading()) {
+            last_derivative_ = derivative_predictor_;
+            atstep::axpy(last_derivative_, cj_, ee_);
+        }
         history_.push(attempt.time, work_);
         history_.keep(static_cast<std::size_t>(max_levels));
         last_order_ = attempt.order;
+        if (fixed_leading()) {
+            const auto k = static_cast<std::size_t>(attempt.order);
+            trial_phi_[k + 1] = ee_;
+            atstep::axpy(trial_phi_[k], 1.0, ee_);
+            for (std::size_t j = k; j > 0; --j)
+                atstep::axpy(trial_phi_[j - 1], 1.0, trial_phi_[j]);
+            phi_ = trial_phi_;
+            psi_ = trial_psi_;
+        }
         controller_.accept(attempt.errors, attempt.step);
+        scale_reference_ = work_;
+        if constexpr (std::is_same_v<Norm, WeightedRmsNorm>)
+            norm_.step_index = static_cast<std::size_t>(controller_.steps());
         if (controller_.error_controlled()) {
             previous_ee_ = ee_;
             previous_order_ = attempt.order;
@@ -392,11 +495,11 @@ public:
         RunReport report;
         double time = history_.time(0);
 
-        // The value at the start time is the one the caller gave: the
-        // initialization step is not a step of the stepping.
+        // COMSOL labels the state left by consistent initialization with the
+        // requested start time; the initialization solves are not accepted steps.
         std::size_t next = 0;
         if (output_times[0] == start_time_) {
-            store(start_time_, initial_, false, hooks, report);
+            store(start_time_, history_.state(0), false, hooks, report);
             next = 1;
         }
 
@@ -405,29 +508,46 @@ public:
             const double target
                 = next < output_times.size() ? output_times[next] : end_time_;
             double step = controller_.step_size();
+            const std::size_t intermediate_index = next + (landed ? 1U : 0U);
+            const double intermediate_target = intermediate_index < output_times.size()
+                ? output_times[intermediate_index] : std::numeric_limits<double>::infinity();
+            const bool intermediate_landing = settings_.step_mode == StepMode::intermediate
+                and time + step >= intermediate_target;
             switch (settings_.step_mode) {
             case StepMode::strict:
-                // Every step ends at an output time.
-                step = std::min(step, target - time);
+                // COMSOL avoids a tiny remainder: split the last two steps
+                // equally if one full proposed step would leave less than one.
+                step = landing_step(step, time, target);
                 break;
             case StepMode::intermediate:
                 // Every subinterval holds at least one step: this one is cut
                 // short to land inside the current one.
-                if (not landed and time + step >= target)
-                    step = 0.5 * (target - time);
+                if (intermediate_landing)
+                    step = (intermediate_target - time)
+                        * (1.0 - 4.0 * std::numeric_limits<double>::epsilon());
                 break;
             case StepMode::free:
             case StepMode::manual:
                 break;
             }
-            if (not settings_.interpolate_end_time)
-                step = std::min(step, end_time_ - time);
+            if (not settings_.interpolate_end_time) {
+                step = landing_step(step, time, end_time_);
+            }
             if (not(step > 0.0))
                 throw std::runtime_error(
                     "atstep: no step is left at t = " + std::to_string(time));
 
             const double from = time;
-            const Attempt piece = attempt(step);
+            Attempt piece = attempt(step);
+            const double boundary = intermediate_landing ? intermediate_target
+                : (settings_.step_mode == StepMode::strict ? target : end_time_);
+            if ((settings_.step_mode == StepMode::strict
+                    or intermediate_landing
+                    or not settings_.interpolate_end_time)
+                and std::abs(piece.time - boundary)
+                    <= 4.0 * std::numeric_limits<double>::epsilon()
+                        * (std::abs(time) + std::abs(boundary)))
+                piece.time = boundary;
             if (not piece.solved) {
                 ++report.failed_solves;
                 if (piece.step <= controller_.smallest_step())
@@ -464,36 +584,131 @@ public:
                     time, piece.step, piece.order, piece.iterations,
                     piece.errors.test});
 
-            if (settings_.store_mode == StoreMode::steps)
-                store(time, history_.state(0), false, hooks, report);
-            const std::size_t reached = next;
-            next = store_outputs(next, from, time, output_times, hooks, report);
-            // A step that reached no output time ended inside the interval it
-            // started in, which is what `intermediate` asks of every interval.
-            landed = next == reached;
+            if (settings_.store_mode == StoreMode::steps) {
+                if (time > end_time_ and settings_.interpolate_end_time)
+                    store(end_time_, interpolate(end_time_), true, hooks, report);
+                else
+                    store(time, history_.state(0), false, hooks, report);
+            }
+            next = store_outputs(next, time, output_times, hooks, report);
+            // A step crossing an output time can already lie inside the next
+            // interval. Count that landing instead of forcing another step.
+            landed = next > 0 and time > output_times[next - 1];
         }
         return report;
     }
 
-    /// The interpolated state at `time`, from the polynomial through the levels
-    /// the history holds — the polynomial the scheme defines between them, so
-    /// it reproduces a level exactly at that level's own time. The result is
-    /// kept in the stepper: a second call overwrites it.
-    const State& interpolate(double time)
+    /// The dense-output value (derivative=0) or first derivative (derivative=1).
+    /// At the newest level the stored derivative is the actual solve derivative;
+    /// inside a step it is the derivative of the BDF dense-output polynomial.
+    /// The result is kept in the stepper: another call can overwrite it.
+    const State& interpolate(double time, int derivative = 0)
     {
+        if (derivative < 0 or derivative > 1)
+            throw std::invalid_argument("atstep: interpolation supports value or first derivative");
+        if (fixed_leading()) {
+            if (derivative == 1 and time == history_.time(0))
+                return last_derivative_;
+            const double delta = time - history_.time(0);
+            double coefficient = 1.0;
+            double slope = 0.0;
+            double gamma = delta / psi_[0];
+            interpolated_ = phi_[0];
+            if (derivative == 1)
+                atstep::axpy(interpolated_, -1.0, phi_[0]);
+            for (int j = 1; j <= last_order_; ++j) {
+                slope = slope * gamma
+                    + coefficient / psi_[static_cast<std::size_t>(j - 1)];
+                coefficient *= gamma;
+                atstep::axpy(interpolated_, derivative == 0 ? coefficient : slope,
+                    phi_[static_cast<std::size_t>(j)]);
+                gamma = (delta + psi_[static_cast<std::size_t>(j - 1)])
+                    / psi_[static_cast<std::size_t>(j)];
+            }
+            return interpolated_;
+        }
         const std::size_t count = std::min<std::size_t>(
             static_cast<std::size_t>(last_order_) + 1, history_.size());
         std::array<double, max_levels> nodes {};
         for (std::size_t j = 0; j < count; ++j)
             nodes[j] = history_.time(j) - time;
-        const auto weights = lagrange_value(
+        const auto weights = lagrange_derivative(
             std::span<const double>(nodes.data(), count), 0.0,
-            static_cast<int>(count));
+            derivative, static_cast<int>(count));
         combine(interpolated_, std::span<const double>(weights.data(), count));
         return interpolated_;
     }
 
 private:
+    double error_norm(const State& error)
+    {
+        if constexpr (std::is_same_v<Norm, WeightedRmsNorm>)
+            return norm_(error, history_.state(0), scale_reference_);
+        else
+            return norm_(error, history_.state(0));
+    }
+
+    static double landing_step(double step, double time, double target)
+    {
+        const double remaining = target - time;
+        const double fuzz = 4.0 * std::numeric_limits<double>::epsilon()
+            * (std::abs(time) + std::abs(target));
+        if (time + step > target) {
+            return remaining * (1.0 - 4.0 * std::numeric_limits<double>::epsilon());
+        }
+        if (std::abs(time + step - target) <= fuzz)
+            return step;
+        return 2.0 * step > remaining ? 0.5 * remaining : step;
+    }
+
+    bool fixed_leading() const
+    {
+        return settings_.derivative_orders == 1;
+    }
+
+    void prepare_fixed_leading(double step, int order)
+    {
+        trial_phi_ = phi_;
+        trial_psi_ = psi_;
+        if (controller_.steps() == 0) {
+            trial_psi_[0] = step;
+            trial_phi_[1] = derivative_;
+            atstep::axpy(trial_phi_[1], step / probe_ - 1.0, derivative_);
+        }
+        predictor_ = phi_[0];
+        derivative_history_ = phi_[0];
+        atstep::axpy(derivative_history_, -1.0, phi_[0]);
+        double beta = 1.0;
+        double distance = step;
+        double alpha = 1.0;
+        double gamma = 0.0;
+        double alpha0 = -1.0;
+        double harmonic = 0.0;
+        sigma_[0] = 1.0;
+        for (int i = 1; i <= order; ++i) {
+            const auto j = static_cast<std::size_t>(i);
+            const double old_distance = trial_psi_[j - 1];
+            trial_psi_[j - 1] = distance;
+            beta *= distance / old_distance;
+            distance = old_distance + step;
+            gamma += alpha / step;
+            alpha = step / distance;
+            if (i < order)
+                alpha0 -= alpha;
+            harmonic += 1.0 / static_cast<double>(i);
+            sigma_[j] = static_cast<double>(i) * sigma_[j - 1] * alpha;
+            State column = trial_phi_[j];
+            atstep::axpy(trial_phi_[j], beta - 1.0, column);
+            atstep::axpy(predictor_, 1.0, trial_phi_[j]);
+            atstep::axpy(derivative_history_, gamma, trial_phi_[j]);
+        }
+        trial_psi_[static_cast<std::size_t>(order)] = distance;
+        ck_ = std::max(alpha, std::abs(alpha - harmonic - alpha0));
+        cj_ = harmonic / step;
+        derivative_predictor_ = derivative_history_;
+        atstep::axpy(derivative_history_, -cj_, predictor_);
+    }
+
     void require_started() const
     {
         if (not started_)
@@ -534,7 +749,28 @@ private:
         StepErrors errors;
         ee_ = work_;
         atstep::axpy(ee_, -1.0, predictor_);
-        const double enorm = norm_(ee_, work_);
+        // IDA fixes the weights from the last accepted state before attempting
+        // a step; every estimate and retry uses those same weights.
+        const double enorm = error_norm(ee_);
+        if (fixed_leading()) {
+            const auto k = static_cast<std::size_t>(order);
+            errors.test = ck_ * enorm;
+            errors.at = sigma_[k] * enorm;
+            scratch_ = ee_;
+            if (order >= 2) {
+                atstep::axpy(scratch_, 1.0, trial_phi_[k]);
+                errors.below = sigma_[k - 1] * error_norm(scratch_);
+            }
+            if (order >= 3) {
+                atstep::axpy(scratch_, 1.0, trial_phi_[k - 1]);
+                errors.below2 = sigma_[k - 2] * error_norm(scratch_);
+            }
+            scratch_ = ee_;
+            atstep::axpy(scratch_, -1.0, trial_phi_[k + 1]);
+            errors.above = error_norm(scratch_)
+                / static_cast<double>(order + 2);
+            return errors;
+        }
         errors.test = formula_.ck() * enorm;
         errors.at = formula_.sigma(order) * enorm;
 
@@ -550,7 +786,7 @@ private:
         if (has_previous_ee_ and previous_order_ == order) {
             scratch_ = ee_;
             atstep::axpy(scratch_, -1.0, previous_ee_);
-            errors.above = norm_(scratch_, work_) / static_cast<double>(order + 2);
+            errors.above = error_norm(scratch_) / static_cast<double>(order + 2);
         }
         return errors;
     }
@@ -561,18 +797,19 @@ private:
     {
         combine(scratch_, weights);
         atstep::axpy(scratch_, -1.0, work_);
-        return norm_(scratch_, work_);
+        return error_norm(scratch_);
     }
 
     void store(double time, const State& state, bool interpolated,
         const RunHooks<State>& hooks, RunReport& report)
     {
         ++report.stored;
+        scale_reference_ = state;
         if (hooks.on_store)
             hooks.on_store(time, state, interpolated);
     }
 
-    std::size_t store_outputs(std::size_t next, double from, double to,
+    std::size_t store_outputs(std::size_t next, double to,
         std::span<const double> output_times, const RunHooks<State>& hooks,
         RunReport& report)
     {
@@ -583,13 +820,13 @@ private:
                 store(target, interpolate(target), true, hooks, report);
                 break;
             case StoreMode::closest: {
-                // The solver step closest to the output time, among the steps
-                // that passed it: the one just taken, or the level it started
-                // from.
-                const bool nearer_start
-                    = std::abs(target - from) < std::abs(target - to);
-                store(nearer_start ? from : to,
-                    history_.state(nearer_start ? 1 : 0), false, hooks, report);
+                // COMSOL's tstepsclosest stores the first step that reaches an
+                // output time, even if the preceding step is nearer to it.
+                if (target == end_time_ and to > end_time_
+                    and settings_.interpolate_end_time)
+                    store(target, interpolate(target), true, hooks, report);
+                else
+                    store(to, history_.state(0), false, hooks, report);
                 break;
             }
             case StoreMode::steps:
@@ -617,7 +854,6 @@ private:
     /// The buffers of a step: the initial state, the predictor the solve starts
     /// from, the state it produces, the correction of the step, the previous
     /// step's correction, a scratch state, and the interpolated state.
-    State initial_ {};
     State derivative_ {};
     State predictor_ {};
     State work_ {};
@@ -625,6 +861,17 @@ private:
     State previous_ee_ {};
     State scratch_ {};
     State interpolated_ {};
+    State derivative_history_ {};
+    State derivative_predictor_ {};
+    State last_derivative_ {};
+    State scale_reference_ {};
+    std::array<State, max_levels> phi_ {};
+    std::array<State, max_levels> trial_phi_ {};
+    std::array<double, max_levels> psi_ {};
+    std::array<double, max_levels> trial_psi_ {};
+    std::array<double, max_levels> sigma_ {};
+    double cj_ = 0.0;
+    double ck_ = 0.5;
     bool has_previous_ee_ = false;
     int previous_order_ = 0;
     int last_order_ = 1;

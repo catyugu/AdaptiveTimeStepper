@@ -117,23 +117,34 @@ atstep::TimeStepper<DistributedVector> stepper(settings, solve,
 
 ## The equations
 
-The solver is given the weights of the step, and nothing else. With
-`a = request.formula->weights(1)` and `b = request.formula->weights(2)`, a
-residual
+For a first-order system the request supplies an affine derivative:
+
+```cpp
+const double cj = request.derivative_weight();
+const auto known = request.derivative_history();
+// y' = cj * y + known
+```
+
+Thus a residual
 
 ```text
-M y' + C y'' + K y = f(t)
+M y' + K y = f(t)
 ```
 
 at `request.time` is
 
 ```text
-sum_j a[j] M y_{n+1-j} + sum_j b[j] C y_{n+1-j} + K y_{n+1} = f(t_{n+1}),
+(cj M + K) y_{n+1} = f(t_{n+1}) - M known.
 ```
 
-with the levels `request.previous(j - 1)`. Any vectors, any matrices, any
-linear solver. See `examples/` for a finite element assembly, a nonlinear
-Newton loop, and a system with inertia.
+`request.derivative(y)` evaluates the derivative without subtracting large
+history terms. Any vectors, any matrices, any linear solver. See `examples/`
+for a finite element assembly, a nonlinear Newton loop, and a system with inertia.
+
+This replaces assembling adaptive first derivatives from
+`request.formula->weights(1)`. Those are classical, level-based BDF weights;
+COMSOL's fixed-leading-coefficient BDF has a different history after a step
+change. The formula remains available for directly discretized higher derivatives.
 
 A step of `request.time` is handed a state holding the predictor of the history
 — a good initial guess — and must leave it holding the solution.
@@ -141,7 +152,7 @@ A step of `request.time` is handed a state holding the predictor of the history
 ## Settings
 
 Every default is COMSOL's, read back from a COMSOL 6.2 Time-Dependent Solver
-node (see [docs/comsol-alignment.md](docs/comsol-alignment.md)):
+node (see [doc/comsol-alignment.md](doc/comsol-alignment.md)):
 
 | Setting | Default | COMSOL |
 | --- | --- | --- |
@@ -166,8 +177,8 @@ interpolated from the scheme's polynomial.
 `intermediate` — the same, but every subinterval between two output times holds
 at least one step.
 
-`strict` — every step ends at an output time; the solver takes the steps its
-tolerance needs in between.
+`strict` — the solver lands on each output time, taking the steps its tolerance
+needs in between and splitting the last two steps when needed.
 
 `manual` — a step of the model's own (`manual_step`), with the error test off.
 The tolerances still terminate the algebraic solves, and a solve that does not
@@ -178,7 +189,8 @@ converge still halves the step.
 `interpolate` — the value at every output time, from the polynomial through the
 levels around it (which is exact at a level).
 
-`closest` — the solver step closest to each output time.
+`closest` — COMSOL's `tstepsclosest`: the first solver step that reaches each
+output time. The final output can still be interpolated.
 
 `steps` — the solver's own steps.
 
@@ -192,7 +204,10 @@ mean square of its correction is at most one:
 ```
 
 `A` is `R * absolute_factor`, or with `scale_absolute_tolerance` (COMSOL's
-default) the scaled form `R * absolute_factor * (beta + ||y||_2)`. Below the
+default) the scaled form `R * absolute_factor * (beta + ||y||_2)`, where
+`beta = (1 - exp(-j/5)) ||y||_inf + exp(-j/5)` below unit magnitude and `j`
+counts accepted steps. Interpolated output updates this absolute scale;
+the relative part continues to use the last accepted internal state. Below the
 absolute tolerance there is no accuracy at all — COMSOL's own wording — so a
 solution that decays past it is not held to a relative accuracy.
 
@@ -230,17 +245,17 @@ its own and driven over any number of fields:
 - the order is reconsidered only after `q + 2` steps at a constant size and
   order, from the truncation error norms `(j + 1) err_j`.
 
-The local error estimate is the correction of the step — the distance between
-the corrected state and the value the predictor extrapolated to it — at the
-orders below and above as well, scaled by IDA's `sigma`. The predictor is the
-polynomial through the levels before the step, which is also the polynomial the
-step's own weights differentiate: one formula serves both.
+The predictor, derivative and error estimates use an evolving array of scaled
+divided differences. Each trial rescales a copy of this history; only an accepted
+step commits it. The leading derivative coefficient is `H_k / h`, where `H_k`
+is the harmonic number. Reconstructing a classical BDF formula from the last
+time levels does not give the same method after a step or order change.
 
 ## Documentation
 
-- [docs/design.md](docs/design.md) — the layers, the algorithm, and why.
-- [docs/comsol-alignment.md](docs/comsol-alignment.md) — what was measured
-  against COMSOL 6.2, how far it agrees, and why it does not agree exactly.
+- [doc/design.md](doc/design.md) — the layers, the algorithm, and why.
+- [doc/comsol-alignment.md](doc/comsol-alignment.md) — full-precision comparisons
+  with COMSOL 6.2, the confirmed differences from earlier assumptions, and scope.
 - [doc/research/comsol-time-dependent-solver.md](doc/research/comsol-time-dependent-solver.md)
   — the documentation study the settings and the rules were read from.
 
@@ -252,7 +267,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-44 test cases: the weights against every polynomial they must differentiate
+50 test cases: the weights against every polynomial they must differentiate
 exactly, the control laws against IDA's, the order of convergence of the orders
 1 to 5, the accuracy against the tolerance, the four step modes, the three store
 modes, the initialization step, the generic state and norm, and the COMSOL
@@ -269,9 +284,10 @@ reference runs.
   `examples/second_order.cpp` — and the order is the scheme's own.
 - Generalized alpha, Runge-Kutta, events and model reduction are out of scope:
   this is the BDF time stepping of the solver, not the solver.
-- The step sequence is close to COMSOL's but not identical; the startup, the
-  modes and the maximum step match exactly, and the difference afterwards is
-  measured in [docs/comsol-alignment.md](docs/comsol-alignment.md).
+- Exact trajectory comparisons require matching the caller's algebraic solve.
+  COMSOL's default reused Jacobian does not produce the same states as an exact
+  linear solve. Both strategies are checked independently against COMSOL in
+  [21 recorded scalar configurations](doc/comsol-alignment.md).
 
 ## License
 

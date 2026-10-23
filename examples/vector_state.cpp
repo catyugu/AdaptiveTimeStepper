@@ -23,15 +23,10 @@ struct Brusselator {
         const atstep::StepRequest<std::vector<double>>& request,
         std::vector<double>& y) const
     {
-        const auto w = request.formula->weights(1);
-        const double a0 = w[0];
-
-        double history_u = 0.0;
-        double history_v = 0.0;
-        for (std::size_t j = 1; j < w.size(); ++j) {
-            history_u += w[j] * request.previous(j - 1)[0];
-            history_v += w[j] * request.previous(j - 1)[1];
-        }
+        const double a0 = request.derivative_weight();
+        const auto known = request.derivative_history();
+        const double history_u = known[0];
+        const double history_v = known[1];
 
         const auto residual = [&](const std::vector<double>& x, double out[2]) {
             out[0] = a0 * x[0] - (a + x[0] * x[0] * x[1] - 4.4 * x[0]) + history_u;

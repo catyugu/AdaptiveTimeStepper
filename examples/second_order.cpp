@@ -30,17 +30,12 @@ struct Oscillator {
     atstep::SolveOutcome solve(
         const atstep::StepRequest<State>& request, State& y) const
     {
-        const auto a = request.formula->weights(1);
-        double ru = 0.0;
-        double rv = 0.0;
-        for (std::size_t j = 1; j < a.size(); ++j) {
-            const State& older = request.previous(j - 1);
-            ru -= a[j] * older.u;
-            rv -= a[j] * older.v;
-        }
+        const auto known = request.derivative_history();
+        const double ru = -known.u;
+        const double rv = -known.v;
         // a0 u - v = ru  and  u + (a0 + c) v = rv: the two-by-two system the
         // coupled equations make at the new level.
-        const double a0 = a[0];
+        const double a0 = request.derivative_weight();
         const double determinant = a0 * (a0 + damping) + 1.0;
         y.u = (ru * (a0 + damping) + rv) / determinant;
         y.v = (a0 * rv - ru) / determinant;

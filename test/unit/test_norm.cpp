@@ -81,6 +81,7 @@ TEST_CASE("norm: below a magnitude of one the scaled tolerance is interpolated")
     scaled.scaled = true;
 
     const double magnitude = 0.5;
+    scaled.step_index = 1;
     const double beta = (1.0 - std::exp(-0.2)) * magnitude + std::exp(-0.2);
     const double weight = 1e-3 * (beta + magnitude) + 1e-2 * magnitude;
     CHECK_NEAR(scaled(std::vector<double> {weight}, std::vector<double> {magnitude}),
@@ -91,10 +92,41 @@ TEST_CASE("norm: below a magnitude of one the scaled tolerance is interpolated")
     CHECK_NEAR(scaled(std::vector<double> {1e-3}, std::vector<double> {0.0}), 1.0,
         1e-12);
 }
+TEST_CASE("norm: scaled absolute tolerance follows the time-step index")
+{
+    atstep::WeightedRmsNorm norm;
+    norm.scaled = true;
+    const double magnitude = 1e-4;
+    for (std::size_t j : {std::size_t {0}, std::size_t {1}, std::size_t {25},
+             std::size_t {100}}) {
+        norm.step_index = j;
+        const double decay = std::exp(-static_cast<double>(j) / 5.0);
+        const double beta = (1.0 - decay) * magnitude + decay;
+        const double weight = norm.absolute * (beta + magnitude)
+            + norm.relative * magnitude;
+        CHECK_NEAR(norm(of({weight}), of({magnitude})), 1.0, 1e-12);
+    }
+    norm.scaled = false;
+    CHECK_NEAR(norm(of({0.001001}), of({magnitude})), 1.0, 1e-12);
+}
 TEST_CASE("norm: an empty state is no error at all")
 {
     atstep::WeightedRmsNorm norm;
     CHECK_NEAR(norm(std::vector<double> {}, std::vector<double> {}), 0.0, 0.0);
+}
+
+TEST_CASE("norm: interpolation changes the absolute scale but not the relative reference")
+{
+    atstep::WeightedRmsNorm norm;
+    norm.scaled = true;
+    norm.step_index = 25;
+    const double internal = 0.2;
+    const double returned = 0.3;
+    const double decay = std::exp(-5.0);
+    const double beta = (1.0 - decay) * returned + decay;
+    const double weight = norm.absolute * (beta + returned) + norm.relative * internal;
+    CHECK_NEAR(norm(of({weight}), of({internal}), of({returned})), 1.0, 1e-12);
+    CHECK(norm(of({weight}), of({internal})) > 1.0);
 }
 
 TEST_CASE("norm: std::vector is a state the stepper takes")

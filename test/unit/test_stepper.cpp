@@ -29,11 +29,8 @@ double exact(double t) { return std::exp(-t); }
 atstep::SolveOutcome solve_decay(
     const atstep::StepRequest<Scalar>& request, Scalar& y)
 {
-    const auto a = request.formula->weights(1);
-    double rhs = 0.0;
-    for (std::size_t j = 1; j < a.size(); ++j)
-        rhs -= a[j] * request.previous(j - 1).value;
-    y.value = rhs / (a[0] + 1.0);
+    y.value = -request.derivative_history().value
+        / (request.derivative_weight() + 1.0);
     return atstep::SolveOutcome {true, 1};
 }
 
@@ -202,15 +199,11 @@ TEST_CASE("stepper: the inertia of a second-order equation, as a first-order sys
     };
 
     const auto solve = [](const atstep::StepRequest<Block>& request, Block& y) {
-        const auto a = request.formula->weights(1);
-        double ru = 0.0;
-        double rv = 0.0;
-        for (std::size_t j = 1; j < a.size(); ++j) {
-            ru -= a[j] * request.previous(j - 1).u;
-            rv -= a[j] * request.previous(j - 1).v;
-        }
+        const auto known = request.derivative_history();
+        const double ru = -known.u;
+        const double rv = -known.v;
         // a0*u - v = ru,  u + (a0 + 0.1)*v = rv
-        const double a0 = a[0];
+        const double a0 = request.derivative_weight();
         const double det = a0 * (a0 + 0.1) + 1.0;
         y.u = (ru * (a0 + 0.1) + rv) / det;
         y.v = (a0 * rv - ru) / det;
@@ -288,10 +281,10 @@ TEST_CASE("stepper: the initialization step is a thousandth of the first step")
             return solve_decay(request, y);
         });
     stepper.start(0.0, Scalar {1.0}, 10.0);
-    CHECK_EQ(calls, 1);
+    CHECK_EQ(calls, 2);
     CHECK_NEAR(probe, 10.0 * 1e-3 * 1e-3, 1e-12);
     CHECK_EQ(stepper.history().size(), std::size_t {1});
-    CHECK_NEAR(stepper.history().time(0), probe, 1e-12);
+    CHECK_NEAR(stepper.history().time(0), 2.0 * probe, 1e-12);
     // The first step of the run is the one the derivative justifies: the
     // weight of a dof of value one is `0.01 * (1 + 0.1)`, so the derivative is
     // 90.9 and the step is 0.5 / 90.9, well below the 0.01 of the span rule.
@@ -442,7 +435,7 @@ TEST_CASE("stepper: a solve that does not converge is retried at a quarter")
             // The third attempt of the run fails, as a nonlinear solve whose
             // iteration exhausted would.
             static int calls = 0;
-            if (++calls == 2)
+            if (++calls == 3)
                 return atstep::SolveOutcome {false, 40};
             return solve_decay(request, y);
         });
@@ -487,11 +480,8 @@ TEST_CASE("stepper: a state and a norm of the caller's own")
     settings.max_order = 2;
     atstep::TimeStepper<Own, decltype(norm)> stepper(settings,
         [](const atstep::StepRequest<Own>& request, Own& y) {
-            const auto a = request.formula->weights(1);
-            double rhs = 0.0;
-            for (std::size_t j = 1; j < a.size(); ++j)
-                rhs -= a[j] * request.previous(j - 1).v;
-            y.v = rhs / (a[0] + 1.0);
+            y.v = -request.derivative_history().v
+                / (request.derivative_weight() + 1.0);
             return atstep::SolveOutcome {true, 1};
         },
         norm);
@@ -512,4 +502,51 @@ TEST_CASE("stepper: a schedule the run cannot follow is refused")
     CHECK_THROWS(stepper.run(std::vector<double> {0.0, 0.5, 0.5, 1.0})); // not increasing
     CHECK_THROWS(stepper.run(std::vector<double> {0.1, 1.0})); // not the start
     CHECK_THROWS(stepper.start(0.0, Scalar {1.0}, 0.0));
+}
+
+TEST_CASE("stepper: restarting reproduces the complete adaptive trajectory")
+{
+    atstep::TimeStepper<Scalar> stepper(atstep::Settings {}, solve_decay);
+    const std::vector<double> times {0.0, 0.2, 0.5, 1.0};
+    std::vector<atstep::StepRecord> first;
+    for (int run = 0; run < 2; ++run) {
+        stepper.start(0.0, Scalar {1.0}, 1.0);
+        std::vector<atstep::StepRecord> records;
+        atstep::RunHooks<Scalar> hooks;
+        hooks.on_step = [&](const atstep::StepRecord& record) { records.push_back(record); };
+        stepper.run(times, hooks);
+        if (run == 0)
+            first = records;
+        else {
+            CHECK_EQ(records.size(), first.size());
+            for (std::size_t i = 0; i < std::min(records.size(), first.size()); ++i) {
+                CHECK_NEAR(records[i].time, first[i].time, 0.0);
+                CHECK_EQ(records[i].order, first[i].order);
+                CHECK_NEAR(records[i].error, first[i].error, 0.0);
+            }
+        }
+    }
+}
+
+TEST_CASE("stepper: a rejected trial does not alter the accepted BDF history")
+{
+    atstep::TimeStepper<Scalar> stepper(atstep::Settings {}, solve_decay);
+    stepper.start(0.0, Scalar {1.0}, 10.0);
+    for (int i = 0; i < 8; ++i) {
+        const auto piece = stepper.attempt(stepper.step_size());
+        CHECK(piece.passed);
+        stepper.accept(piece);
+    }
+    const double time = stepper.history().time(0);
+    const double value = stepper.history().state(0).value;
+    const double h = stepper.step_size();
+    const auto first = stepper.attempt(h);
+    stepper.reject_convergence(first);
+    CHECK_NEAR(stepper.history().time(0), time, 0.0);
+    CHECK_NEAR(stepper.history().state(0).value, value, 0.0);
+    const auto retried = stepper.attempt(h);
+    CHECK_EQ(retried.order, first.order);
+    CHECK_NEAR(retried.errors.test, first.errors.test, 0.0);
+    CHECK_NEAR(retried.errors.at, first.errors.at, 0.0);
+    CHECK_NEAR(retried.errors.below.value(), first.errors.below.value(), 0.0);
 }

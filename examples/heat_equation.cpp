@@ -33,13 +33,11 @@ struct Rod {
         const atstep::StepRequest<std::vector<double>>& request,
         std::vector<double>& u) const
     {
-        const auto a = request.formula->weights(1);
+        const double a0 = request.derivative_weight();
+        const auto known = request.derivative_history();
         std::vector<double> rhs(n, 0.0);
-        for (std::size_t j = 1; j < a.size(); ++j) {
-            const std::vector<double>& older = request.previous(j - 1);
-            for (std::size_t i = 0; i < n; ++i)
-                rhs[i] -= a[j] * mass[i] * older[i];
-        }
+        for (std::size_t i = 0; i < n; ++i)
+            rhs[i] = -mass[i] * known[i];
 
         // The interior unknowns: the ends are held at zero.
         const std::size_t m = n - 2;
@@ -48,7 +46,7 @@ struct Rod {
         std::vector<double> upper(m, -conductivity);
         std::vector<double> b(m, 0.0);
         for (std::size_t i = 0; i < m; ++i) {
-            diagonal[i] = a[0] * mass[i + 1] + 2.0 * conductivity;
+            diagonal[i] = a0 * mass[i + 1] + 2.0 * conductivity;
             b[i] = rhs[i + 1];
         }
 

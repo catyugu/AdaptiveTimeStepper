@@ -4,6 +4,7 @@
 // tools/comsol; the numbers are discussed in docs/comsol-alignment.md.
 #include "atstep/stepper.hpp"
 #include "reference/comsol_steps.hpp"
+#include "reference/comsol_trajectories.hpp"
 #include "support/check.hpp"
 
 #include <cmath>
@@ -21,17 +22,59 @@ struct State {
     double operator[](std::size_t) const { return u; }
 };
 
-/// `u + u' = 0`: the residual the weights make linear in `u_{n+1}`.
-atstep::SolveOutcome solve(
-    const atstep::StepRequest<State>& request, State& y)
-{
-    const auto a = request.formula->weights(1);
-    double rhs = 0.0;
-    for (std::size_t j = 1; j < a.size(); ++j)
-        rhs -= a[j] * request.previous(j - 1).u;
-    y.u = rhs / (a[0] + 1.0);
-    return atstep::SolveOutcome {true, 1};
-}
+// Match the algebraic solve as well as the time-step controller. COMSOL's
+// default Fully Coupled node uses a reused Jacobian, not an exact scalar solve.
+// This adapter is specific to u'+u=0; it is not part of the time-step library.
+struct ComsolDecaySolve {
+    atstep::Settings settings;
+    double jacobian_cj = 0.0;
+    double last_cj = 0.0;
+    double convergence_factor = 20.0;
+
+    atstep::SolveOutcome operator()(const atstep::StepRequest<State>& request, State& y)
+    {
+        const double cj = request.derivative_weight();
+        if (not request.predicted_derivative) {
+            y.u = -request.derivative_history().u / (cj + 1.0);
+            jacobian_cj = 0.0;
+            return {true, 1};
+        }
+        if (cj != last_cj)
+            convergence_factor = 100.0;
+        if (jacobian_cj == 0.0 or cj / jacobian_cj < 0.6
+            or cj / jacobian_cj > 1.0 / 0.6) {
+            jacobian_cj = cj;
+            convergence_factor = 20.0;
+        }
+        atstep::WeightedRmsNorm norm;
+        norm.relative = settings.relative_tolerance;
+        norm.absolute = norm.relative * settings.absolute_factor;
+        norm.scaled = settings.scale_absolute_tolerance;
+        norm.step_index = request.step_index;
+        double first_norm = 0.0;
+        last_cj = cj;
+        for (int iteration = 0; iteration < 4; ++iteration) {
+            const double residual = y.u + request.derivative(y).u;
+            const double correction = -residual / (jacobian_cj + 1.0)
+                * 2.0 / (1.0 + cj / jacobian_cj);
+            y.u += correction;
+            const double size = norm(State {correction}, request.previous(),
+                request.absolute_tolerance_reference());
+            if (iteration == 0)
+                first_norm = size;
+            else {
+                const double rate = std::pow(size / first_norm,
+                    1.0 / static_cast<double>(iteration));
+                if (rate > 0.9)
+                    return {false, iteration + 1};
+                convergence_factor = rate / (1.0 - rate);
+            }
+            if (size <= 3.3e-9 or convergence_factor * size <= 0.33)
+                return {true, iteration + 1};
+        }
+        return {false, 4};
+    }
+};
 
 atstep::StepMode mode_of(const std::string& name)
 {
@@ -39,6 +82,8 @@ atstep::StepMode mode_of(const std::string& name)
         return atstep::StepMode::strict;
     if (name == "intermediate")
         return atstep::StepMode::intermediate;
+    if (name == "manual")
+        return atstep::StepMode::manual;
     return atstep::StepMode::free;
 }
 
@@ -58,7 +103,7 @@ Measured replay(const comsol::Run& run)
     settings.store_mode = atstep::StoreMode::steps;
     settings.scale_absolute_tolerance = true;
 
-    atstep::TimeStepper<State> stepper(settings, solve);
+    atstep::TimeStepper<State> stepper(settings, ComsolDecaySolve {settings});
     stepper.start(0.0, State {1.0}, 10.0);
 
     Measured measured;
@@ -94,19 +139,11 @@ TEST_CASE("comsol: the startup of a BDF run is the solver's own sequence")
         CHECK_NEAR(measured.steps[i], reference.steps[i], 1e-3);
 }
 
-TEST_CASE("comsol: the step count is within a measured band of the solver's")
+TEST_CASE("comsol: all ten original configurations have identical step counts")
 {
-    // The two controllers agree on the startup and on the placement of the
-    // steps, and differ afterwards: the bookkeeping the error estimate is formed
-    // from is a divided-difference reconstruction of IDA's Nordsieck array, and
-    // it makes the order selection settle higher. The counts are recorded here
-    // as the measurement of that difference, not as an equality.
     for (const comsol::Run& reference : comsol::runs()) {
         const Measured measured = replay(reference);
-        const double ratio = static_cast<double>(measured.steps.size())
-            / static_cast<double>(reference.steps.size());
-        CHECK(ratio > 0.5);
-        CHECK(ratio < 2.0);
+        CHECK_EQ(measured.steps.size(), reference.steps.size());
     }
 }
 
@@ -115,13 +152,24 @@ TEST_CASE("comsol: the step counts are the ones this library produces")
     // A regression of this library against itself: the counts below are what the
     // runs of the reference configurations take, and a change of the step-size
     // or order control shows up here first.
-    const std::vector<int> expected {29, 63, 38, 30, 29, 43, 75, 41, 33, 204};
+    const std::vector<int> expected {37, 108, 58, 39, 39, 60, 98, 49, 37, 204};
     const auto& runs = comsol::runs();
     CHECK_EQ(runs.size(), expected.size());
     for (std::size_t i = 0; i < runs.size(); ++i) {
         const Measured measured = replay(runs[i]);
         CHECK_EQ(static_cast<int>(measured.steps.size()), expected[i]);
     }
+}
+
+TEST_CASE("comsol: backward Euler reproduces the sustained step plateau")
+{
+    const auto& reference = comsol::runs()[1];
+    const Measured measured = replay(reference);
+    CHECK_EQ(measured.steps.size(), reference.steps.size());
+    // Skip the initialization offset in the first entry and the interpolated
+    // endpoint in the last. The export rounds the stored times to five digits.
+    for (std::size_t i = 1; i + 1 < reference.steps.size(); ++i)
+        CHECK_NEAR(measured.steps[i], reference.steps[i], 3e-5);
 }
 
 TEST_CASE("comsol: the maximum step constraint is the solver's own")
@@ -151,4 +199,75 @@ TEST_CASE("comsol: a stricter tolerance costs steps in both solvers")
     CHECK(tight > medium);
     CHECK_EQ(static_cast<int>(comsol::runs()[5].steps.size()), 60);
     CHECK_EQ(static_cast<int>(comsol::runs()[6].steps.size()), 98);
+}
+
+TEST_CASE("comsol: full-precision trajectories, derivatives, orders and failures agree")
+{
+    for (const auto& reference : comsol::trajectories()) {
+        atstep::Settings settings;
+        settings.max_order = reference.max_order;
+        settings.relative_tolerance = reference.tolerance;
+        settings.step_mode = mode_of(reference.step_mode);
+        settings.max_step_fraction = reference.max_step_fraction;
+        settings.interpolate_end_time = reference.interpolate_end_time;
+        settings.store_mode = atstep::StoreMode::steps;
+        settings.manual_step = reference.manual_step;
+        if (std::string(reference.store_mode) == "tlist")
+            settings.store_mode = atstep::StoreMode::interpolate;
+        else if (std::string(reference.store_mode) == "tstepsclosest")
+            settings.store_mode = atstep::StoreMode::closest;
+        ComsolDecaySolve chord {settings};
+        double last_derivative = 0.0;
+        atstep::TimeStepper<State> stepper(settings,
+            [&](const atstep::StepRequest<State>& request, State& y) {
+                atstep::SolveOutcome outcome;
+                if (reference.exact) {
+                    const double correction = -(y.u + request.derivative(y).u)
+                        / (request.derivative_weight() + 1.0);
+                    y.u += correction;
+                    outcome = {true, 1};
+                }
+                else
+                    outcome = chord(request, y);
+                last_derivative = request.derivative(y).u;
+                return outcome;
+            });
+        stepper.start(0.0, State {1.0}, 10.0);
+        std::vector<comsol::Sample> stored;
+        std::vector<atstep::StepRecord> steps;
+        atstep::RunHooks<State> hooks;
+        hooks.on_step = [&](const atstep::StepRecord& step) { steps.push_back(step); };
+        hooks.on_store = [&](double t, const State& y, bool) {
+            const double value = y.u;
+            const double derivative = steps.empty() ? last_derivative
+                : stepper.interpolate(t, 1).u;
+            stored.push_back({t, value, derivative});
+        };
+        const auto report = stepper.run(reference.output_times, hooks);
+        CHECK_EQ(report.steps, reference.accepted_steps);
+        CHECK_EQ(stored.size(), reference.samples.size());
+        CHECK_EQ(report.rejected, reference.rejected);
+        CHECK_EQ(report.failed_solves, reference.failed_solves);
+        double dt = 0.0, dy = 0.0, dd = 0.0, internal_dd = 0.0;
+        for (std::size_t i = 0; i < std::min(stored.size(), reference.samples.size()); ++i) {
+            dt = std::max(dt, std::abs(stored[i].time - reference.samples[i].time));
+            dy = std::max(dy, std::abs(stored[i].value - reference.samples[i].value));
+            dd = std::max(dd, std::abs(stored[i].derivative - reference.samples[i].derivative));
+            if (i > 0)
+                internal_dd = std::max(internal_dd,
+                    std::abs(stored[i].derivative - reference.samples[i].derivative));
+        }
+        std::printf("COMSOL %-16s samples=%zu/%zu rejects=%d/%d max |dt|=%.3g |du|=%.3g |du'|=%.3g\n",
+            reference.name, stored.size(), reference.samples.size(), report.rejected,
+            reference.rejected, dt, dy, dd);
+        CHECK(dt < 2e-9);
+        CHECK(dy < 2e-11);
+        CHECK(dd < 2e-9);
+        CHECK(internal_dd < 2e-11);
+        for (const auto& logged : reference.logged_orders) {
+            CHECK(logged.step > 0 and static_cast<std::size_t>(logged.step) <= steps.size());
+            if (logged.step > 0 and static_cast<std::size_t>(logged.step) <= steps.size())
+                CHECK_EQ(steps[static_cast<std::size_t>(logged.step - 1)].order, logged.order);
+        }
+    }
 }

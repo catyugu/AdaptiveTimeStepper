@@ -41,7 +41,7 @@ enum class StoreMode {
 /// The time stepping of a run.
 ///
 /// The defaults are COMSOL's, read back from a COMSOL 6.2 Time-Dependent Solver
-/// node (see docs/comsol-alignment.md): the relative tolerance 0.01, the
+/// node (see doc/comsol-alignment.md): the relative tolerance 0.01, the
 /// absolute tolerance `0.1` times it, the first step `1e-3` of the span, the
 /// largest step `0.1` of the span, the orders 1 to 5, and the interpolation of
 /// the end time.

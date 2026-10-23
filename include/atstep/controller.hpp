@@ -277,6 +277,7 @@ inline void StepController::accept(const StepErrors& errors, double step)
         // Until the order reaches its maximum, every step is taken one order
         // higher and at twice the size. The first step has no history behind
         // it, so its size is left as it is.
+        h_ = step;
         if (steps_ > 1) {
             ++order_;
             h_ = std::min(2.0 * step, largest_);
@@ -323,7 +324,12 @@ inline void StepController::accept(const StepErrors& errors, double step)
         next_error = *errors.below;
     }
     order_ = std::clamp(order_, settings_.min_order, settings_.max_order);
-    h_ = std::clamp(factor(next_error, order_) * step, smallest_, largest_);
+    double eta = factor(next_error, order_);
+    if (eta >= ida::eta_max_fx)
+        eta /= std::max(1.0, eta * step * (1.0 / largest_));
+    else if (eta <= ida::eta_low)
+        eta = std::max(eta, smallest_ / step);
+    h_ = std::min(step * eta, largest_);
 }
 
 inline void StepController::reject(const StepErrors& errors, double step)
@@ -345,7 +351,6 @@ inline void StepController::reject(const StepErrors& errors, double step)
     else if (lower)
         --order_;
     order_ = std::clamp(order_, settings_.min_order, settings_.max_order);
-    used_order_ = order_;
 
     double eta = ida::eta_min_ef;
     if (failures_ == 1) {
@@ -364,6 +369,7 @@ inline void StepController::reject_convergence(double step)
         manual_ = std::max(ida::eta_min_ef * step, smallest_);
         return;
     }
+    phase_ = 1;
     h_ = std::max(ida::eta_min_ef * step, smallest_);
 }
 

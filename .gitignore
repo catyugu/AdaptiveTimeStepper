@@ -10,6 +10,7 @@ scratch/
 # Compiler and linker output.
 *.exe
 *.obj
+*.class
 *.o
 *.a
 *.lib

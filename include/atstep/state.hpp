@@ -70,12 +70,14 @@ inline void axpy(std::vector<double>& y, double a, const std::vector<double>& x)
 /// absolute tolerance,
 ///
 ///     A = R * absolute_factor * (beta + ||y||_2),
-///     beta = (1 - e^-0.2) ||y||_inf + e^-0.2  if 0 < ||y||_inf < 1, else 1,
+///     beta = (1 - e^(-j/5)) ||y||_inf + e^(-j/5) if 0 < ||y||_inf < 1, else 1,
+///
+/// where j is the number of accepted time steps (zero at initialization).
 ///
 /// which keeps the absolute tolerance proportional to the magnitude of the
 /// state rather than a fixed floor. On a scalar state of order one the two
 /// differ by a factor of two, and that factor is the difference between the
-/// first step of a run and COMSOL's own (see docs/comsol-alignment.md).
+/// first step of a run and COMSOL's own (see doc/comsol-alignment.md).
 ///
 /// A state is expected to expose its degrees of freedom as `size()` and
 /// `operator[]`. A distributed or blocked state passes a norm of its own
@@ -88,6 +90,7 @@ struct WeightedRmsNorm {
     double relative = 1e-2;
     double absolute = 1e-3;
     bool scaled = false;
+    std::size_t step_index = 0;
 
     template <class State>
         requires requires(const State& s) {
@@ -95,6 +98,16 @@ struct WeightedRmsNorm {
             { s[std::size_t {}] } -> std::convertible_to<double>;
         }
     double operator()(const State& error, const State& reference) const
+    {
+        return (*this)(error, reference, reference);
+    }
+
+    /// COMSOL updates the scaled absolute tolerance from the solution returned
+    /// to the caller, which can be interpolated. The relative part continues
+    /// to use the last accepted internal state.
+    template <class State>
+    double operator()(const State& error, const State& reference,
+        const State& scale_reference) const
     {
         const std::size_t n = reference.size();
         if (n == 0)
@@ -104,12 +117,13 @@ struct WeightedRmsNorm {
             double square = 0.0;
             double largest = 0.0;
             for (std::size_t i = 0; i < n; ++i) {
-                const double value = reference[i];
+                const double value = scale_reference[i];
                 square += value * value;
                 largest = std::max(largest, std::abs(value));
             }
+            const double decay = std::exp(-0.2 * static_cast<double>(step_index));
             const double beta = (largest > 0.0 and largest < 1.0)
-                ? (1.0 - std::exp(-0.2)) * largest + std::exp(-0.2)
+                ? (1.0 - decay) * largest + decay
                 : 1.0;
             limit = absolute * (beta + std::sqrt(square));
         }
