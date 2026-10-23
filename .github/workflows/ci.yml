@@ -16,6 +16,7 @@ jobs:
   linux-gcc:
     name: linux-gcc ${{ matrix.compiler }} ${{ matrix.build_type }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -26,11 +27,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install the toolchain
+      - name: Resolve the toolchain
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            "$CC" "g++-${CC#gcc-}" ninja-build ccache
+          set -euo pipefail
+          export CXX="g++-${CC#gcc-}"
+          missing=()
+          for tool in "$CC" "$CXX" ninja ccache; do
+            command -v "$tool" >/dev/null || missing+=("$tool")
+          done
+          if [ ${#missing[@]} -eq 0 ]; then
+            echo "The runner has $CC, $CXX, ninja and ccache: no install"
+          else
+            echo "Installing ${missing[*]}"
+            sudo apt-get update -o Acquire::Retries=3
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+              --no-install-recommends "${missing[@]}"
+          fi
 
       - name: Write the compiler environment
         run: |
@@ -62,6 +74,7 @@ jobs:
   linux-clang:
     name: linux-clang ${{ matrix.compiler }} ${{ matrix.build_type }} sanitizers=${{ matrix.sanitizers }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -87,11 +100,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install the toolchain
+      - name: Resolve the toolchain
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            "$CC" "clang++-${CC#clang-}" ninja-build ccache
+          set -euo pipefail
+          export CXX="clang++-${CC#clang-}"
+          missing=()
+          for tool in "$CC" "$CXX" ninja ccache; do
+            command -v "$tool" >/dev/null || missing+=("$tool")
+          done
+          if [ ${#missing[@]} -eq 0 ]; then
+            echo "The runner has $CC, $CXX, ninja and ccache: no install"
+          else
+            echo "Installing ${missing[*]}"
+            sudo apt-get update -o Acquire::Retries=3
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+              --no-install-recommends "${missing[@]}"
+          fi
 
       - name: Write the compiler environment
         run: |
@@ -124,6 +148,7 @@ jobs:
   macos:
     name: macos ${{ matrix.os }} ${{ matrix.build_type }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -151,6 +176,7 @@ jobs:
   windows-msvc:
     name: windows-msvc ${{ matrix.build_type }}
     runs-on: windows-2022
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -170,6 +196,7 @@ jobs:
   windows-clangcl:
     name: windows-clangcl ${{ matrix.build_type }}
     runs-on: windows-2022
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -191,6 +218,7 @@ jobs:
   standards:
     name: standards C++20 and standalone headers
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     env:
       CC: gcc-13
       CXX: g++-13
@@ -232,6 +260,7 @@ jobs:
     # running when the library does not build at all.
     needs: [linux-gcc]
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     env:
       CC: gcc-13
       CXX: g++-13
