@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstddef>
 #include <functional>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -587,4 +588,62 @@ TEST_CASE("stepper: a rejected trial does not alter the accepted BDF history")
   CHECK_NEAR(retried.errors.test, first.errors.test, 0.0);
   CHECK_NEAR(retried.errors.at, first.errors.at, 0.0);
   CHECK_NEAR(retried.errors.below.value(), first.errors.below.value(), 0.0);
+}
+
+TEST_CASE("history: a failed state copy preserves paired times and states")
+{
+  struct State {
+    double value;
+    bool fail = false;
+    State(double v, bool throws = false)
+      : value(v)
+      , fail(throws)
+    {
+    }
+    State(const State& other)
+      : value(other.value)
+      , fail(other.fail)
+    {
+      if (fail)
+        throw std::runtime_error("copy failed");
+    }
+  };
+  atstep::History<State> history;
+  history.push(1.0, State {2.0});
+  CHECK_THROWS(history.push(2.0, State {3.0, true}));
+  CHECK_THROWS(history.reset(3.0, State {4.0, true}));
+  CHECK_EQ(history.size(), 1U);
+  CHECK_EQ(history.time(0), 1.0);
+  CHECK_EQ(history.state(0).value, 2.0);
+  history.push(2.0, State {3.0});
+  CHECK_EQ(history.times()[1], 1.0);
+  history.keep(1);
+  CHECK_EQ(history.state(0).value, 3.0);
+  CHECK_THROWS(history.state(1));
+  history.pop();
+  history.pop();
+  CHECK(history.empty());
+}
+
+TEST_CASE("stepper: invalid time increments never reach the solve callback")
+{
+  int calls = 0;
+  atstep::TimeStepper<Scalar> stepper(atstep::Settings {},
+    [&](const atstep::StepRequest<Scalar>& request, Scalar& y) {
+      ++calls;
+      return solve_decay(request, y);
+    });
+  const double infinity = std::numeric_limits<double>::infinity();
+  CHECK_THROWS(stepper.start(-infinity, Scalar {1.0}, 1.0));
+  CHECK_THROWS(stepper.start(0.0, Scalar {1.0}, infinity));
+  CHECK_EQ(calls, 0);
+  stepper.start(1.0, Scalar {1.0}, 2.0);
+  CHECK_EQ(calls, 2);
+  for (double step : {0.0, -1.0, infinity,
+         std::numeric_limits<double>::quiet_NaN(),
+         std::numeric_limits<double>::denorm_min()})
+    CHECK_THROWS(stepper.attempt(step));
+  CHECK_EQ(calls, 2);
+  const auto piece = stepper.attempt(stepper.step_size());
+  CHECK(piece.passed);
 }

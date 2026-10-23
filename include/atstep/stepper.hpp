@@ -33,64 +33,66 @@ namespace atstep {
   public:
     void reset(double time, const State& state)
     {
-      states_.clear();
-      times_.clear();
-      push(time, state);
+      std::deque<Level> replacement;
+      replacement.push_front(Level {time, state});
+      levels_.swap(replacement);
     }
 
     void push(double time, const State& state)
     {
-      states_.push_front(state);
-      times_.push_front(time);
+      levels_.push_front(Level {time, state});
     }
 
     void pop()
     {
-      if (not states_.empty()) {
-        states_.pop_front();
-        times_.pop_front();
-      }
+      if (not levels_.empty())
+        levels_.pop_front();
     }
 
     std::size_t size() const noexcept
     {
-      return states_.size();
+      return levels_.size();
     }
     bool empty() const noexcept
     {
-      return states_.empty();
+      return levels_.empty();
     }
 
     /// The time of the level `level`, 0 being the newest.
     double time(std::size_t level) const
     {
-      return times_[level];
+      return levels_.at(level).time;
     }
 
     /// The state of the level `level`, 0 being the newest.
     const State& state(std::size_t level) const
     {
-      return states_[level];
+      return levels_.at(level).state;
     }
 
     /// The times, newest first.
     std::vector<double> times() const
     {
-      return std::vector<double>(times_.begin(), times_.end());
+      std::vector<double> result;
+      result.reserve(size());
+      for (const auto& level : levels_)
+        result.push_back(level.time);
+      return result;
     }
 
     /// Forget the levels past the newest `levels`.
     void keep(std::size_t levels)
     {
-      while (states_.size() > levels) {
-        states_.pop_back();
-        times_.pop_back();
-      }
+      while (size() > levels)
+        levels_.pop_back();
     }
 
   private:
-    std::deque<State> states_;
-    std::deque<double> times_;
+    struct Level {
+      double time;
+      State state;
+    };
+    std::deque<Level> levels_;
   };
 
   /// What a step's solve is told about the step.
@@ -154,9 +156,9 @@ namespace atstep {
     {
       if (derivative == 0)
         return 1.0;
-      if (std::holds_alternative<BdfDerivative>(derivative_)) {
+      if (const auto* bdf = std::get_if<BdfDerivative>(&derivative_)) {
         require_first_derivative(derivative);
-        return std::get<BdfDerivative>(derivative_).leading;
+        return bdf->leading;
       }
       return std::get<ClassicalDerivative>(derivative_)
         .formula.weights(derivative)[0];
@@ -169,9 +171,9 @@ namespace atstep {
         atstep::axpy(result, -1.0, previous());
         return result;
       }
-      if (std::holds_alternative<BdfDerivative>(derivative_)) {
+      if (const auto* bdf = std::get_if<BdfDerivative>(&derivative_)) {
         require_first_derivative(derivative);
-        return std::get<BdfDerivative>(derivative_).history;
+        return bdf->history;
       }
       const auto weights = std::get<ClassicalDerivative>(derivative_)
                              .formula.weights(derivative);
@@ -186,13 +188,12 @@ namespace atstep {
     {
       if (derivative == 0)
         return y;
-      if (std::holds_alternative<BdfDerivative>(derivative_)) {
+      if (const auto* bdf = std::get_if<BdfDerivative>(&derivative_)) {
         require_first_derivative(derivative);
-        const auto& bdf = std::get<BdfDerivative>(derivative_);
         State correction = y;
-        atstep::axpy(correction, -1.0, bdf.predictor);
-        State result = bdf.derivative_predictor;
-        atstep::axpy(result, bdf.leading, correction);
+        atstep::axpy(correction, -1.0, bdf->predictor);
+        State result = bdf->derivative_predictor;
+        atstep::axpy(result, bdf->leading, correction);
         return result;
       }
       State result = derivative_history(derivative);
@@ -336,7 +337,7 @@ namespace atstep {
     /// its result is the level the run starts at.
     void start(double time, const State& initial, double end_time)
     {
-      if (not(end_time > time))
+      if (not std::isfinite(time) or not std::isfinite(end_time) or not(end_time > time))
         throw std::invalid_argument(
           "atstep: the end time must be past the start time");
       start_time_ = time;
@@ -468,9 +469,13 @@ namespace atstep {
     Attempt attempt(double step)
     {
       require_started();
+      const double next_time = history_.time(0) + step;
+      if (not std::isfinite(step) or not(step > 0.0)
+        or not std::isfinite(next_time) or not(next_time > history_.time(0)))
+        throw std::invalid_argument("atstep: step must be finite, positive and advance time");
       Attempt result;
       result.step = step;
-      result.time = history_.time(0) + step;
+      result.time = next_time;
 
       // Both formulations use the same history bound on startup order.
       const int available = static_cast<int>(

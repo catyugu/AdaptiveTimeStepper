@@ -4,6 +4,7 @@
 
 #include "settings.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -25,6 +26,22 @@ namespace atstep {
     std::span<const double> nodes, double x, int order, int count);
 
   namespace detail {
+
+    inline void validate_nodes(std::span<const double> nodes, double x, int count)
+    {
+      if (count < 1 or count > max_levels or static_cast<std::size_t>(count) > nodes.size())
+        throw std::invalid_argument("atstep: invalid interpolation node count");
+      if (not std::isfinite(x))
+        throw std::invalid_argument("atstep: interpolation time must be finite");
+      for (int j = 0; j < count; ++j) {
+        const auto index = static_cast<std::size_t>(j);
+        if (not std::isfinite(nodes[index]))
+          throw std::invalid_argument("atstep: interpolation nodes must be finite");
+        for (int i = 0; i < j; ++i)
+          if (nodes[index] == nodes[static_cast<std::size_t>(i)])
+            throw std::invalid_argument("atstep: interpolation nodes must be distinct");
+      }
+    }
 
     /// The coefficients of `prod_{i != skip} (u - nodes[i])` in the
     /// monomial basis of `u`, up to the degree `count - 1`, and that
@@ -59,20 +76,13 @@ namespace atstep {
   inline std::array<double, max_levels>
   lagrange_value(std::span<const double> nodes, double x, int count)
   {
-    std::array<double, max_levels> weights {};
-    for (int j = 0; j < count; ++j) {
-      const detail::Basis basis = detail::basis_polynomial(nodes, count, j);
-      double value = 0.0; // Horner's rule on the monomial coefficients
-      for (int m = count - 1; m >= 0; --m)
-        value = value * x + basis.coefficients[static_cast<std::size_t>(m)];
-      weights[static_cast<std::size_t>(j)] = value / basis.denominator;
-    }
-    return weights;
+    return lagrange_derivative(nodes, x, 0, count);
   }
 
   inline std::array<double, max_levels> lagrange_derivative(
     std::span<const double> nodes, double x, int order, int count)
   {
+    detail::validate_nodes(nodes, x, count);
     std::array<double, max_levels> weights {};
     if (order < 0 or order >= count)
       return weights;
@@ -87,7 +97,7 @@ namespace atstep {
       double power = 1.0;
       for (int m = order; m < count; ++m) {
         if (m > order) {
-          falling *= static_cast<double>(m);
+          falling *= static_cast<double>(m) / static_cast<double>(m - order);
           power *= x;
         }
         value += basis.coefficients[static_cast<std::size_t>(m)] * falling * power;
@@ -222,26 +232,18 @@ namespace atstep {
   private:
     void fill(int order, std::span<const double> steps, int derivatives)
     {
-      const int available = static_cast<int>(steps.size());
+      const int available = static_cast<int>(std::min<std::size_t>(steps.size(), max_order + 1));
       if (available < 1)
         throw std::invalid_argument(
           "atstep: a step formula needs at least one step size");
       for (int j = 0; j < available; ++j)
-        if (not(steps[static_cast<std::size_t>(j)] > 0.0))
+        if (not std::isfinite(steps[static_cast<std::size_t>(j)])
+          or not(steps[static_cast<std::size_t>(j)] > 0.0))
           throw std::invalid_argument("atstep: step size " + std::to_string(j) + " is not positive");
 
       // The formula reads `order` steps, the predictor `order + 1`.
-      order_ = order;
-      if (order_ > max_order)
-        order_ = max_order;
-      if (order_ > available - 1)
-        order_ = available - 1;
-      if (order_ < 1)
-        order_ = 1;
-      derivatives_ = derivatives < 0
-        ? 0
-        : (derivatives > max_derivative ? max_derivative
-                                        : derivatives);
+      order_ = std::clamp(order, 1, std::max(1, available - 1));
+      derivatives_ = std::clamp(derivatives, 0, max_derivative);
 
       const int count = order_ + 1;
       // The predictor is the polynomial through the levels *before*
@@ -249,16 +251,13 @@ namespace atstep {
       // history of a single level has no polynomial, and the predictor is
       // that level: the constant extrapolation a first step starts from.
       available_ = available;
-      predictor_count_ = count;
-      if (predictor_count_ > available)
-        predictor_count_ = available;
+      predictor_count_ = std::min(count, available);
 
       // psi[i] = t_{n+1} - t_{n+1-i}: the distance back to the level i. A
       // step the history does not reach — the levels before the first one
       // of a run — is taken to be the oldest step it does, which is what
       // IDA's own initialization does with the step before the first.
-      const int last = predictor_count_ > order_ + 1 ? predictor_count_ : order_ + 1;
-      for (int i = 1; i <= last; ++i) {
+      for (int i = 1; i <= std::max(count, available); ++i) {
         const int known = i - 1 < available ? i - 1 : available - 1;
         psi_[static_cast<std::size_t>(i)] = psi_[static_cast<std::size_t>(i - 1)] + steps[static_cast<std::size_t>(known)];
       }

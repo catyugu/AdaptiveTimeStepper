@@ -38,41 +38,22 @@ namespace atstep {
     /// Whether the step met the tolerance.
     bool passed() const noexcept
     {
-      return test <= 1.0;
+      return std::isfinite(test) and test >= 0.0 and test <= 1.0;
     }
   };
 
-  /// The step size and order control of the BDF method: IDA's algorithm
-  /// (`IDASetCoeffs`, `IDATestError`, `IDAHandleNFlag`, `IDACompleteStep`),
-  /// the solver COMSOL's BDF is.
+  /// Scalar BDF step-size and order control, following IDA's startup,
+  /// error test and completion rules. It is independent of state and equations.
   ///
-  /// It is a pure number engine: no state, no operator, no tolerance. A run
-  /// hands it the error estimates of a step and gets the size and order of
-  /// the next one, which is what makes it testable on its own and reusable
-  /// over any number of fields advanced together.
+  /// Startup raises the order and doubles steps until a failure, order
+  /// reduction or maximum order ends it. Later, the growth estimate
+  /// (2*error + 1e-4)^(-1/(q+1)) selects a reduction in [0.5,0.9],
+  /// unchanged size, or doubling.
   ///
-  /// The rules, as IDA states them:
-  ///
-  /// - **Startup.** Until the order reaches its maximum, a step fails, or the
-  ///   order is lowered, every step is taken one order higher and at twice
-  ///   the size: `phase` 0. COMSOL's own log of a BDF run shows it — steps of
-  ///   0.006, 0.012, 0.024, 0.048, 0.096 s over a 10 s span.
-  /// - **The deadbeat band.** A step that met the tolerance is not grown by the
-  ///   asymptotic formula: the factor is the clamp of
-  ///   `(2 error + 1e-4)^(-1/(q+1))` to [0.5, 0.9] below one, one inside the
-  ///   band (1, 2), and 2 above it. A step therefore doubles only while its
-  ///   estimate sits below `2^-(q+2)` of the tolerance and is held at its size
-  ///   otherwise.
-  /// - **A rejected step** is retried at `0.9 (2 error + 1e-4)^(-1/(q+1))` of
-  ///   its size, at most 0.9 and at least 0.25 of it, at the order the estimate
-  ///   favours; a second rejection takes a quarter of the step, and a third one
-  ///   the order 1.
-  /// - **The order** is reconsidered only after `q + 2` steps at a constant
-  ///   order and step size, and not on the step after a change of order. The
-  ///   estimates it reads are the truncation error norms `terr_j = (j + 1)
-  ///   err_j`: the order is lowered when the lower one is smaller, and raised
-  ///   when the one above is at most half of the one in use (at the order 1)
-  ///   or smaller than it (above it).
+  /// Error-test failures reduce the step by [0.25,0.9] on the first failure,
+  /// then by 0.25; the third failure requests order 1, within configured bounds.
+  /// Convergence failures reduce the step by 0.25.
+  /// Order increases require enough steps at constant size and order.
   class StepController {
   public:
     /// @param[in] settings the method's settings: its order range and its
@@ -218,11 +199,13 @@ namespace atstep {
     , smallest_(span * settings.min_step_fraction)
   {
     validate(settings);
-    if (not(span > 0.0))
+    if (not std::isfinite(span) or not(span > 0.0))
       throw std::invalid_argument(
         "atstep: the span of a run must be positive");
     if (not(settings.max_step_fraction > 0.0))
       largest_ = std::numeric_limits<double>::max();
+    if (not std::isfinite(largest_) or not std::isfinite(smallest_) or not(smallest_ > 0.0))
+      throw std::invalid_argument("atstep: step bounds must be finite and positive");
   }
 
   inline double StepController::first_step(double derivative_norm) const

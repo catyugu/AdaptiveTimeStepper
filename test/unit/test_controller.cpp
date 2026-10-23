@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cmath>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -249,7 +250,7 @@ TEST_CASE("controller: manual stepping ignores the error and keeps its step")
   CHECK_NEAR(controller.step_size(), 0.25, 1e-12);
   CHECK_EQ(controller.order(), 3);
 
-  // An error far past the tolerance changes nothing; a failed solve halves
+  // An error far past the tolerance changes nothing; a failed solve quarters
   // the step, which is the only reduction a manual run takes.
   controller.begin_attempt(0.25, 3);
   controller.accept(errors(100.0), 0.25);
@@ -291,4 +292,35 @@ TEST_CASE("controller: a setting that cannot be run is refused")
   CHECK_THROWS(atstep::StepController(settings, 1.0));
 
   CHECK_THROWS(atstep::StepController(atstep::Settings {}, 0.0));
+}
+
+TEST_CASE("controller: nonfinite settings and reversed bounds are refused")
+{
+  for (double value : {std::numeric_limits<double>::infinity(),
+         std::numeric_limits<double>::quiet_NaN()}) {
+    for (auto field : {&atstep::Settings::relative_tolerance,
+           &atstep::Settings::absolute_factor,
+           &atstep::Settings::first_step_fraction,
+           &atstep::Settings::max_step_fraction,
+           &atstep::Settings::min_step_fraction,
+           &atstep::Settings::init_step_fraction,
+           &atstep::Settings::manual_step}) {
+      atstep::Settings settings;
+      settings.*field = value;
+      CHECK_THROWS(atstep::validate(settings));
+    }
+    atstep::Settings settings;
+    settings.absolute_scale = {value};
+    CHECK_THROWS(atstep::validate(settings));
+    CHECK_THROWS(atstep::StepController(atstep::Settings {}, value));
+    atstep::StepErrors error;
+    error.test = value;
+    CHECK(not error.passed());
+  }
+  atstep::Settings settings;
+  settings.min_step_fraction = 0.2;
+  CHECK_THROWS(atstep::StepController(settings, 1.0));
+  settings.max_step_fraction = 0.0; // no maximum constraint
+  const atstep::StepController controller(settings, 1.0);
+  CHECK(controller.largest_step() > 1.0);
 }

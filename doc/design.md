@@ -1,82 +1,90 @@
 # Design
 
-The library is header-only C++20. `settings.hpp` holds configuration,
-`formula.hpp` classical polynomial stencils, `controller.hpp` the scalar
-step/order decisions, `state.hpp` state arithmetic and error norms, and
-`stepper.hpp` the run, BDF history and output handling. The controller does
-not depend on the state, equation or norm.
+The library has five components:
 
-## The solve boundary
+| Header           | Responsibility                                             |
+| ---------------- | :--------------------------------------------------------- |
+| `settings.hpp`   | Configuration and validation                               |
+| `state.hpp`      | State arithmetic and the default weighted RMS norm         |
+| `formula.hpp`    | Classical polynomial interpolation and differentiation     |
+| `controller.hpp` | Scalar step-size and order decisions                       |
+| `stepper.hpp`    | Solve requests, accepted/trial history and output handling |
 
-The caller supplies the state type, algebraic solve and optionally the norm.
-The state needs copying and `axpy(y,a,x)`, meaning `y += a*x`; the library
-does not inspect its matrix, operator or storage layout.
+## Ownership and solve boundary
 
-For a first-order residual `M y' + K y = f`, the request supplies
-`y' = cj*y + known`. The caller assembles `(cj*M + K)*y = f - M*known` using
-`derivative_weight()` and `derivative_history()`. `derivative(y)` evaluates
-the equivalent correction form, reducing cancellation in a nonlinear loop.
-The solve receives the predictor as its initial guess and returns convergence
-and iteration information.
+`TimeStepper` owns its settings, solve callback, norm and state buffers by value.
+Each history level pairs a time and state in one container; insertion cannot
+leave time and state sequences out of sync if copying a state throws.
+Reset constructs replacement history before discarding existing levels.
 
-Requests contain required references and one derivative formulation, represented
-by a variant. Initialization is explicit. There are no nullable state pointers
-or independently set predictor/history flags. First-order steps prepare only the
-fixed-leading formulation; they no longer construct an unused classical stencil.
-The affine derivative interface also handles the higher-derivative fallback,
-keeping callers independent of the internal history representation.
+A `StepRequest` borrows required references for the duration of the solve.
+Its derivative formulation is a variant: fixed-leading BDF or a classical
+polynomial stencil. Callers use the same affine derivative interface for both:
 
-The standalone `StepFormula` still computes classical level-based stencils
-for directly discretized higher derivatives. It is not the first-derivative
-formula of the fixed-leading BDF method after a step change. Inertia is best
-written as a first-order system `(u,v=u')`, as in `examples/second_order.cpp`.
+```text
+y' = cj*y + known
+M y' + K y = f  =>  (cj*M + K)*y = f - M*known
+```
+
+`derivative(y)` evaluates the correction form for fixed-leading BDF, reducing
+cancellation. The solve starts from the predictor and returns convergence and
+iteration information. Matrix assembly and algebraic solvers belong to the caller.
+Custom states implement `axpy`; custom norms implement `norm(error, reference)`.
 
 ## Accepted and trial history
 
-First-order integration retains scaled divided-difference columns and their
-step distances. A trial copies and rescales this history for the proposed
-step, forms the predictor and derivative predictor, and solves. Its correction
-is the difference between the solved state and predictor. The error test and
-order comparisons use this correction and the trial difference columns.
+First-order integration stores scaled divided-difference columns and step
+distances. Each attempt rescales a copy, forms the predictor and derivative
+predictor, then solves. The leading derivative coefficient is `H_k/h`, where
+`H_k = 1 + 1/2 + ... + 1/k`. Error estimates use the solved-state correction
+and trial columns.
 
-Acceptance updates and commits the trial columns. Rejection leaves the
-accepted columns and time levels intact. This also makes a failed first trial
-safe: its retry rescales the initialization derivative for the smaller step.
-`start` resets both the numerical history and accepted-step tolerance index.
+Acceptance commits trial history; rejection preserves accepted history.
+Only one set of trial buffers exists. Handle the latest `Attempt` before
+creating another: attempts are diagnostics, not saved state snapshots.
+`start` resets numerical history and tolerance indexing.
 
-`StepController` consumes scalar error estimates and returns the next step and
-order. Startup, settled-step order selection, rejection and convergence failure
-are independently tested. Maximum-step arithmetic preserves the measured
-transition onto a constant step; an overshoot of one floating-point bit can
-otherwise keep resetting the settled-step counter.
+`StepController` consumes scalar estimates independently of state and equation
+types. It implements startup growth, settled-step order selection and retries.
+Maximum-step arithmetic preserves rounding at the transition to a constant
+step: a one-bit overshoot can reset the settled-step counter.
 
-## Output is part of the measured contract
+`StepFormula` serves classical stencils, including higher derivatives. It is
+not reconstructed for first-order fixed-leading steps. Lagrange values and
+derivatives share one evaluator. Counts, node uniqueness and finiteness are
+checked before accessing fixed-size buffers; extra step history is bounded
+to the supported order range.
 
-The run places steps according to free, intermediate, strict or manual mode.
-Landing constraints preserve a full step when it already reaches the target,
-otherwise shorten it with a rounding margin and, when needed, split the last
-two steps. Intermediate mode tracks the interval in which the accepted state
-actually lies, including a state that crossed an output time.
+## Output and error weights
 
-Dense output uses the committed BDF difference columns. The derivative stored
-at a new node is the derivative from the solve, which need not be the derivative
-of the dense-output polynomial at that node after a step change.
+Step placement and stored output are separate settings. Strict mode lands on
+each requested time; intermediate mode ensures a step in each output interval.
+Landing logic preserves a step already reaching its target, otherwise shortens
+it with a rounding margin or splits the final two steps.
 
-The default norm takes separate relative and absolute-scale references.
-The relative reference is the last accepted internal state; the absolute scale
-is the last returned state, which can be interpolated. That distinction is
-measured in COMSOL and changes its trajectory in interpolated-output mode.
-Custom norms remain owned by the caller.
+Dense output uses committed BDF columns. At the newest node the returned
+derivative is the solve derivative; it can differ from the dense polynomial's
+derivative after a step change. Returned state references use internal buffers
+and must be copied if retained across callbacks or interpolation calls.
 
-## Validation
+The default norm uses the last accepted internal state for relative weights
+and the most recently stored state for scaled absolute weights. Interpolated
+output therefore affects later error weights, as covered by the COMSOL tests.
+Custom norms receive only the error and accepted internal state.
 
-Unit tests check polynomial differentiation, convergence, accuracy, restart and
-rejection behavior. The examples compile and run finite-element heat conduction,
-a first-order oscillator system and a nonlinear reaction system.
+Invalid dimensions and nonfinite configuration are rejected. A nonzero error
+with zero weight has infinite norm. An attempted step must be finite, positive
+and large enough to advance floating-point time.
 
-The [COMSOL comparison](comsol-alignment.md) uses 21 externally recorded
-configurations and 1,336 full-precision samples. It checks each stored time,
-state and derivative, failure counts and logged orders. A model-specific
-Jacobian-reuse callback and independent exact-solve configurations keep the
-algebraic-solver assumptions visible. No reference samples are injected into
-the numerical solve.
+## Validation boundaries
+
+Unit tests cover polynomial reproduction, controller rules, convergence,
+rejection, restart, invalid input and history-copy failure. CTest also runs
+three examples. The [COMSOL regressions](comsol-alignment.md) compare 21 recorded
+scalar configurations, totaling 1,336 output samples, including times, states,
+derivatives, failure counts and logged orders. Reference data is never injected
+into the numerical solve.
+
+These regressions validate the recorded configurations, rather than arbitrary
+nonlinear or coupled models. Regenerating references requires COMSOL; running
+the C++ tests does not.

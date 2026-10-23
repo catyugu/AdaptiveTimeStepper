@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <cmath>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -25,7 +26,7 @@ namespace atstep {
     /// The step is the solver's own, but every subinterval between two output
     /// times holds at least one step.
     intermediate,
-    /// Every step ends at an output time.
+    /// Land on every output time, taking smaller internal steps as needed.
     strict,
     /// A step of the model's own, with the time-step error test switched off.
     manual,
@@ -35,7 +36,7 @@ namespace atstep {
   enum class StoreMode {
     /// The output times, interpolated from the steps that stepped over them.
     interpolate,
-    /// The solver step closest to each output time.
+    /// The first solver step reaching each output time.
     closest,
     /// The solver's own steps.
     steps,
@@ -104,11 +105,12 @@ namespace atstep {
     /// The first step, as a fraction of the span integrated. COMSOL's
     /// "Initial step: Automatic", 0.1% of the end time. The initial
     /// derivative of the state may take the first step below it (see
-    /// `first_step_factor()`).
+    /// `StepController::first_step()`).
     double first_step_fraction = 1e-3;
 
     /// The largest step, as a fraction of the span integrated: COMSOL's
-    /// "Maximum step constraint: Automatic", 10% of the end time.
+    /// "Maximum step constraint: Automatic", 10% of the span. A finite
+    /// nonpositive value disables the maximum-step constraint.
     double max_step_fraction = 0.1;
 
     /// The smallest step, as a fraction of the span integrated: below it
@@ -144,6 +146,24 @@ namespace atstep {
 
   inline void validate(const Settings& settings)
   {
+    // Check finiteness once, before range checks and step-bound arithmetic.
+    const auto finite = [](const char* field, double value) {
+      if (not std::isfinite(value))
+        detail::reject_setting(field, "not finite", value);
+    };
+    finite("relative_tolerance", settings.relative_tolerance);
+    finite("absolute_factor", settings.absolute_factor);
+    finite("first_step_fraction", settings.first_step_fraction);
+    finite("max_step_fraction", settings.max_step_fraction);
+    finite("min_step_fraction", settings.min_step_fraction);
+    finite("init_step_fraction", settings.init_step_fraction);
+    finite("manual_step", settings.manual_step);
+    finite("absolute_tolerance", settings.relative_tolerance * settings.absolute_factor);
+    for (double scale : settings.absolute_scale)
+      finite("absolute_scale", scale);
+    if (settings.max_step_fraction > 0.0
+      and settings.min_step_fraction > settings.max_step_fraction)
+      detail::reject_setting("min_step_fraction", "greater than max_step_fraction", settings.min_step_fraction);
     if (settings.max_order < 1 or settings.max_order > max_order)
       detail::reject_setting("max_order",
         "outside 1..5",

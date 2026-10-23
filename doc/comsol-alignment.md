@@ -81,11 +81,11 @@ with `j` the accepted-step count and `sigma_i` a scale of the variable — the
 "Scales for dependent variables" line of the solver log. Three measurements fix
 it, and each of them is a model the recorded reference cannot see:
 
-| Measurement | Result |
-| --- | --- |
-| `u' = -1`, `u(0) = c`, four magnitudes | the first step is `0.5 (A + rtol |y|)` with `A = 2 rtol factor c` to five digits, so the first term is `|y_i|` and the scale of a single dof is its own magnitude |
-| `u' + u = 0`, the recorded 44-step exact run | a constant `sigma = 1` gives 31 steps and `s_i = |y_i|` gives 45; only the `exp(-j/5)` blend gives 44 |
-| `u' = -1e-9 u, v' = -1` and `u' = -u + v, v' = -100 v` | the first step needs `sigma = (1, 1)` and `(1, 0.32)`: the scale is per variable and comes from the model |
+| Measurement                                            | Result                                                                                                                                                      |
+| ------------------------------------------------------ | :---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `u' = -1`, `u(0) = c`, four magnitudes                 | The first step is `0.5 (A + rtol \|y\|)` with `A = 2 rtol factor c` to five digits. The first term is `\|y_i\|`; a single dof's scale is its own magnitude. |
+| `u' + u = 0`, the recorded 44-step exact run           | A constant `sigma = 1` gives 31 steps; `s_i = \|y_i\|` gives 45. The `exp(-j/5)` blend gives 44.                                                            |
+| `u' = -1e-9 u, v' = -1` and `u' = -u + v, v' = -100 v` | The first step needs `sigma = (1, 1)` and `(1, 0.32)`, respectively: scale is per variable and comes from the model.                                        |
 
 An earlier form substituted the state's 2-norm for `|y_i|` and the constant one
 for `sigma_i`. It agrees with the measured form only when `sigma_i = 1`, which is

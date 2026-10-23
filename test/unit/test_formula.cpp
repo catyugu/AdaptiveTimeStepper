@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -62,6 +63,57 @@ namespace {
   }
 
 } // namespace
+
+TEST_CASE("formula: interpolation and derivatives reproduce polynomials away from zero")
+{
+  const std::array<double, 6> nodes {-2.0, -1.0, 0.0, 1.0, 2.0, 3.0};
+  const double x = 0.4;
+  for (int degree = 0; degree <= 5; ++degree) {
+    for (int derivative = 0; derivative <= 3; ++derivative) {
+      const auto weights = atstep::lagrange_derivative(nodes, x, derivative, 6);
+      double actual = 0.0;
+      for (std::size_t j = 0; j < nodes.size(); ++j)
+        actual += weights[j] * monomial(nodes[j], degree);
+      double expected = 0.0;
+      if (degree >= derivative) {
+        expected = monomial(x, degree - derivative);
+        for (int j = 0; j < derivative; ++j)
+          expected *= static_cast<double>(degree - j);
+      }
+      CHECK_NEAR(actual, expected, 1e-12);
+      if (derivative == 0) {
+        const auto values = atstep::lagrange_value(nodes, x, 6);
+        for (std::size_t j = 0; j < nodes.size(); ++j)
+          CHECK_NEAR(values[j], weights[j], 0.0);
+      }
+    }
+  }
+}
+
+TEST_CASE("formula: invalid interpolation nodes cannot overrun fixed buffers")
+{
+  const std::array<double, 2> nodes {0.0, 1.0};
+  CHECK_THROWS(atstep::lagrange_value(nodes, 0.0, 3));
+  CHECK_THROWS(atstep::lagrange_value(nodes, 0.0, -1));
+  const std::array<double, 2> repeated {1.0, 1.0};
+  CHECK_THROWS(atstep::lagrange_derivative(repeated, 0.0, 1, 2));
+  CHECK_THROWS(atstep::lagrange_value(nodes, std::numeric_limits<double>::infinity(), 2));
+  CHECK_THROWS(atstep::StepFormula {std::numeric_limits<double>::infinity()});
+
+  const std::vector<double> long_history(20, 0.1);
+  const atstep::StepFormula formula(5, long_history);
+  const auto weights = formula.extrapolation(20);
+  double sum = 0.0;
+  for (double weight : weights)
+    sum += weight;
+  CHECK_NEAR(sum, 1.0, 1e-10);
+  const atstep::StepFormula low_order(1, long_history);
+  const auto extrapolation = low_order.extrapolation(20);
+  sum = 0.0;
+  for (double weight : extrapolation)
+    sum += weight;
+  CHECK_NEAR(sum, 1.0, 1e-10);
+}
 
 TEST_CASE("formula: the weights of a constant step are the textbook BDF ones")
 {

@@ -5,6 +5,8 @@
 #include <cmath>
 #include <concepts>
 #include <cstddef>
+#include <limits>
+#include <stdexcept>
 #include <type_traits>
 #include <vector>
 
@@ -25,15 +27,12 @@ namespace atstep {
   /// coupled system, a distributed vector with a layout of its own.
   ///
   /// The default forwards to a member `axpy(a, x)`. A type that has no such
-  /// member gets one by overloading this function in this namespace:
+  /// member can be wrapped in a type providing that member:
   ///
-  ///     namespace atstep {
-  ///         inline void axpy(std::vector<float>& y, double a,
-  ///                          const std::vector<float>& x)
-  ///         {
-  ///             for (std::size_t i = 0; i < y.size(); ++i) y[i] += a * x[i];
-  ///         }
-  ///     }
+  ///     struct State {
+  ///         std::vector<float> values;
+  ///         void axpy(double a, const State& x);
+  ///     };
   template <class State>
     requires requires(State& y, const State& x, double a) { y.axpy(a, x); }
   void axpy(State& y, double a, const State& x)
@@ -50,45 +49,21 @@ namespace atstep {
   inline void
   axpy(std::vector<double>& y, double a, const std::vector<double>& x)
   {
+    if (y.size() != x.size())
+      throw std::invalid_argument("atstep: axpy state sizes differ");
     for (std::size_t i = 0; i < y.size(); ++i)
       y[i] += a * x[i];
   }
 
-  /// The norm a step's error is measured in: COMSOL's weighted root mean square,
+  /// Weighted RMS: sqrt(mean((error_i / (A_i + relative*abs(y_i)))^2)).
+  /// With scaled=false, A_i=absolute. Otherwise, for accepted-step index j:
   ///
-  ///     ||e|| = sqrt( (1/N) sum_i ( e_i / (A_i + R |y_i|) )^2 ),
+  ///   A_i = absolute * ((2-exp(-j/5))*abs(returned_i) + exp(-j/5)*sigma_i).
   ///
-  /// with `R` the relative tolerance, `A_i` the absolute one, `N` the number of
-  /// degrees of freedom, and `y` the state the error is taken against. It is the
-  /// norm of COMSOL's error test, whose every variable of a coupled system
-  /// shares one mean square: `N` counts all of them.
-  ///
-  /// `A_i` has COMSOL's two methods of its absolute tolerance. With `scaled` off
-  /// it is `R * absolute_factor`: the plain reading of its "Factor" method, and
-  /// the form a run of a physical field is held to. With it on it is its
-  /// *scaled* absolute tolerance,
-  ///
-  ///     A_i = R * absolute_factor * (|y_i| + s_i),
-  ///     s_i = (1 - e^(-j/5)) |y_i| + e^(-j/5) sigma_i,
-  ///
-  /// where `j` is the number of accepted time steps (zero at initialization) and
-  /// `sigma_i` the scale of the degree of freedom — `scale` below, COMSOL's
-  /// "scale for dependent variable", one by default. So the absolute tolerance
-  /// follows the magnitude of each variable rather than a fixed floor, and it
-  /// tightens as the run proceeds. At the first step `A_i` is
-  /// `R * absolute_factor * (|y_i| + sigma_i)`; a scalar state of magnitude one
-  /// is therefore held twice as tightly as the unscaled method holds it, and
-  /// that factor is the difference between the first step of a run and COMSOL's
-  /// own (see doc/comsol-alignment.md).
-  ///
-  /// A state is expected to expose its degrees of freedom as `size()` and
-  /// `operator[]`. A distributed or blocked state passes a norm of its own
-  /// instead — the stepper takes any callable object with this shape, so a
-  /// reduction over the ranks is a lambda:
-  ///
-  ///     atstep::TimeStepper<State> stepper(settings, solve,
-  ///         [](const State& e, const State& y) { return global_rms(e, y);
-  ///         });
+  /// y is the accepted internal state; returned is the most recently stored
+  /// state, possibly interpolated. Missing scale entries use sigma_i=1.
+  /// States expose size() and operator[]. Other layouts can supply a custom
+  /// norm as TimeStepper<State, Norm>'s second template parameter.
   struct WeightedRmsNorm {
     double relative = 1e-2;
     double absolute = 1e-3;
@@ -116,6 +91,8 @@ namespace atstep {
       const State& scale_reference) const
     {
       const std::size_t n = reference.size();
+      if (error.size() != n or scale_reference.size() != n)
+        throw std::invalid_argument("atstep: norm state sizes differ");
       if (n == 0)
         return 0.0;
       const double decay = std::exp(-0.2 * static_cast<double>(step_index));
@@ -127,7 +104,13 @@ namespace atstep {
           = scaled ? absolute * ((2.0 - decay) * magnitude + decay * sigma)
                    : absolute;
         const double weight = limit + relative * std::abs(reference[i]);
-        if (weight > 0.0) {
+        if (not std::isfinite(error[i]) or not std::isfinite(weight) or weight < 0.0)
+          return std::numeric_limits<double>::infinity();
+        if (weight == 0.0) {
+          if (error[i] != 0.0)
+            return std::numeric_limits<double>::infinity();
+        }
+        else {
           const double ratio = error[i] / weight;
           sum += ratio * ratio;
         }

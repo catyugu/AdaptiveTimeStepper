@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <initializer_list>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -200,4 +201,24 @@ TEST_CASE("norm: std::vector is a state the stepper takes")
     }
   };
   static_assert(atstep::StateVector<Member>);
+}
+
+TEST_CASE("state: mismatched sizes are rejected before accessing elements")
+{
+  std::vector<double> y {1.0, 2.0};
+  CHECK_THROWS(atstep::axpy(y, 1.0, of({3.0})));
+  CHECK_NEAR(y[0], 1.0, 0.0);
+  atstep::WeightedRmsNorm norm;
+  CHECK_THROWS(norm(of({1.0}), y));
+  CHECK_THROWS(norm(y, y, of({1.0})));
+}
+
+TEST_CASE("norm: a zero weight cannot hide nonzero error")
+{
+  atstep::WeightedRmsNorm norm;
+  norm.absolute = 0.0;
+  CHECK_EQ(norm(of({0.0}), of({0.0})), 0.0);
+  CHECK(std::isinf(norm(of({1.0}), of({0.0}))));
+  CHECK(std::isinf(norm(of({std::numeric_limits<double>::quiet_NaN()}), of({0.0}))));
+  CHECK(std::isinf(norm(of({1.0}), of({std::numeric_limits<double>::infinity()}))));
 }
