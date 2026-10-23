@@ -87,8 +87,9 @@ y' = predicted_derivative + cj * (y - predicted_state).
 ```
 
 The predictor and error estimates use persistent scaled divided differences.
-Each attempt rescales a copy of the accepted history; a rejection discards the
-copy. Lower-order estimates use the corresponding difference columns plus the
+Each attempt scales every column it reads by the factor its step size gives it,
+and writes none of them; a rejection leaves the accepted table as it is.
+Lower-order estimates use the corresponding difference columns plus the
 correction. Reconstructing a lower-degree Lagrange polynomial is not equivalent
 after a step or order change. This is a change to the numerical formula, not a
 constant fitted to the reference step counts.

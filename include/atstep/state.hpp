@@ -26,6 +26,11 @@ namespace atstep {
   /// a state of any shape works: a vector of one value, a block vector of a
   /// coupled system, a distributed vector with a layout of its own.
   ///
+  /// `x` may be `y` itself, which rescales a state: the stepper scales stored
+  /// columns this way rather than copying them. An implementation must
+  /// therefore read an element of `x` before it writes the same element of
+  /// `y`, as `y += a * x` elementwise does.
+  ///
   /// The default forwards to a member `axpy(a, x)`. A type that has no such
   /// member can be wrapped in a type providing that member:
   ///
