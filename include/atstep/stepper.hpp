@@ -255,8 +255,10 @@ namespace atstep {
   struct RunHooks {
     /// Every accepted step, in order.
     std::function<void(const StepRecord&)> on_step;
-    /// Every stored value: the time, the state, and whether it was
-    /// interpolated from the steps around it rather than being a level.
+    /// Every stored value: the time, the state, and whether it was interpolated
+    /// from the steps around it rather than being a level. The state is the
+    /// stepper's own buffer and is only valid during the call — copy it, or
+    /// evaluate the derivative first, before calling `interpolate` again.
     std::function<void(double, const State&, bool)> on_store;
   };
 
