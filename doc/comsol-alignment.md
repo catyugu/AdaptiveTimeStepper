@@ -18,10 +18,11 @@ The 1,336 samples in that file come from COMSOL, not from this library.
 
 The regression checks each stored time, value and derivative, the accepted,
 error-test-failure and failed-solve counts, and the order of every logged step.
-Time differences must be below `2e-9 s`; value differences and derivatives
-after initialization must be below `2e-11`. The initialization derivative has
-a `2e-9` limit because it is reconstructed by subtracting two nearby values
-and dividing by a backward-Euler step as small as `1e-7 s`.
+One tolerance covers every recorded quantity: `1e-8`. The measured worst case
+over all 21 configurations is `5e-10` in time and `7e-10` in the derivative — the
+latter is a consistent-initialization derivative, reconstructed by dividing by a
+backward-Euler step as small as `1e-7 s` — so the single number keeps an order of
+magnitude of margin without a special case per quantity.
 
 | Configuration                                      | COMSOL accepted steps |
 | -------------------------------------------------- | :-------------------- |

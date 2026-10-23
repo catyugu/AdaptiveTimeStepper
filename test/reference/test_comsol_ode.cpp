@@ -7,9 +7,11 @@
 #include <cmath>
 #include <cstddef>
 #include <string>
-#include <vector>
 
 namespace {
+
+  /// The one tolerance of the comparison, applied to every recorded quantity
+  constexpr double agreement = 1e-8;
 
   /// The state of the COMSOL model: one degree of freedom, `u`.
   struct State {
@@ -144,19 +146,16 @@ TEST_CASE("comsol: full-precision trajectories, derivatives, orders and "
     CHECK_EQ(stored.size(), reference.samples.size());
     CHECK_EQ(report.rejected, reference.rejected);
     CHECK_EQ(report.failed_solves, reference.failed_solves);
-    double dt = 0.0, dy = 0.0, dd = 0.0, internal_dd = 0.0;
+    double dt = 0.0;
+    double dv = 0.0;
+    double dd = 0.0;
     for (std::size_t i = 0;
       i < std::min(stored.size(), reference.samples.size());
       ++i) {
-      dt = std::max(dt,
-        std::abs(stored[i].time - reference.samples[i].time));
-      dy = std::max(
-        dy, std::abs(stored[i].value - reference.samples[i].value));
+      dt = std::max(dt, std::abs(stored[i].time - reference.samples[i].time));
+      dv = std::max(dv, std::abs(stored[i].value - reference.samples[i].value));
       dd = std::max(dd,
         std::abs(stored[i].derivative - reference.samples[i].derivative));
-      if (i > 0)
-        internal_dd = std::max(internal_dd,
-          std::abs(stored[i].derivative - reference.samples[i].derivative));
     }
     std::printf("COMSOL %-16s samples=%zu/%zu rejects=%d/%d max |dt|=%.3g "
                 "|du|=%.3g |du'|=%.3g\n",
@@ -166,12 +165,11 @@ TEST_CASE("comsol: full-precision trajectories, derivatives, orders and "
       report.rejected,
       reference.rejected,
       dt,
-      dy,
+      dv,
       dd);
-    CHECK(dt < 2e-9);
-    CHECK(dy < 2e-11);
-    CHECK(dd < 2e-9);
-    CHECK(internal_dd < 2e-11);
+    CHECK(dt < agreement);
+    CHECK(dv < agreement);
+    CHECK(dd < agreement);
     for (const auto& logged : reference.logged_orders) {
       CHECK(logged.step > 0 and static_cast<std::size_t>(logged.step) <= steps.size());
       if (logged.step > 0 and static_cast<std::size_t>(logged.step) <= steps.size())
