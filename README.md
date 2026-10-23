@@ -111,7 +111,13 @@ error with zero weight has infinite norm. Mismatched vector sizes are rejected.
 | `store_mode`                  | `interpolate` | Output selection                                     |
 | `interpolate_end_time`        | true          | Allow an internal step past the final time           |
 | `manual_step`, `manual_order` | 0, 2          | Fixed step and target order in manual mode           |
-| `derivative_orders`           | 1             | Derivative levels available to the solve, up to 3    |
+| `derivative_orders`           | 1             | Derivative levels the solve is given, 1 to 3         |
+
+`derivative_orders = 1` is the fixed-leading BDF history of the library's own
+method. A higher value switches the same stepping to the classical stencil of
+`StepFormula`, which supplies the second or third derivative the residual asks
+for; the two are different discretizations, and a second derivative taken
+directly from levels converges at first order (see the scope note below).
 
 ### Why the default maximum order is 5
 
@@ -145,15 +151,22 @@ two artificial backward-Euler solves, so the first returned state can differ
 slightly from `initial`. `run(times, hooks)` requires strictly increasing times
 starting at `t0` and ending at `end`.
 
-`on_step` receives accepted-step diagnostics; `on_store` receives output values.
-`RunReport` contains step, rejection, failed-solve and output counts.
-Callback state references are valid only during the callback: copy values you
-want to retain. `interpolate(t, 0)` returns the dense value and
+`on_step` receives each accepted step's record and the state it left; `on_store`
+receives output values. `RunReport` contains step, rejection, failed-solve and
+output counts. Callback state references are valid only during the callback:
+copy values you want to retain. `interpolate(t, 0)` returns the dense value and
 `interpolate(t, 1)` its derivative in a reusable internal buffer.
 
-For a caller-driven loop, use `attempt(h)` followed by `accept`, `reject` or
-`reject_convergence` on that attempt. Only the most recent attempt's buffers
-are retained; finish handling it before attempting another step.
+`time()` and `state()` are the current solution: the newest accepted level.
+
+For a caller-driven loop, `advance()` takes one step the error test accepts —
+it retries a step the solve failed or the error test refused — and reports it.
+For a decision of your own, `attempt(h)` returns a `TrialStep` handle: its
+`state()` is the candidate solution, checked before committing it, and exactly
+one of `accept`, `reject` (its error test failed) or `reject_convergence` (its
+solve failed) settles it. The handle is move-only, cannot be copied, and is
+refused once another attempt has been made, so a step cannot be committed
+twice or committed out of order.
 
 ## Build and test
 

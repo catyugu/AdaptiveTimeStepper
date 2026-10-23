@@ -225,20 +225,111 @@ namespace atstep {
   struct SolveOutcome {
     /// Whether the nonlinear solve converged. A step that did not is
     /// retried at a quarter of its size.
-    bool converged = true;
+    bool converged = false;
     /// The nonlinear iterations the solve took, for the log.
     int iterations = 0;
   };
 
-  /// One attempted step: the state it produced, and the error estimate of it.
-  struct Attempt {
-    bool solved = false;
-    bool passed = false;
-    double time = 0.0;
-    double step = 0.0;
-    int order = 0;
-    int iterations = 0;
-    StepErrors errors;
+  template <class State, class Norm>
+    requires StateVector<State>
+  class TimeStepper;
+
+  /// One attempted step: the time and order it was taken at, whether its
+  /// solve converged, and the error estimate of it.
+  ///
+  /// It is the receipt of an attempt: the stepper creates it, it cannot be
+  /// copied, and one call of `accept`, `reject` or `reject_convergence`
+  /// settles it. A handle of an older attempt, or of an attempt another
+  /// stepper took, is refused rather than committed. The candidate state it
+  /// exposes is the stepper's own buffer, valid until the next attempt.
+  template <class State>
+  class TrialStep {
+  public:
+    TrialStep(const TrialStep&) = delete;
+    TrialStep& operator=(const TrialStep&) = delete;
+    TrialStep(TrialStep&&) noexcept = default;
+    TrialStep& operator=(TrialStep&&) noexcept = default;
+
+    /// Whether the solve converged.
+    bool solved() const noexcept
+    {
+      return solved_;
+    }
+
+    /// Whether the step met the error test. A step that did not is rejected.
+    bool passed() const noexcept
+    {
+      return passed_;
+    }
+
+    /// The time the step ends at.
+    double time() const noexcept
+    {
+      return time_;
+    }
+
+    /// The size of the step.
+    double step() const noexcept
+    {
+      return step_;
+    }
+
+    /// The order the step was taken at.
+    int order() const noexcept
+    {
+      return order_;
+    }
+
+    /// The nonlinear iterations the solve reported.
+    int iterations() const noexcept
+    {
+      return iterations_;
+    }
+
+    /// The error estimates of the step.
+    const StepErrors& errors() const noexcept
+    {
+      return errors_;
+    }
+
+    /// The state the solve left: the candidate solution of this step.
+    const State& state() const noexcept
+    {
+      return *state_;
+    }
+
+    /// Label the step as ending at `time` rather than at the time its size
+    /// proposes. A landing mode snaps a step onto an output time this way,
+    /// within a rounding error; any other use breaks the time the history
+    /// records.
+    void snap_time(double time) noexcept
+    {
+      time_ = time;
+    }
+
+  private:
+    template <class S, class N>
+      requires StateVector<S>
+    friend class TimeStepper;
+
+    TrialStep(const State& state, double time, double step, int order)
+      : state_(&state)
+      , time_(time)
+      , step_(step)
+      , order_(order)
+    {
+    }
+
+    const State* state_;
+    double time_;
+    double step_;
+    int order_;
+    int iterations_ = 0;
+    bool solved_ = false;
+    bool passed_ = false;
+    StepErrors errors_ {};
+    /// The attempt of the stepper this handle describes; 0 is not an attempt.
+    unsigned long long id_ = 0;
   };
 
   /// An accepted step, as the log sees it.
@@ -254,8 +345,10 @@ namespace atstep {
   /// What a run reports as it goes.
   template <class State>
   struct RunHooks {
-    /// Every accepted step, in order.
-    std::function<void(const StepRecord&)> on_step;
+    /// Every accepted step, in order, with the state it left: the level the
+    /// history now holds. The state is the stepper's own buffer and is only
+    /// valid during the call.
+    std::function<void(const StepRecord&, const State&)> on_step;
     /// Every stored value: the time, the state, and whether it was interpolated
     /// from the steps around it rather than being a level. The state is the
     /// stepper's own buffer and is only valid during the call — copy it, or
@@ -292,7 +385,14 @@ namespace atstep {
   ///             return atstep::SolveOutcome {true, iterations};
   ///         });
   ///     stepper.start(0.0, y0, 10.0);
-  ///     const auto report = stepper.run(times, hooks);
+  ///     while (stepper.time() < stepper.end_time()) {
+  ///         const auto step = stepper.advance();
+  ///         const Vector& y = stepper.state(); // the solution at step.time
+  ///     }
+  ///
+  /// `run` is the same loop for a whole schedule of output times; `attempt`
+  /// with `accept`, `reject` and `reject_convergence` is one step at a time,
+  /// with the decision taken by the caller.
   ///
   /// `y` comes in holding the predictor of the step — the extrapolation of
   /// the history, which is a good initial guess — and must leave holding the
@@ -345,6 +445,7 @@ namespace atstep {
       const double span = end_time - time;
       controller_ = StepController(settings_, span);
       started_ = false;
+      pending_ = false;
       if constexpr (std::is_same_v<Norm, WeightedRmsNorm>)
         norm_.step_index = 0;
       has_previous_ee_ = false;
@@ -453,6 +554,21 @@ namespace atstep {
       return end_time_;
     }
 
+    /// The time the run has reached: the newest accepted level's.
+    double time() const
+    {
+      require_started();
+      return history_.time(0);
+    }
+
+    /// The current solution: the newest accepted level's state. It is the
+    /// stepper's own buffer, overwritten by the next attempt.
+    const State& state() const
+    {
+      require_started();
+      return history_.state(0);
+    }
+
     /// The step size and order of the next step.
     double step_size() const
     {
@@ -465,29 +581,34 @@ namespace atstep {
 
     /// Take one attempt at `step`: solve the system the scheme defines, and
     /// estimate the error of the step. Nothing is committed: `accept`
-    /// pushes the state onto the history, `reject` drops it.
-    Attempt attempt(double step)
+    /// pushes the state onto the history, `reject` and `reject_convergence`
+    /// drop it.
+    ///
+    /// Only the attempt this returns is pending, and only until it is
+    /// settled: another attempt, or a second settlement, invalidates it.
+    TrialStep<State> attempt(double step)
     {
       require_started();
+      pending_ = false; // an attempt that throws leaves none pending
       const double next_time = history_.time(0) + step;
       if (not std::isfinite(step) or not(step > 0.0)
         or not std::isfinite(next_time) or not(next_time > history_.time(0)))
         throw std::invalid_argument("atstep: step must be finite, positive and advance time");
-      Attempt result;
-      result.step = step;
-      result.time = next_time;
 
       // Both formulations use the same history bound on startup order.
       const int available = static_cast<int>(
         std::min<std::size_t>(history_.size(), max_levels));
       const int order = std::min(controller_.order(), std::max(1, available - 1));
       controller_.begin_attempt(step, order);
-      result.order = order;
 
       auto derivative = prepare_derivative(step, order);
       work_ = predictor_;
+      TrialStep<State> result {work_, next_time, step, order};
+      result.id_ = ++attempt_id_;
+      pending_ = true;
+
       StepRequest<State> request {
-        result.time,
+        next_time,
         step,
         order,
         std::move(derivative),
@@ -495,36 +616,51 @@ namespace atstep {
         scale_reference_,
         static_cast<std::size_t>(controller_.steps())};
       const SolveOutcome outcome = solve_(request, work_);
-      result.iterations = outcome.iterations;
+      result.iterations_ = outcome.iterations;
       if (not outcome.converged)
         return result;
-      result.solved = true;
+      result.solved_ = true;
 
       if (fixed_leading() or controller_.error_controlled()) {
         ee_ = work_;
         atstep::axpy(ee_, -1.0, predictor_);
       }
       if (not controller_.error_controlled()) {
-        result.passed = true;
+        result.passed_ = true;
         return result;
       }
-      result.errors = estimate(order);
-      result.passed = result.errors.passed();
+      result.errors_ = estimate(order);
+      result.passed_ = result.errors_.passed();
       return result;
     }
 
     /// Commit the step `attempt` produced.
-    void accept(const Attempt& attempt)
+    ///
+    /// @param[in] attempt the pending attempt, whose solve converged and
+    /// whose error test passed. The call settles it.
+    void accept(TrialStep<State> attempt)
     {
+      require_pending(attempt);
+      if (not attempt.solved_)
+        throw std::logic_error("atstep: a step whose solve did not converge "
+                               "cannot be accepted (see reject_convergence)");
+      if (not attempt.passed_)
+        throw std::logic_error("atstep: the step did not meet the error test ("
+          + std::to_string(attempt.errors_.test) + "); reject it");
+      if (not std::isfinite(attempt.time_) or not(attempt.time_ > history_.time(0)))
+        throw std::invalid_argument(
+          "atstep: an accepted step must advance the time of the run");
+      pending_ = false;
+
       if (fixed_leading()) {
         last_derivative_ = derivative_predictor_;
         atstep::axpy(last_derivative_, cj_, ee_);
       }
-      history_.push(attempt.time, work_);
+      history_.push(attempt.time_, work_);
       history_.keep(static_cast<std::size_t>(max_levels));
-      last_order_ = attempt.order;
+      last_order_ = attempt.order_;
       if (fixed_leading()) {
-        const auto k = static_cast<std::size_t>(attempt.order);
+        const auto k = static_cast<std::size_t>(attempt.order_);
         trial_phi_[k + 1] = ee_;
         atstep::axpy(trial_phi_[k], 1.0, ee_);
         for (std::size_t j = k; j > 0; --j)
@@ -532,27 +668,81 @@ namespace atstep {
         phi_ = trial_phi_;
         psi_ = trial_psi_;
       }
-      controller_.accept(attempt.errors, attempt.step);
+      controller_.accept(attempt.errors_, attempt.step_);
       scale_reference_ = work_;
       if constexpr (std::is_same_v<Norm, WeightedRmsNorm>)
         norm_.step_index = static_cast<std::size_t>(controller_.steps());
       if (not fixed_leading() and controller_.error_controlled()) {
         previous_ee_ = ee_;
-        previous_order_ = attempt.order;
+        previous_order_ = attempt.order_;
         has_previous_ee_ = true;
       }
     }
 
     /// Drop the step `attempt` produced: it missed the tolerance.
-    void reject(const Attempt& attempt)
+    void reject(TrialStep<State> attempt)
     {
-      controller_.reject(attempt.errors, attempt.step);
+      require_pending(attempt);
+      if (not attempt.solved_)
+        throw std::logic_error("atstep: the solve of the step did not converge "
+                               "(see reject_convergence)");
+      pending_ = false;
+      controller_.reject(attempt.errors_, attempt.step_);
     }
 
     /// Drop the step `attempt` produced: its solve did not converge.
-    void reject_convergence(const Attempt& attempt)
+    void reject_convergence(TrialStep<State> attempt)
     {
-      controller_.reject_convergence(attempt.step);
+      require_pending(attempt);
+      if (attempt.solved_)
+        throw std::logic_error(
+          "atstep: the solve of the step converged; reject it for its error "
+          "test instead");
+      pending_ = false;
+      controller_.reject_convergence(attempt.step_);
+    }
+
+    /// Take one step the error test accepts, and report it.
+    ///
+    /// It proposes the step the controller asks for, retries it smaller when
+    /// the solve does not converge or the error test fails, and accepts it.
+    /// It knows nothing of the output times: `run` is what cuts a step short
+    /// to land on one.
+    ///
+    /// @throws std::runtime_error when the step has fallen to the smallest
+    /// one the controller proposes and still does not converge or still
+    /// misses the tolerance.
+    StepRecord advance()
+    {
+      require_started();
+      for (;;) {
+        const double from = history_.time(0);
+        const double step = controller_.step_size();
+        if (not(step > 0.0))
+          throw std::runtime_error(
+            "atstep: no step is left at t = " + std::to_string(from));
+        TrialStep<State> piece = attempt(step);
+        if (not piece.solved_) {
+          const double tried = piece.step_;
+          if (tried <= controller_.smallest_step())
+            throw std::runtime_error(
+              "atstep: the solve of the step from t = " + std::to_string(from) + " did not converge at the smallest step "
+              + std::to_string(tried));
+          reject_convergence(std::move(piece));
+          continue;
+        }
+        if (not piece.passed_) {
+          const double error = piece.errors_.test;
+          reject(std::move(piece));
+          if (controller_.step_size() <= controller_.smallest_step())
+            throw std::runtime_error(
+              "atstep: the time step at t = " + std::to_string(from) + " fell to " + std::to_string(controller_.step_size()) + " and the local error is still " + std::to_string(error) + "; the tolerance cannot be met on this interval");
+          continue;
+        }
+        const StepRecord record = record_of(piece);
+        accept(std::move(piece));
+        return record;
+      }
     }
 
     /// Integrate from the start time to the end time, and report the values
@@ -621,46 +811,45 @@ namespace atstep {
           throw std::runtime_error("atstep: no step is left at t = " + std::to_string(time));
 
         const double from = time;
-        Attempt piece = attempt(step);
+        TrialStep<State> piece = attempt(step);
         const double boundary = intermediate_landing
           ? intermediate_target
           : (settings_.step_mode == StepMode::strict ? target
                                                      : end_time_);
-        if ((settings_.step_mode == StepMode::strict or intermediate_landing or not settings_.interpolate_end_time) and std::abs(piece.time - boundary) <= 4.0 * std::numeric_limits<double>::epsilon() * (std::abs(time) + std::abs(boundary)))
-          piece.time = boundary;
-        if (not piece.solved) {
+        if ((settings_.step_mode == StepMode::strict or intermediate_landing or not settings_.interpolate_end_time) and std::abs(piece.time() - boundary) <= 4.0 * std::numeric_limits<double>::epsilon() * (std::abs(time) + std::abs(boundary)))
+          piece.snap_time(boundary);
+        if (not piece.solved()) {
           ++report.failed_solves;
-          if (piece.step <= controller_.smallest_step())
+          const double tried = piece.step();
+          reject_convergence(std::move(piece));
+          if (tried <= controller_.smallest_step())
             throw std::runtime_error(
               "atstep: the solve of the step from t = " + std::to_string(from) + " did not converge at the "
                                                                                  "smallest step "
-              + std::to_string(piece.step));
-          reject_convergence(piece);
+              + std::to_string(tried));
           continue;
         }
-        if (not piece.passed) {
+        if (not piece.passed()) {
           ++report.rejected;
-          reject(piece);
+          const double error = piece.errors().test;
+          reject(std::move(piece));
           if (controller_.step_size() <= controller_.smallest_step())
             throw std::runtime_error(
-              "atstep: the time step at t = " + std::to_string(from) + " fell to " + std::to_string(controller_.step_size()) + " and the local error is still " + std::to_string(piece.errors.test) + "; the tolerance cannot be met on this interval");
+              "atstep: the time step at t = " + std::to_string(from) + " fell to " + std::to_string(controller_.step_size()) + " and the local error is still " + std::to_string(error) + "; the tolerance cannot be met on this interval");
           continue;
         }
 
-        accept(piece);
-        time = piece.time;
+        const StepRecord record = record_of(piece);
+        accept(std::move(piece));
+        time = record.time;
         ++report.steps;
-        report.max_order = std::max(report.max_order, piece.order);
+        report.max_order = std::max(report.max_order, record.order);
         if (report.steps == 1)
-          report.first_step = piece.step;
-        report.last_step = piece.step;
+          report.first_step = record.step;
+        report.last_step = record.step;
         report.final_time = time;
         if (hooks.on_step)
-          hooks.on_step(StepRecord {time,
-            piece.step,
-            piece.order,
-            piece.iterations,
-            piece.errors.test});
+          hooks.on_step(record, history_.state(0));
 
         if (settings_.store_mode == StoreMode::steps) {
           if (time > end_time_ and settings_.interpolate_end_time)
@@ -720,14 +909,30 @@ namespace atstep {
       const auto weights = lagrange_derivative(
         std::span<const double>(nodes.data(), count),
         0.0,
-        derivative,
-        static_cast<int>(count));
+        derivative);
       combine(interpolated_,
         std::span<const double>(weights.data(), count));
       return interpolated_;
     }
 
   private:
+    /// Refuse a handle that is not the pending attempt of this stepper.
+    void require_pending(const TrialStep<State>& attempt) const
+    {
+      if (not pending_ or attempt.id_ != attempt_id_ or attempt.state_ != &work_)
+        throw std::logic_error(
+          "atstep: the step is not the pending attempt of this stepper");
+    }
+
+    static StepRecord record_of(const TrialStep<State>& attempt)
+    {
+      return StepRecord {attempt.time_,
+        attempt.step_,
+        attempt.order_,
+        attempt.iterations_,
+        attempt.errors_.test};
+    }
+
     typename StepRequest<State>::Derivative prepare_derivative(double step,
       int order)
     {
@@ -961,6 +1166,11 @@ namespace atstep {
     /// The size of the initialization step (see `start`).
     double probe_ = 1.0;
     bool started_ = false;
+
+    /// The attempt a `TrialStep` describes, and whether one is still to be
+    /// settled. A handle whose id is not the current one is not that attempt.
+    unsigned long long attempt_id_ = 0;
+    bool pending_ = false;
 
     /// The buffers of a step: the initial derivative, the predictor the solve
     /// starts from, the state it produces, the correction of the step, the

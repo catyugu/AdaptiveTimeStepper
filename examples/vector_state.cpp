@@ -36,12 +36,15 @@ namespace {
 
       // The predictor the stepper handed in is the initial guess.
       int iterations = 0;
+      bool converged = false;
       for (; iterations < 30; ++iterations) {
         double r[2];
         residual(y, r);
         const double scale = std::abs(y[0]) + std::abs(y[1]) + 1.0;
-        if (std::abs(r[0]) + std::abs(r[1]) < 1e-12 * scale)
+        if (std::abs(r[0]) + std::abs(r[1]) < 1e-12 * scale) {
+          converged = true;
           break;
+        }
 
         // J = a0 I - df/dy, inverted by hand for the two-by-two block.
         const double j00 = a0 - (2.0 * y[0] * y[1] - 4.4);
@@ -52,7 +55,8 @@ namespace {
         y[0] -= (j11 * r[0] - j01 * r[1]) / det;
         y[1] -= (-j10 * r[0] + j00 * r[1]) / det;
       }
-      return atstep::SolveOutcome {true, iterations};
+      // An exhausted iteration is a step the stepper must retry smaller.
+      return atstep::SolveOutcome {converged, iterations};
     }
   };
 
@@ -82,7 +86,8 @@ int main()
 
   int worst_iterations = 0;
   atstep::RunHooks<std::vector<double>> hooks;
-  hooks.on_step = [&worst_iterations](const atstep::StepRecord& record) {
+  hooks.on_step = [&worst_iterations](const atstep::StepRecord& record,
+                    const std::vector<double>&) {
     worst_iterations = std::max(worst_iterations, record.iterations);
   };
   const auto report = stepper.run(times, hooks);

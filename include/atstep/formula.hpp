@@ -15,30 +15,28 @@
 namespace atstep {
 
   /// The weights `c` with `sum_j c[j] * v[j]` equal to the value at `x` of
-  /// the polynomial through `(nodes[j], v[j])`, over the first `count` nodes.
+  /// the polynomial through `(nodes[j], v[j])`.
   std::array<double, max_levels>
-  lagrange_value(std::span<const double> nodes, double x, int count);
+  lagrange_value(std::span<const double> nodes, double x);
 
   /// The weights `c` with `sum_j c[j] * v[j]` equal to the `order`-th
-  /// derivative at `x` of the polynomial through `(nodes[j], v[j])`, over the
-  /// first `count` nodes.
+  /// derivative at `x` of the polynomial through `(nodes[j], v[j])`.
   std::array<double, max_levels> lagrange_derivative(
-    std::span<const double> nodes, double x, int order, int count);
+    std::span<const double> nodes, double x, int order);
 
   namespace detail {
 
-    inline void validate_nodes(std::span<const double> nodes, double x, int count)
+    inline void validate_nodes(std::span<const double> nodes, double x)
     {
-      if (count < 1 or count > max_levels or static_cast<std::size_t>(count) > nodes.size())
+      if (nodes.empty() or nodes.size() > static_cast<std::size_t>(max_levels))
         throw std::invalid_argument("atstep: invalid interpolation node count");
       if (not std::isfinite(x))
         throw std::invalid_argument("atstep: interpolation time must be finite");
-      for (int j = 0; j < count; ++j) {
-        const auto index = static_cast<std::size_t>(j);
+      for (std::size_t index = 0; index < nodes.size(); ++index) {
         if (not std::isfinite(nodes[index]))
           throw std::invalid_argument("atstep: interpolation nodes must be finite");
-        for (int i = 0; i < j; ++i)
-          if (nodes[index] == nodes[static_cast<std::size_t>(i)])
+        for (std::size_t i = 0; i < index; ++i)
+          if (nodes[index] == nodes[i])
             throw std::invalid_argument("atstep: interpolation nodes must be distinct");
       }
     }
@@ -74,15 +72,16 @@ namespace atstep {
   } // namespace detail
 
   inline std::array<double, max_levels>
-  lagrange_value(std::span<const double> nodes, double x, int count)
+  lagrange_value(std::span<const double> nodes, double x)
   {
-    return lagrange_derivative(nodes, x, 0, count);
+    return lagrange_derivative(nodes, x, 0);
   }
 
   inline std::array<double, max_levels> lagrange_derivative(
-    std::span<const double> nodes, double x, int order, int count)
+    std::span<const double> nodes, double x, int order)
   {
-    detail::validate_nodes(nodes, x, count);
+    detail::validate_nodes(nodes, x);
+    const int count = static_cast<int>(nodes.size());
     std::array<double, max_levels> weights {};
     if (order < 0 or order >= count)
       return weights;
@@ -204,8 +203,7 @@ namespace atstep {
       return lagrange_value(
         std::span<const double>(nodes.data(),
           static_cast<std::size_t>(levels)),
-        0.0,
-        levels);
+        0.0);
     }
 
     /// IDA's `sigma[j]`: the factor that turns the correction of a step
@@ -271,8 +269,7 @@ namespace atstep {
           std::span<const double>(nodes.data(),
             static_cast<std::size_t>(count)),
           0.0,
-          p,
-          count);
+          p);
 
       // The predictor: the polynomial through the levels before t_{n+1} —
       // one more level than the scheme reads — evaluated at t_{n+1}.
@@ -287,8 +284,7 @@ namespace atstep {
           std::span<const double>(
             older.data(),
             static_cast<std::size_t>(predictor_count_)),
-          0.0,
-          predictor_count_);
+          0.0);
       }
 
       // IDA's coefficients of the error test (see IDASetCoeffs). Its

@@ -111,8 +111,7 @@ int main()
     final = y;
     std::printf("%.1f,%.8f,%.8f,%.8f\n", time, y[0], y[1], y[2]);
   };
-  hooks.on_step = [&](const atstep::StepRecord& record) {
-    const auto& y = stepper.history().state(0);
+  hooks.on_step = [&](const atstep::StepRecord& record, const State& y) {
     const State dy = stepper.interpolate(record.time, 1);
     // Joule heating and electromechanical power are internal transfers.
     const double stored_power = motor.inductance * y[0] * dy[0]

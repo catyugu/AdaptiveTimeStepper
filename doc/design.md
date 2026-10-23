@@ -40,9 +40,13 @@ predictor, then solves. The leading derivative coefficient is `H_k/h`, where
 and trial columns.
 
 Acceptance commits trial history; rejection preserves accepted history.
-Only one set of trial buffers exists. Handle the latest `Attempt` before
-creating another: attempts are diagnostics, not saved state snapshots.
-`start` resets numerical history and tolerance indexing.
+Only one set of trial buffers exists, and one attempt is pending at a time:
+`attempt` returns a move-only `TrialStep` carrying the attempt's identity, and
+`accept`, `reject` or `reject_convergence` settle that identity once. A handle
+of an older attempt, of another stepper, or of an attempt already settled is
+refused, and so is accepting a step whose solve failed or whose error test did
+not pass. `start` resets numerical history, tolerance indexing and the pending
+attempt.
 
 `StepController` consumes scalar estimates independently of state and equation
 types. It implements startup growth, settled-step order selection and retries.

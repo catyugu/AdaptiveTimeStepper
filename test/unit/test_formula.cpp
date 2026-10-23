@@ -70,7 +70,7 @@ TEST_CASE("formula: interpolation and derivatives reproduce polynomials away fro
   const double x = 0.4;
   for (int degree = 0; degree <= 5; ++degree) {
     for (int derivative = 0; derivative <= 3; ++derivative) {
-      const auto weights = atstep::lagrange_derivative(nodes, x, derivative, 6);
+      const auto weights = atstep::lagrange_derivative(nodes, x, derivative);
       double actual = 0.0;
       for (std::size_t j = 0; j < nodes.size(); ++j)
         actual += weights[j] * monomial(nodes[j], degree);
@@ -82,7 +82,7 @@ TEST_CASE("formula: interpolation and derivatives reproduce polynomials away fro
       }
       CHECK_NEAR(actual, expected, 1e-12);
       if (derivative == 0) {
-        const auto values = atstep::lagrange_value(nodes, x, 6);
+        const auto values = atstep::lagrange_value(nodes, x);
         for (std::size_t j = 0; j < nodes.size(); ++j)
           CHECK_NEAR(values[j], weights[j], 0.0);
       }
@@ -93,12 +93,18 @@ TEST_CASE("formula: interpolation and derivatives reproduce polynomials away fro
 TEST_CASE("formula: invalid interpolation nodes cannot overrun fixed buffers")
 {
   const std::array<double, 2> nodes {0.0, 1.0};
-  CHECK_THROWS(atstep::lagrange_value(nodes, 0.0, 3));
-  CHECK_THROWS(atstep::lagrange_value(nodes, 0.0, -1));
   const std::array<double, 2> repeated {1.0, 1.0};
-  CHECK_THROWS(atstep::lagrange_derivative(repeated, 0.0, 1, 2));
-  CHECK_THROWS(atstep::lagrange_value(nodes, std::numeric_limits<double>::infinity(), 2));
+  CHECK_THROWS(atstep::lagrange_derivative(repeated, 0.0, 1));
+  CHECK_THROWS(atstep::lagrange_value(nodes, std::numeric_limits<double>::infinity()));
   CHECK_THROWS(atstep::StepFormula {std::numeric_limits<double>::infinity()});
+
+  // More nodes than a stencil of max_levels holds is refused, not clipped.
+  std::vector<double> many(static_cast<std::size_t>(atstep::max_levels) + 1);
+  for (std::size_t j = 0; j < many.size(); ++j)
+    many[j] = static_cast<double>(j);
+  CHECK_THROWS(atstep::lagrange_value(many, 0.0));
+  const std::array<double, 0> none {};
+  CHECK_THROWS(atstep::lagrange_value(none, 0.0));
 
   const std::vector<double> long_history(20, 0.1);
   const atstep::StepFormula formula(5, long_history);
@@ -334,9 +340,9 @@ TEST_CASE("formula: the Lagrange helpers reproduce a polynomial exactly")
   // Arbitrary nodes, an arbitrary evaluation point.
   const std::array<double, 5> nodes {0.0, 0.1, 0.35, 0.4, 1.0};
   const double x = -0.25;
-  const auto value = atstep::lagrange_value(std::span<const double>(nodes.data(), 5), x, 5);
+  const auto value = atstep::lagrange_value(std::span<const double>(nodes.data(), 5), x);
   const auto slope = atstep::lagrange_derivative(
-    std::span<const double>(nodes.data(), 5), x, 1, 5);
+    std::span<const double>(nodes.data(), 5), x, 1);
 
   double sum = 0.0;
   for (double weight : value)
