@@ -25,9 +25,11 @@ namespace atstep {
 
   /// The levels a run has passed through, newest first.
   ///
-  /// The scheme reads the last `order + 1` of them, the predictor one more,
-  /// and the error estimate at the order two below three fewer, so a run
-  /// keeps `max_levels` of them.
+  /// The classical scheme reads the last `order + 1` of them, the predictor one
+  /// more, and the error estimate at the order two below three fewer, so a run
+  /// of a higher-derivative equation keeps `max_levels` of them. A first-order
+  /// equation reads the difference table instead and keeps the newest level
+  /// alone: the levels behind it are what the fixed-leading table holds.
   template <class State>
   class History {
   public:
@@ -203,6 +205,11 @@ namespace atstep {
 
     /// Views are valid for the solve callback; the stepper owns their
     /// states.
+    ///
+    /// Level 0 is the state the run has accepted. A first-order equation
+    /// keeps no level behind it — the fixed-leading table holds them — so an
+    /// older level is there only for a higher-derivative equation, which
+    /// starts this request's classical stencil.
     const State& previous(std::size_t level = 0) const
     {
       return history_.state(level);
@@ -599,10 +606,11 @@ namespace atstep {
         or not std::isfinite(next_time) or not(next_time > history_.time(0)))
         throw std::invalid_argument("atstep: step must be finite, positive and advance time");
 
-      // Both formulations use the same history bound on startup order.
-      const int available = static_cast<int>(
-        std::min<std::size_t>(history_.size(), max_levels));
-      const int order = std::min(controller_.order(), std::max(1, available - 1));
+      // Both formulations use the same history bound on startup order: an
+      // order-k step reads k levels, and the run has one level per accepted
+      // step on top of the one it started from.
+      const int levels = std::min(controller_.steps() + 1, max_levels);
+      const int order = std::min(controller_.order(), std::max(1, levels - 1));
       controller_.begin_attempt(step, order);
 
       auto derivative = prepare_derivative(step, order);
@@ -661,7 +669,7 @@ namespace atstep {
         atstep::axpy(last_derivative_, cj_, ee_);
       }
       history_.push(attempt.time_, work_);
-      history_.keep(static_cast<std::size_t>(max_levels));
+      history_.keep(history_depth());
       last_order_ = attempt.order_;
       if (fixed_leading()) {
         const auto k = static_cast<std::size_t>(attempt.order_);
@@ -983,6 +991,13 @@ namespace atstep {
     bool fixed_leading() const
     {
       return settings_.derivative_orders == 1;
+    }
+
+    /// The levels the history keeps: the fixed-leading table stands in for
+    /// every level but the newest, so a first-order equation keeps one.
+    std::size_t history_depth() const
+    {
+      return fixed_leading() ? 1U : static_cast<std::size_t>(max_levels);
     }
 
     void prepare_fixed_leading(double step, int order)

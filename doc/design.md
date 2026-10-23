@@ -47,6 +47,11 @@ The table is therefore never copied and never written speculatively: a trial
 costs a few doubles, not one state. Dense output reads the accepted columns
 whether an attempt is pending or not.
 
+The level behind it is the table alone: a first-order run keeps one accepted
+level, which is what `previous()` and the error weights read, and no older one.
+A higher-derivative run keeps `max_levels` levels, because its classical stencil
+reads them; `previous(level)` is then what starts that stencil.
+
 Acceptance commits trial history; rejection preserves accepted history.
 One attempt is pending at a time:
 `attempt` returns a move-only `TrialStep` carrying the attempt's identity, and
@@ -56,11 +61,11 @@ refused, and so is accepting a step whose solve failed or whose error test did
 not pass. `start` resets numerical history, tolerance indexing and the pending
 attempt.
 
-The stepper's own buffers are 18 states — the eleven of a step and the seven
-columns — plus the levels the history keeps. A state is allocated when a step
-first writes it, and the columns follow `max_order`: a run at order 5 holds 24
-states with its history full, one at order 2 holds 21 and one at order 1 holds
-20.
+The stepper's own buffers are the eleven of a step and the seven columns, plus
+the levels the history keeps. A state is allocated when a step first writes it,
+and the columns follow `max_order`: a first-order run at order 5 holds 18 states
+with a dense output allocated, at order 2 15 and at order 1 14. A
+higher-derivative run keeps all `max_levels` levels and holds 15 at order 5.
 
 `StepController` consumes scalar estimates independently of state and equation
 types. It implements startup growth, settled-step order selection and retries.

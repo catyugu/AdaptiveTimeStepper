@@ -329,8 +329,8 @@ TEST_CASE("stepper: the history the scheme reads is bounded")
   CHECK(stepper.history().size() <= static_cast<std::size_t>(atstep::max_levels));
 }
 
-TEST_CASE("stepper: the interpolation reproduces the levels and the polynomial "
-          "between them")
+TEST_CASE("stepper: the interpolation reproduces the polynomial through the "
+          "levels")
 {
   // Four exact levels of a cubic; the scheme's polynomial through them is the
   // cubic itself, so it is reproduced between the levels as well.
@@ -351,12 +351,13 @@ TEST_CASE("stepper: the interpolation reproduces the levels and the polynomial "
     stepper.accept(std::move(attempt));
     time = stepper.time();
   }
-  // At a level: the level itself.
-  CHECK_NEAR(stepper.interpolate(stepper.history().time(2)).value,
-    stepper.history().state(2).value,
+  // At the newest level: the level itself. A first-order run keeps no level
+  // behind it, so an older one is reached through the dense output alone.
+  CHECK_NEAR(stepper.interpolate(stepper.time()).value,
+    stepper.state().value,
     1e-15);
-  // Between two levels: the cubic, to round-off.
-  for (double t : {0.13, 0.37, 0.62, 0.88})
+  // At a past level, and between them: the cubic, to round-off.
+  for (double t : {0.5, 0.13, 0.37, 0.62, 0.88})
     CHECK_NEAR(stepper.interpolate(t).value, cubic(t), 1e-10);
 }
 
