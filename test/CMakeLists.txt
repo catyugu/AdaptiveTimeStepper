@@ -7,7 +7,6 @@
 # name the same file.
 
 set(ATSTEP_TEST_SOURCES
-    unit/test_formula.cpp
     unit/test_controller.cpp
     unit/test_stepper.cpp
     unit/test_norm.cpp

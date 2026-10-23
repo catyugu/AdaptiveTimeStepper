@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include "../settings.hpp"
 #include "bdf.hpp"
 
 #include <algorithm>

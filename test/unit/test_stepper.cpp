@@ -97,27 +97,13 @@ namespace {
     return std::log2(coarse / fine);
   }
 
-  /// u'' + 0.1 u' + u = 0, u(0) = 1, u'(0) = 0.
-  struct Oscillator {
-    static double value(double t)
-    {
-      const double damping = 0.05;
-      const double omega = std::sqrt(1.0 - damping * damping);
-      return std::exp(-damping * t) * (std::cos(omega * t) + damping / omega * std::sin(omega * t));
-    }
-
-    static atstep::SolveOutcome
-    solve(const atstep::StepRequest<Scalar>& request, Scalar& y)
-    {
-      Scalar second;
-      Scalar first;
-      request.derivative_history(2, second);
-      request.derivative_history(1, first);
-      const double known = second.value + 0.1 * first.value;
-      y.value = -known / (request.derivative_weight(2) + 0.1 * request.derivative_weight(1) + 1.0);
-      return atstep::SolveOutcome {true, 1};
-    }
-  };
+  /// The solution of `u'' + 0.1 u' + u = 0` from `u(0) = 1`, `u'(0) = 0`.
+  double oscillator(double t)
+  {
+    const double decay = 0.05;
+    const double omega = std::sqrt(1.0 - decay * decay);
+    return std::exp(-decay * t) * (std::cos(omega * t) + decay / omega * std::sin(omega * t));
+  }
 
 } // namespace
 
@@ -125,7 +111,10 @@ TEST_CASE("request: the derivative is the affine form its weights define")
 {
   // `derivative` evaluates `cj*y + known` in correction form, where the
   // correction is small: the two are the same state, which is what a solve may
-  // rely on whichever form it reads.
+  // rely on whichever form it reads. They differ by the round-off of the direct
+  // form's cancellation — a few units of `cj*|y|` in its last place, which the
+  // initialization step alone puts at 1e7 — so the comparison is against the
+  // size of the terms, not against zero.
   atstep::Settings settings;
   settings.max_order = 3;
   double worst = 0.0;
@@ -133,22 +122,24 @@ TEST_CASE("request: the derivative is the affine form its weights define")
   atstep::TimeStepper<Scalar> stepper(settings,
     [&worst, &evaluated](const atstep::StepRequest<Scalar>& request,
       Scalar& y) {
+      const double weight = request.derivative_weight();
       Scalar derivative;
       request.derivative(y, derivative);
       Scalar affine = request.derivative_history();
-      atstep::detail::axpy(affine, request.derivative_weight(), y);
+      const double terms = 1.0 + std::abs(affine.value) + std::abs(weight * y.value);
+      atstep::detail::axpy(affine, weight, y);
       worst = std::max(
-        worst, std::abs(derivative.value - affine.value));
+        worst, std::abs(derivative.value - affine.value) / terms);
       ++evaluated;
       const Scalar& known = request.derivative_history();
-      y.value = -known.value / (request.derivative_weight() + 1.0);
+      y.value = -known.value / (weight + 1.0);
       return atstep::SolveOutcome {true, 1};
     });
   stepper.start(0.0, Scalar {1.0}, 1.0);
   const std::vector<double> times {0.0, 0.5, 1.0};
   stepper.run(times);
   CHECK(evaluated > 4);
-  CHECK(worst < 1e-12);
+  CHECK(worst < 1e-14);
 }
 TEST_CASE("stepper: a fixed-step run converges at the order of its formula")
 {
@@ -174,54 +165,14 @@ TEST_CASE("stepper: a fixed-step run converges at the order of its formula")
   }
 }
 
-TEST_CASE("stepper: a second derivative in the residual is first order, and "
-          "documented so")
-{
-  // The weights of the second derivative are exact (see the formula tests),
-  // but a BDF step applied to `u''` directly is a different matter: the
-  // scheme's characteristic polynomial has a double root at one, and the
-  // parasitic root turns the second-order consistency into a first-order run.
-  // This is the reason COMSOL runs a structural transient with generalized
-  // alpha rather than with BDF; it is measured here so that the library
-  // states it rather than implies otherwise.
-  const auto error = [](double step) {
-    atstep::Settings settings = manual_settings(2, step);
-    settings.derivative_orders = 2;
-    // The history is primed with the exact solution: a second-order
-    // equation has no derivative inside the state, so its first steps are
-    // first-order in time whatever the scheme, and the error of the scheme
-    // itself is what this measures.
-    int prime = 3;
-    atstep::TimeStepper<Scalar> stepper(
-      settings,
-      [&prime](const atstep::StepRequest<Scalar>& request, Scalar& y) {
-        if (prime > 0) {
-          --prime;
-          y.value = Oscillator::value(request.time);
-          return atstep::SolveOutcome {true, 1};
-        }
-        return Oscillator::solve(request, y);
-      });
-    stepper.start(0.0, Scalar {1.0}, 2.0);
-    while (stepper.time() < 2.0)
-      stepper.advance();
-    return std::abs(stepper.state().value - Oscillator::value(stepper.time()));
-  };
-  const double coarse = error(0.05);
-  const double fine = error(0.025);
-  CHECK(fine < coarse);
-  const double order = observed_order(coarse, fine);
-  CHECK(order > 0.6);
-  CHECK(order < 1.4); // first order, not the second the formula suggests
-}
-
 TEST_CASE("stepper: the inertia of a second-order equation, as a first-order "
           "system")
 {
   // The same equation, written the way COMSOL writes it and the way IDA wants
   // it: a first-order system in `(u, v = u')`, whose state the caller owns.
   // The BDF weights are then the first derivative's, and the order is the
-  // scheme's own.
+  // scheme's own. `SecondOrderStepper` is this formulation with the pair and the
+  // condensation built in.
   struct Block {
     double u = 0.0;
     double v = 0.0;
@@ -257,7 +208,7 @@ TEST_CASE("stepper: the inertia of a second-order equation, as a first-order "
     stepper.start(0.0, Block {1.0, 0.0}, 2.0);
     while (stepper.time() < 2.0)
       stepper.advance();
-    return std::abs(stepper.state().u - Oscillator::value(stepper.time()));
+    return std::abs(stepper.state().u - oscillator(stepper.time()));
   };
   const double coarse = error(0.05);
   const double fine = error(0.025);
@@ -322,7 +273,6 @@ TEST_CASE(
   stepper.start(0.0, Scalar {1.0}, 10.0);
   CHECK_EQ(calls, 2);
   CHECK_NEAR(probe, 10.0 * 1e-3 * 1e-3, 1e-12);
-  CHECK_EQ(stepper.history_size(), std::size_t {1});
   CHECK_NEAR(stepper.time(), 2.0 * probe, 1e-12);
   CHECK_NEAR(stepper.interpolate(stepper.time(), 1).value,
     -stepper.state().value, 2e-10);
@@ -332,30 +282,6 @@ TEST_CASE(
   // \\texttt0A = R * 0.1 * (1 + 1) = 0.002 at a state of one, so the weight
   // is 0.012 and the step 0.5 / 83.3.
   CHECK_NEAR(stepper.step_size(), 0.5 / (1.0 / 0.012), 1e-6);
-}
-
-TEST_CASE("stepper: the levels a run keeps are the ones its formulation reads")
-{
-  // A first-order run reads the table of the accepted steps and keeps the
-  // newest level alone; a higher-derivative run reads the levels themselves and
-  // keeps the whole stencil's.
-  atstep::Settings first_order;
-  first_order.max_order = 5;
-  atstep::TimeStepper<Scalar> stepper(first_order, solve_decay);
-  stepper.start(0.0, Scalar {1.0}, 10.0);
-  std::vector<double> times;
-  for (int i = 0; i <= 10; ++i)
-    times.push_back(static_cast<double>(i));
-  stepper.run(times);
-  CHECK_EQ(stepper.history_size(), std::size_t {1});
-
-  atstep::Settings second_order = manual_settings(2, 0.1);
-  second_order.derivative_orders = 2;
-  atstep::TimeStepper<Scalar> no_table(second_order, Oscillator::solve);
-  no_table.start(0.0, Scalar {Oscillator::value(0.0)}, 1.0);
-  for (int i = 0; i < atstep::max_levels; ++i)
-    no_table.advance();
-  CHECK_EQ(no_table.history_size(), static_cast<std::size_t>(atstep::max_levels));
 }
 
 TEST_CASE("stepper: the interpolation reproduces the polynomial through the "
@@ -622,7 +548,6 @@ TEST_CASE("stepper: a refused step leaves the accepted history and its dense out
   CHECK_THROWS(stepper.advance());
   CHECK_NEAR(stepper.time(), time, 0.0);
   CHECK_NEAR(stepper.state().value, value, 0.0);
-  CHECK_EQ(stepper.history_size(), std::size_t {1});
   CHECK(stepper.step_size() < proposed);
   CHECK_NEAR(stepper.interpolate(between).value, accepted, 0.0);
   CHECK_NEAR(stepper.interpolate(between, 1).value, slope, 0.0);
@@ -660,11 +585,12 @@ TEST_CASE("stepper: advance takes one acceptable step and moves the run")
   CHECK(std::abs(other.state().value - exact(other.time())) < 1e-2);
 }
 
-TEST_CASE("levels: a ring of the accepted steps, and a failed copy that leaves it alone")
+TEST_CASE("level: the accepted level, and a failed copy that leaves it alone")
 {
   // A level pairs its state with its time in one object, so a copy that throws
-  // cannot leave the two sequences out of step. The ring holds the depth it
-  // was given: the oldest level is the one an accepted step overflows.
+  // cannot leave the two out of step. The new level is constructed before the
+  // accepted one is written, so a copy that throws leaves the run's level as it
+  // was, which is what a step the caller's solve refuses must not disturb.
   struct State {
     double value = 0.0;
     bool fail = false;
@@ -683,30 +609,15 @@ TEST_CASE("levels: a ring of the accepted steps, and a failed copy that leaves i
     }
     State& operator=(const State&) = default;
   };
-  atstep::detail::Levels<State> levels;
-  levels.reserve(2);
-  levels.push(1.0, State {2.0});
-  CHECK_THROWS(levels.push(2.0, State {3.0, true}));
-  CHECK_THROWS(levels.reset(3.0, State {4.0, true}));
-  CHECK_EQ(levels.size(), 1U);
-  CHECK_EQ(levels.time(0), 1.0);
-  CHECK_EQ(levels.state(0).value, 2.0);
+  atstep::detail::AcceptedLevel<State> level;
+  level.commit(1.0, State {2.0});
+  CHECK_THROWS(level.commit(2.0, State {3.0, true}));
+  CHECK_EQ(level.time(), 1.0);
+  CHECK_EQ(level.state().value, 2.0);
 
-  levels.push(2.0, State {3.0});
-  CHECK_EQ(levels.size(), 2U);
-  CHECK_EQ(levels.time(1), 1.0);
-  CHECK_EQ(levels.state(1).value, 2.0);
-  levels.push(3.0, State {5.0});
-  CHECK_EQ(levels.size(), 2U);
-  CHECK_EQ(levels.time(0), 3.0);
-  CHECK_EQ(levels.state(0).value, 5.0);
-  CHECK_EQ(levels.state(1).value, 3.0);
-  CHECK_THROWS(levels.state(2));
-
-  levels.reset(4.0, State {6.0});
-  CHECK_EQ(levels.size(), 1U);
-  CHECK_EQ(levels.time(0), 4.0);
-  CHECK_EQ(levels.state(0).value, 6.0);
+  level.commit(2.0, State {3.0});
+  CHECK_EQ(level.time(), 2.0);
+  CHECK_EQ(level.state().value, 3.0);
 }
 
 TEST_CASE("stepper: a start time the run cannot integrate from is refused")
