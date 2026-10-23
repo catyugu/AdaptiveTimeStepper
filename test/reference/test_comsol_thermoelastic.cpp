@@ -17,10 +17,11 @@ namespace {
   // theta' = -0.5*v - 1.5*theta.
   // Thermal expansion drives motion; deformation feeds back into temperature.
   atstep::SolveOutcome solve_thermoelastic(const atstep::StepRequest<State>& request,
-    State& y)
+    State& y,
+    State& dy)
   {
     const double cj = request.derivative_weight();
-    const auto dy = request.derivative(y);
+    request.derivative(y, dy);
     const State residual {dy[0] - y[1], dy[1] + 4.0 * y[0] + 4.5 * y[1] - 0.5 * y[2],
       dy[2] + 0.5 * y[1] + 1.5 * y[2]};
     // Eliminate x and theta from the coupled implicit three-by-three block.
@@ -60,8 +61,8 @@ TEST_CASE("comsol: reciprocal thermoelastic trajectories, derivatives and dissip
   State last_derivative;
   atstep::TimeStepper<State> stepper(settings,
     [&](const atstep::StepRequest<State>& request, State& y) {
-      const auto outcome = solve_thermoelastic(request, y);
-      last_derivative = request.derivative(y);
+      const auto outcome = solve_thermoelastic(request, y, last_derivative);
+      request.derivative(y, last_derivative);
       return outcome;
     });
   stepper.start(0.0, exact(0.0), 5.0);

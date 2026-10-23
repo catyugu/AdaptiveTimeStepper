@@ -1,7 +1,7 @@
-// The step formula: the weights differentiate the polynomial through the
+﻿// The step formula: the weights differentiate the polynomial through the
 // levels exactly, at any steps and any order, and IDA's error coefficients are
 // the ones its solver uses.
-#include "atstep/formula.hpp"
+#include "atstep/detail/bdf.hpp"
 #include "support/check.hpp"
 
 #include <array>
@@ -70,7 +70,7 @@ TEST_CASE("formula: interpolation and derivatives reproduce polynomials away fro
   const double x = 0.4;
   for (int degree = 0; degree <= 5; ++degree) {
     for (int derivative = 0; derivative <= 3; ++derivative) {
-      const auto weights = atstep::lagrange_derivative(nodes, x, derivative);
+      const auto weights = atstep::detail::lagrange_derivative(nodes, x, derivative);
       double actual = 0.0;
       for (std::size_t j = 0; j < nodes.size(); ++j)
         actual += weights[j] * monomial(nodes[j], degree);
@@ -82,7 +82,7 @@ TEST_CASE("formula: interpolation and derivatives reproduce polynomials away fro
       }
       CHECK_NEAR(actual, expected, 1e-12);
       if (derivative == 0) {
-        const auto values = atstep::lagrange_value(nodes, x);
+        const auto values = atstep::detail::lagrange_value(nodes, x);
         for (std::size_t j = 0; j < nodes.size(); ++j)
           CHECK_NEAR(values[j], weights[j], 0.0);
       }
@@ -94,26 +94,26 @@ TEST_CASE("formula: invalid interpolation nodes cannot overrun fixed buffers")
 {
   const std::array<double, 2> nodes {0.0, 1.0};
   const std::array<double, 2> repeated {1.0, 1.0};
-  CHECK_THROWS(atstep::lagrange_derivative(repeated, 0.0, 1));
-  CHECK_THROWS(atstep::lagrange_value(nodes, std::numeric_limits<double>::infinity()));
-  CHECK_THROWS(atstep::StepFormula {std::numeric_limits<double>::infinity()});
+  CHECK_THROWS(atstep::detail::lagrange_derivative(repeated, 0.0, 1));
+  CHECK_THROWS(atstep::detail::lagrange_value(nodes, std::numeric_limits<double>::infinity()));
+  CHECK_THROWS(atstep::detail::StepFormula {std::numeric_limits<double>::infinity()});
 
   // More nodes than a stencil of max_levels holds is refused, not clipped.
   std::vector<double> many(static_cast<std::size_t>(atstep::max_levels) + 1);
   for (std::size_t j = 0; j < many.size(); ++j)
     many[j] = static_cast<double>(j);
-  CHECK_THROWS(atstep::lagrange_value(many, 0.0));
+  CHECK_THROWS(atstep::detail::lagrange_value(many, 0.0));
   const std::array<double, 0> none {};
-  CHECK_THROWS(atstep::lagrange_value(none, 0.0));
+  CHECK_THROWS(atstep::detail::lagrange_value(none, 0.0));
 
   const std::vector<double> long_history(20, 0.1);
-  const atstep::StepFormula formula(5, long_history);
+  const atstep::detail::StepFormula formula(5, long_history);
   const auto weights = formula.extrapolation(20);
   double sum = 0.0;
   for (double weight : weights)
     sum += weight;
   CHECK_NEAR(sum, 1.0, 1e-10);
-  const atstep::StepFormula low_order(1, long_history);
+  const atstep::detail::StepFormula low_order(1, long_history);
   const auto extrapolation = low_order.extrapolation(20);
   sum = 0.0;
   for (double weight : extrapolation)
@@ -128,7 +128,7 @@ TEST_CASE("formula: the weights of a constant step are the textbook BDF ones")
     h);
 
   const auto weights = [&](int order) {
-    const atstep::StepFormula formula(
+    const atstep::detail::StepFormula formula(
       order,
       std::span<const double>(steps.data(),
         static_cast<std::size_t>(order) + 1),
@@ -191,7 +191,7 @@ TEST_CASE(
 
   for (const auto& steps : sequences) {
     for (int order = 1; order <= atstep::max_order; ++order) {
-      const atstep::StepFormula formula(
+      const atstep::detail::StepFormula formula(
         order,
         std::span<const double>(steps.data(),
           static_cast<std::size_t>(order) + 1),
@@ -235,13 +235,13 @@ TEST_CASE(
   const double h = 0.1;
   const std::vector<double> steps(4, h);
 
-  const atstep::StepFormula second(
+  const atstep::detail::StepFormula second(
     2, std::span<const double>(steps.data(), 3), 2);
   CHECK_NEAR(second.weights(2)[0], 1.0 / (h * h), 1e-9);
   CHECK_NEAR(second.weights(2)[1], -2.0 / (h * h), 1e-9);
   CHECK_NEAR(second.weights(2)[2], 1.0 / (h * h), 1e-9);
 
-  const atstep::StepFormula third(
+  const atstep::detail::StepFormula third(
     3, std::span<const double>(steps.data(), 4), 3);
   CHECK_NEAR(third.weights(3)[0], 1.0 / (h * h * h), 1e-9);
   CHECK_NEAR(third.weights(3)[1], -3.0 / (h * h * h), 1e-9);
@@ -253,7 +253,7 @@ TEST_CASE("formula: the predictor is the polynomial through the older levels")
 {
   const std::vector<double> steps {0.3, 0.1, 0.2, 0.15, 0.4, 0.25};
   for (int order = 1; order <= atstep::max_order; ++order) {
-    const atstep::StepFormula formula(
+    const atstep::detail::StepFormula formula(
       order,
       std::span<const double>(steps.data(),
         static_cast<std::size_t>(order) + 1),
@@ -290,7 +290,7 @@ TEST_CASE("formula: IDA's error coefficients at a constant step")
   const std::vector<double> steps(
     static_cast<std::size_t>(atstep::max_order) + 1, h);
   for (int order = 1; order <= atstep::max_order; ++order) {
-    const atstep::StepFormula formula(
+    const atstep::detail::StepFormula formula(
       order,
       std::span<const double>(steps.data(),
         static_cast<std::size_t>(order) + 1),
@@ -309,11 +309,11 @@ TEST_CASE("formula: an order the steps do not reach is lowered")
 
   // Order 5 with 3 steps: the formula reads one more step than its order for
   // the predictor.
-  atstep::StepFormula formula(5, std::span<const double>(steps.data(), 3), 1);
+  atstep::detail::StepFormula formula(5, std::span<const double>(steps.data(), 3), 1);
   CHECK_EQ(formula.order(), 2);
 
   // The first step of a run: no history, so backward Euler.
-  const atstep::StepFormula first(
+  const atstep::detail::StepFormula first(
     5, std::span<const double>(steps.data(), 1), 1);
   CHECK_EQ(first.order(), 1);
   CHECK_NEAR(first.weights(1)[0], 10.0, 1e-12);
@@ -322,14 +322,14 @@ TEST_CASE("formula: an order the steps do not reach is lowered")
   // A non-positive step is refused rather than read.
   const std::vector<double> bad {0.1, 0.0, 0.1, 0.1, 0.1, 0.1};
   CHECK_THROWS(
-    atstep::StepFormula(3, std::span<const double>(bad.data(), 4), 1));
-  CHECK_THROWS(atstep::StepFormula(3, std::span<const double>(), 1));
+    atstep::detail::StepFormula(3, std::span<const double>(bad.data(), 4), 1));
+  CHECK_THROWS(atstep::detail::StepFormula(3, std::span<const double>(), 1));
 }
 
 TEST_CASE("formula: a derivative level outside the formula is refused")
 {
   const std::vector<double> steps {0.1, 0.1, 0.1, 0.1, 0.1, 0.1};
-  const atstep::StepFormula formula(
+  const atstep::detail::StepFormula formula(
     2, std::span<const double>(steps.data(), 3), 2);
   CHECK_THROWS(formula.weights(3));
   CHECK_THROWS(formula.weights(-1));
@@ -340,8 +340,8 @@ TEST_CASE("formula: the Lagrange helpers reproduce a polynomial exactly")
   // Arbitrary nodes, an arbitrary evaluation point.
   const std::array<double, 5> nodes {0.0, 0.1, 0.35, 0.4, 1.0};
   const double x = -0.25;
-  const auto value = atstep::lagrange_value(std::span<const double>(nodes.data(), 5), x);
-  const auto slope = atstep::lagrange_derivative(
+  const auto value = atstep::detail::lagrange_value(std::span<const double>(nodes.data(), 5), x);
+  const auto slope = atstep::detail::lagrange_derivative(
     std::span<const double>(nodes.data(), 5), x, 1);
 
   double sum = 0.0;
