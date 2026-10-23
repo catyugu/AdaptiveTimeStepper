@@ -1,18 +1,10 @@
 #!/usr/bin/env python3
-"""Record the COMSOL reference the alignment tests replay.
+"""Record full-precision COMSOL trajectories for the C++ regression tests.
 
-The COMSOL side is a Java model (AtsReference.java) compiled by `comsolcompile`
-and run by `comsolbatch`: it builds the model of docs/comsol-alignment.md, runs
-it once per configuration, and writes the solver's own stored steps and its
-log. This script wraps that, and turns the exports into the header the tests
-include.
+    python tools/comsol/run.py --directory .cache/comsol-reference
+    python tools/comsol/run.py --header-only --directory .cache/comsol-reference
 
-    python tools/comsol/run.py                 # run COMSOL, write the header
-    python tools/comsol/run.py --header-only   # rewrite the header from exports
-    python tools/comsol/run.py --keep          # keep the run directory
-
-COMSOL is optional: the recorded reference is in the repository, so the tests
-need neither the installation nor the licence.
+Only regeneration needs COMSOL. The C++ tests use the recorded reference.
 """
 
 from __future__ import annotations
@@ -26,30 +18,12 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCE = ROOT / "tools" / "comsol" / "AtsReference.java"
-HEADER = ROOT / "test" / "reference" / "comsol_steps.hpp"
-TRAJECTORY_SOURCE = ROOT / "tools" / "comsol" / "GeDecayTransient.java"
-TRAJECTORY_HEADER = ROOT / "test" / "reference" / "comsol_trajectories.hpp"
-
-# The order of this list is the order of the header, and the index the tests
-# use: keep the two in step.
-CONFIGURATIONS = [
-    ("default", 5, 1e-2, "free", 0.1),
-    ("max_order_1", 1, 1e-2, "free", 0.1),
-    ("max_order_2", 2, 1e-2, "free", 0.1),
-    ("max_order_3", 3, 1e-2, "free", 0.1),
-    ("max_order_4", 4, 1e-2, "free", 0.1),
-    ("rtol_1e3", 5, 1e-3, "free", 0.1),
-    ("rtol_1e5", 5, 1e-5, "free", 0.1),
-    ("strict", 5, 1e-2, "strict", 0.1),
-    ("intermediate", 5, 1e-2, "intermediate", 0.1),
-    ("max_step_5e3", 5, 1e-2, "free", 0.005),
-]
+SOURCE = ROOT / "tools" / "comsol" / "GeDecayTransient.java"
+HEADER = ROOT / "test" / "reference" / "comsol_trajectories.hpp"
 
 
 def find_tool(name: str) -> str | None:
@@ -57,128 +31,51 @@ def find_tool(name: str) -> str | None:
     if found:
         return found
     root = os.environ.get("COMSOL_ROOT")
-    if not root:
-        return None
-    comsol = Path(root)
-    candidate = comsol / "Multiphysics" / "bin" / "win64" / f"{name}.exe"
-    return str(candidate) if candidate.is_file() else None
+    if root:
+        candidate = Path(root) / "Multiphysics" / "bin" / "win64" / f"{name}.exe"
+        if candidate.is_file():
+            return str(candidate)
+    return None
 
 
-def run_comsol(workdir: Path, model_source: Path = SOURCE) -> None:
-    compile_tool = find_tool("comsolcompile")
-    batch_tool = find_tool("comsolbatch")
-    if not compile_tool or not batch_tool:
-        raise SystemExit(
-            "comsolcompile/comsolbatch not found: put COMSOL's bin/win64 on PATH, "
-            "or set COMSOL_ROOT, or use --header-only with a recorded reference"
-        )
-    source = workdir / model_source.name
-    shutil.copy(model_source, source)
+def run_comsol(directory: Path) -> None:
+    compiler = find_tool("comsolcompile")
+    batch = find_tool("comsolbatch")
+    if not compiler or not batch:
+        raise SystemExit("put comsolcompile/comsolbatch on PATH, or set COMSOL_ROOT")
+    source = directory / SOURCE.name
+    shutil.copy(SOURCE, source)
     compiled = source.with_suffix(".class")
     compiled.unlink(missing_ok=True)
-    subprocess.run([compile_tool, source.name], cwd=workdir, check=True)
+    subprocess.run([compiler, source.name], cwd=directory, check=True)
     if not compiled.is_file():
-        raise SystemExit("COMSOL did not produce the expected class file")
-    # COMSOL writes the model it batched next to the output file; keep it in the
-    # run directory rather than in the source tree.
-    subprocess.run(
-        [
-            batch_tool,
-            "-inputfile",
-            f"{source.stem}.class",
-            "-outputfile",
-            "batch.mph",
-            "-batchlog",
-            "batch.log",
-            "-np",
-            "2",
-        ],
-        cwd=workdir,
-        check=True,
+        raise SystemExit("COMSOL compilation failed: no class file was produced")
+    result = subprocess.run(
+        [batch, "-inputfile", compiled.name, "-outputfile", "batch.mph",
+         "-batchlog", "batch.log", "-np", "2"],
+        cwd=directory, check=True, capture_output=True, text=True,
+        encoding=locale.getencoding(), errors="replace",
     )
-    log = (workdir / "batch.log").read_text(
-        encoding=locale.getencoding(), errors="replace"
-    )
-    if "Error running java class" in log or "File not found" in log:
-        raise SystemExit("COMSOL batch failed; inspect " + str(workdir / "batch.log"))
-
-
-def step_times(path: Path) -> list[float]:
-    """The stored times of a Data export: the `@ t=` labels of its header."""
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        if line.startswith("% X"):
-            return [float(x) for x in re.findall(r"@ t=([-0-9.eE+]+)", line)]
-    raise SystemExit(f"no header in {path}")
-
-
-def write_header(directory: Path) -> None:
-    # The Java model writes into a `reference` directory of the directory it is
-    # run from.
-    directory = directory / "reference"
-    runs = []
-    for name, max_order, tolerance, mode, max_step in CONFIGURATIONS:
-        times = step_times(directory / f"{name}.txt")
-        steps = [b - a for a, b in itertools.pairwise(times)]
-        runs.append((name, max_order, tolerance, mode, max_step, steps))
-
-    out = [
-        "// The steps COMSOL 6.2 took on the model of tools/comsol: `u + u' = 0`,",
-        "// u(0) = 1, over [0, 10] s, read back from the solver's own stored steps.",
-        "// Generated by tools/comsol/run.py; see docs/comsol-alignment.md.",
-        "// SPDX-License-Identifier: MIT",
-        "#pragma once",
-        "",
-        "#include <vector>",
-        "",
-        "namespace comsol {",
-        "",
-        "struct Run {",
-        "    const char* name;",
-        "    int max_order;",
-        "    double tolerance;",
-        "    const char* step_mode;",
-        "    double max_step_fraction;",
-        "    /// The steps the solver took, in order, from its stored times. The",
-        "    /// first entry is the distance from the state its consistent",
-        "    /// initialization left at t = 0 to the end of the first step.",
-        "    std::vector<double> steps;",
-        "};",
-        "",
-        "inline const std::vector<Run>& runs()",
-        "{",
-        "    static const std::vector<Run> all {",
-    ]
-    for name, max_order, tolerance, mode, max_step, steps in runs:
-        numbers = [f"{s:.12g}" for s in steps]
-        lines = []
-        current = "            {"
-        for index, number in enumerate(numbers):
-            piece = number + (", " if index + 1 < len(numbers) else "")
-            if len(current) + len(piece) > 78:
-                lines.append(current.rstrip())
-                current = "             "
-            current += piece
-        lines.append(current + "}},")
-        out.append(
-            f'        {{"{name}", {max_order}, {tolerance:g}, "{mode}", {max_step:g},'
-        )
-        out.extend(lines)
-    out.extend(["    };", "    return all;", "}", "", "} // namespace comsol", ""])
-    HEADER.write_text("\n".join(out) + "\n", encoding="utf-8")
-    total = sum(len(steps) for *_, steps in runs)
-    print(f"{HEADER.relative_to(ROOT)}: {len(runs)} runs, {total} steps")
+    print(result.stdout, end="")
+    if "ALL_CASES_OK" not in result.stdout:
+        raise SystemExit(f"incomplete COMSOL run: inspect {directory / 'batch.log'}")
 
 
 def write_trajectories(directory: Path) -> None:
     """Preserve COMSOL doubles and logged decisions; do not infer missing steps."""
+    batch_log = (directory / "batch.log").read_text(encoding="utf-8", errors="replace")
+    version_match = re.search(r"COMSOL ([0-9.]+) progress", batch_log)
+    if not version_match:
+        raise SystemExit("COMSOL version missing from batch log")
+    version = version_match.group(1)
     directory = directory / "trajectories"
     with (directory / "manifest.csv").open(newline="", encoding="utf-8") as stream:
         cases = list(csv.DictReader(stream))
     if len(cases) != 21:
         raise SystemExit("incomplete COMSOL trajectory sweep")
     output = [
-        "// COMSOL 6.2.0.290, GeDecayTransient.java: u'+u=0 on [0,10].",
-        "// Generated by run.py --trajectories from getPVals/getU/getUDot.",
+        f"// COMSOL {version}, GeDecayTransient.java: u'+u=0 on [0,10].",
+        "// Generated by run.py from getPVals/getU/getUDot.",
         "// Raw doubles and solver log decisions; no library-generated samples.",
         "// SPDX-License-Identifier: MIT",
         "#pragma once", "#include <vector>", "namespace comsol {",
@@ -231,43 +128,31 @@ def write_trajectories(directory: Path) -> None:
         ) + "}},")
         rows_total += len(samples)
     output.extend(["    }; return all;", "}", "} // namespace comsol", ""])
-    TRAJECTORY_HEADER.write_text("\n".join(output), encoding="utf-8")
-    print(f"{TRAJECTORY_HEADER.relative_to(ROOT)}: {len(cases)} runs, {rows_total} samples")
+    HEADER.write_text("\n".join(output), encoding="utf-8")
+    print(f"{HEADER.relative_to(ROOT)}: {len(cases)} runs, {rows_total} samples")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--header-only",
-        action="store_true",
-        help="rewrite the header from an existing export",
-    )
-    parser.add_argument(
-        "--directory", type=Path, default=None, help="where the exports are (or go)"
-    )
-    parser.add_argument("--keep", action="store_true", help="keep the run directory")
-    parser.add_argument("--trajectories", action="store_true",
-                        help="record full-precision trajectories and solver decisions")
+    parser.add_argument("--header-only", action="store_true",
+                        help="regenerate the header from recorded raw trajectories")
+    parser.add_argument("--directory", type=Path,
+                        help="directory for the COMSOL run and raw evidence")
     args = parser.parse_args()
-
-    directory = args.directory
-    if directory is None:
-        directory = Path(tempfile.mkdtemp(prefix="atstep-comsol-"))
-        cleanup = not args.keep
+    if args.header_only and args.directory is None:
+        parser.error("--header-only requires --directory")
+    if args.directory is None:
+        with tempfile.TemporaryDirectory(prefix="atstep-comsol-") as temporary:
+            directory = Path(temporary)
+            run_comsol(directory)
+            write_trajectories(directory)
     else:
-        directory.mkdir(parents=True, exist_ok=True)
-        cleanup = False
-
-    if not args.header_only:
-        run_comsol(directory, TRAJECTORY_SOURCE if args.trajectories else SOURCE)
-    if args.trajectories:
-        write_trajectories(directory)
-    else:
-        write_header(directory)
-    if cleanup and not args.keep:
-        shutil.rmtree(directory, ignore_errors=True)
+        args.directory.mkdir(parents=True, exist_ok=True)
+        if not args.header_only:
+            run_comsol(args.directory)
+        write_trajectories(args.directory)
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

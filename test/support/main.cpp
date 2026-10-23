@@ -4,6 +4,5 @@
 
 int main()
 {
-    return check::run_all();
+  return check::run_all();
 }
-

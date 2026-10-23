@@ -19,6 +19,13 @@ the equivalent correction form, reducing cancellation in a nonlinear loop.
 The solve receives the predictor as its initial guess and returns convergence
 and iteration information.
 
+Requests contain required references and one derivative formulation, represented
+by a variant. Initialization is explicit. There are no nullable state pointers
+or independently set predictor/history flags. First-order steps prepare only the
+fixed-leading formulation; they no longer construct an unused classical stencil.
+The affine derivative interface also handles the higher-derivative fallback,
+keeping callers independent of the internal history representation.
+
 The standalone `StepFormula` still computes classical level-based stencils
 for directly discretized higher derivatives. It is not the first-derivative
 formula of the fixed-leading BDF method after a step change. Inertia is best

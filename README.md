@@ -144,7 +144,8 @@ for a finite element assembly, a nonlinear Newton loop, and a system with inerti
 This replaces assembling adaptive first derivatives from
 `request.formula->weights(1)`. Those are classical, level-based BDF weights;
 COMSOL's fixed-leading-coefficient BDF has a different history after a step
-change. The formula remains available for directly discretized higher derivatives.
+change. Requests now expose the affine derivative interface for both paths;
+`StepFormula` remains a standalone utility for classical polynomial stencils.
 
 A step of `request.time` is handed a state holding the predictor of the history
 — a good initial guess — and must leave it holding the solution.
@@ -267,7 +268,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-50 test cases: the weights against every polynomial they must differentiate
+The tests cover the weights against every polynomial they must differentiate
 exactly, the control laws against IDA's, the order of convergence of the orders
 1 to 5, the accuracy against the tolerance, the four step modes, the three store
 modes, the initialization step, the generic state and norm, and the COMSOL
