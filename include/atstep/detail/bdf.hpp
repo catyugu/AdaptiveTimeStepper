@@ -2,17 +2,19 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-#include "settings.hpp"
+#include "../settings.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
-namespace atstep {
+namespace atstep::detail {
 
   /// The weights `c` with `sum_j c[j] * v[j]` equal to the value at `x` of
   /// the polynomial through `(nodes[j], v[j])`.
@@ -24,52 +26,48 @@ namespace atstep {
   std::array<double, max_levels> lagrange_derivative(
     std::span<const double> nodes, double x, int order);
 
-  namespace detail {
-
-    inline void validate_nodes(std::span<const double> nodes, double x)
-    {
-      if (nodes.empty() or nodes.size() > static_cast<std::size_t>(max_levels))
-        throw std::invalid_argument("atstep: invalid interpolation node count");
-      if (not std::isfinite(x))
-        throw std::invalid_argument("atstep: interpolation time must be finite");
-      for (std::size_t index = 0; index < nodes.size(); ++index) {
-        if (not std::isfinite(nodes[index]))
-          throw std::invalid_argument("atstep: interpolation nodes must be finite");
-        for (std::size_t i = 0; i < index; ++i)
-          if (nodes[index] == nodes[i])
-            throw std::invalid_argument("atstep: interpolation nodes must be distinct");
-      }
+  inline void validate_nodes(std::span<const double> nodes, double x)
+  {
+    if (nodes.empty() or nodes.size() > static_cast<std::size_t>(max_levels))
+      throw std::invalid_argument("atstep: invalid interpolation node count");
+    if (not std::isfinite(x))
+      throw std::invalid_argument("atstep: interpolation time must be finite");
+    for (std::size_t index = 0; index < nodes.size(); ++index) {
+      if (not std::isfinite(nodes[index]))
+        throw std::invalid_argument("atstep: interpolation nodes must be finite");
+      for (std::size_t i = 0; i < index; ++i)
+        if (nodes[index] == nodes[i])
+          throw std::invalid_argument("atstep: interpolation nodes must be distinct");
     }
+  }
 
-    /// The coefficients of `prod_{i != skip} (u - nodes[i])` in the
-    /// monomial basis of `u`, up to the degree `count - 1`, and that
-    /// product's value at `nodes[skip]` — the denominator of the Lagrange
-    /// basis polynomial.
-    struct Basis {
-      std::array<double, max_levels> coefficients {};
-      double denominator = 1.0;
-    };
+  /// The coefficients of `prod_{i != skip} (u - nodes[i])` in the
+  /// monomial basis of `u`, up to the degree `count - 1`, and that
+  /// product's value at `nodes[skip]` — the denominator of the Lagrange
+  /// basis polynomial.
+  struct Basis {
+    std::array<double, max_levels> coefficients {};
+    double denominator = 1.0;
+  };
 
-    inline Basis
-    basis_polynomial(std::span<const double> nodes, int count, int skip)
-    {
-      Basis basis;
-      basis.coefficients[0] = 1.0;
-      int degree = 0;
-      for (int i = 0; i < count; ++i) {
-        if (i == skip)
-          continue;
-        const double node = nodes[static_cast<std::size_t>(i)];
-        for (int m = degree + 1; m >= 1; --m)
-          basis.coefficients[static_cast<std::size_t>(m)] = basis.coefficients[static_cast<std::size_t>(m - 1)] - node * basis.coefficients[static_cast<std::size_t>(m)];
-        basis.coefficients[0] = -node * basis.coefficients[0];
-        ++degree;
-        basis.denominator *= nodes[static_cast<std::size_t>(skip)] - node;
-      }
-      return basis;
+  inline Basis
+  basis_polynomial(std::span<const double> nodes, int count, int skip)
+  {
+    Basis basis;
+    basis.coefficients[0] = 1.0;
+    int degree = 0;
+    for (int i = 0; i < count; ++i) {
+      if (i == skip)
+        continue;
+      const double node = nodes[static_cast<std::size_t>(i)];
+      for (int m = degree + 1; m >= 1; --m)
+        basis.coefficients[static_cast<std::size_t>(m)] = basis.coefficients[static_cast<std::size_t>(m - 1)] - node * basis.coefficients[static_cast<std::size_t>(m)];
+      basis.coefficients[0] = -node * basis.coefficients[0];
+      ++degree;
+      basis.denominator *= nodes[static_cast<std::size_t>(skip)] - node;
     }
-
-  } // namespace detail
+    return basis;
+  }
 
   inline std::array<double, max_levels>
   lagrange_value(std::span<const double> nodes, double x)
@@ -80,13 +78,13 @@ namespace atstep {
   inline std::array<double, max_levels> lagrange_derivative(
     std::span<const double> nodes, double x, int order)
   {
-    detail::validate_nodes(nodes, x);
+    validate_nodes(nodes, x);
     const int count = static_cast<int>(nodes.size());
     std::array<double, max_levels> weights {};
     if (order < 0 or order >= count)
       return weights;
     for (int j = 0; j < count; ++j) {
-      const detail::Basis basis = detail::basis_polynomial(nodes, count, j);
+      const Basis basis = basis_polynomial(nodes, count, j);
       // The order-th derivative of the monomial expansion at x is
       //   sum_{m >= order} c_m * m!/(m - order)! * x^(m - order).
       double value = 0.0;
@@ -321,4 +319,110 @@ namespace atstep {
     double ck_ = 0.5;
   };
 
-} // namespace atstep
+  /// The local error estimates of one step, and the value the step is held to.
+  ///
+  /// They are IDA's (`IDATestError`), which is the solver COMSOL's BDF is.
+  /// With `k` the order of the step and `ee` its correction — the difference
+  /// between the corrected state and the value the predictor extrapolated to
+  /// it — the estimate at the order `j` is `sigma_j ||ee_j||`, the weighted
+  /// norm of the correction a polynomial of order `j` would have left:
+  ///
+  ///     at     = sigma_k   ||ee_k||      the order the step was taken at
+  ///     below  = sigma_k-1 ||ee_k-1||    one order lower, where it exists
+  ///     below2 = sigma_k-2 ||ee_k-2||    two orders lower, where it exists
+  ///     above  = ||ee_k - ee_k-1|| / (k + 2), the estimate at the order above
+  ///
+  /// `test` is `ck ||ee_k||`, and the step is accepted while it is at most
+  /// one: `ck` differs from `sigma_k` only when the step size changed, and
+  /// IDA tests the former. `passed()` is that test.
+  struct StepErrors {
+    double test = 0.0;
+    double at = 0.0;
+    std::optional<double> below;
+    std::optional<double> below2;
+    std::optional<double> above;
+
+    /// Whether the step met the tolerance.
+    bool passed() const noexcept
+    {
+      return std::isfinite(test) and test >= 0.0 and test <= 1.0;
+    }
+  };
+
+  /// The accepted levels of a run, newest first.
+  ///
+  /// A first-order run keeps the newest alone — the levels behind it are the
+  /// ones the fixed-leading table holds — and a higher-derivative run keeps
+  /// `max_levels`, which its classical stencil reads. The levels are a ring of
+  /// the depth `reserve` set, so an accepted step costs one state copy and
+  /// nothing else: no allocation, no shifting of the older levels.
+  template <class State>
+  class Levels {
+  public:
+    /// The number of levels the run keeps (see the class comment). It is set
+    /// once, before the run starts, because the formulation does not change.
+    void reserve(std::size_t depth)
+    {
+      if (depth < 1 or depth > static_cast<std::size_t>(max_levels))
+        throw std::invalid_argument("atstep: a run keeps 1 to max_levels levels");
+      std::vector<Level> replacement(depth, Level {});
+      levels_.swap(replacement);
+      head_ = 0;
+      count_ = 0;
+    }
+
+    /// Forget every level and start at `time` with `state`.
+    void reset(double time, const State& state)
+    {
+      Level level {state, time}; // a throwing copy leaves the levels alone
+      head_ = 0;
+      count_ = 1;
+      levels_[0] = level;
+    }
+
+    void push(double time, const State& state)
+    {
+      Level level {state, time};
+      head_ = (head_ + 1) % levels_.size();
+      levels_[head_] = level;
+      count_ = std::min(count_ + 1, levels_.size());
+    }
+
+    std::size_t size() const noexcept
+    {
+      return count_;
+    }
+
+    /// The time of the level `level`, 0 being the newest.
+    double time(std::size_t level) const
+    {
+      return levels_[index(level)].time;
+    }
+
+    /// The state of the level `level`, 0 being the newest.
+    const State& state(std::size_t level) const
+    {
+      return levels_[index(level)].state;
+    }
+
+  private:
+    /// A level pairs its state with its time. The state comes first so that a
+    /// copy that throws in the member-wise assignment leaves the time alone.
+    struct Level {
+      State state {};
+      double time = 0.0;
+    };
+
+    std::size_t index(std::size_t level) const
+    {
+      if (level >= count_)
+        throw std::out_of_range("atstep: no such accepted level");
+      return (head_ + levels_.size() - level) % levels_.size();
+    }
+
+    std::vector<Level> levels_ {Level {}};
+    std::size_t head_ = 0;
+    std::size_t count_ = 0;
+  };
+
+} // namespace atstep::detail

@@ -1,4 +1,4 @@
-name: CI
+﻿name: CI
 
 on:
   push:
@@ -299,25 +299,39 @@ jobs:
           cat > build/consumer/main.cpp <<'CPP'
           #include <atstep/atstep.hpp>
 
+          #include <cmath>
           #include <cstdio>
           #include <vector>
 
           int main()
           {
               atstep::Settings settings;
+              settings.max_order = 2;
               atstep::validate(settings);
 
-              const std::vector<double> steps {0.1, 0.1, 0.1, 0.1};
-              const atstep::StepFormula formula(3, steps);
-              const std::vector<double> levels {1.0, 2.0, 3.0, 4.0};
+              using State = std::vector<double>;
+              atstep::TimeStepper<State> stepper(settings,
+                  [](const atstep::StepRequest<State>& request, State& y) {
+                      const State& known = request.derivative_history();
+                      y[0] = -known[0] / (request.derivative_weight() + 1.0);
+                      return atstep::SolveOutcome {true, 1};
+                  });
+              stepper.start(0.0, State {1.0}, 1.0);
 
-              double derivative = 0.0;
-              for (std::size_t j = 0; j < formula.weights(1).size(); ++j)
-                  derivative += formula.weights(1)[j] * levels[j];
+              double last = 0.0;
+              atstep::RunHooks<State> hooks;
+              hooks.on_store = [&last](double, const State& y, bool) {
+                  last = y[0];
+              };
+              const std::vector<double> times {0.0, 0.5, 1.0};
+              const auto report = stepper.run(times, hooks);
 
-              std::printf("order %d, y'(t) = %.6f, ck = %.6f\n",
-                  formula.order(), derivative, formula.ck());
-              return formula.order() == 3 ? 0 : 1;
+              std::printf("steps %d, stored %d, y(1) = %.6f\n",
+                  report.steps, report.stored, last);
+              return report.stored == 3
+                      and std::abs(last - std::exp(-1.0)) < 1e-2
+                  ? 0
+                  : 1;
           }
           CPP
 

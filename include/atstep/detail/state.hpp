@@ -10,7 +10,7 @@
 #include <type_traits>
 #include <vector>
 
-namespace atstep {
+namespace atstep::detail {
 
   /// The default arithmetic of a `std::vector<double>`, declared before the
   /// concept so that a plain vector models a state without an adapter.
@@ -49,7 +49,7 @@ namespace atstep {
   /// is defined on. A state is held by value, so a run copies it once per
   /// level.
   template <class State>
-  concept StateVector = std::is_copy_assignable_v<State> && std::is_copy_constructible_v<State> && std::is_default_constructible_v<State> && requires(State& y, const State& x, double a) { atstep::axpy(y, a, x); };
+  concept StateVector = std::is_copy_assignable_v<State> && std::is_copy_constructible_v<State> && std::is_default_constructible_v<State> && requires(State& y, const State& x, double a) { atstep::detail::axpy(y, a, x); };
 
   inline void
   axpy(std::vector<double>& y, double a, const std::vector<double>& x)
@@ -124,4 +124,4 @@ namespace atstep {
     }
   };
 
-} // namespace atstep
+} // namespace atstep::detail

@@ -2,14 +2,12 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-/// The whole library: the BDF step formula, the step-size and order control of
-/// COMSOL's solver, and the stepper that drives them over any state whose
-/// arithmetic the caller defines.
+/// The whole library: the settings of a run, the request a step's solve is
+/// given, and the stepper that drives them over any state whose arithmetic the
+/// caller defines. Everything under `atstep/detail` is the implementation of
+/// those, and carries no compatibility promise.
 ///
 ///     #include <atstep/atstep.hpp>
 
-#include "controller.hpp"
-#include "formula.hpp"
 #include "settings.hpp"
-#include "state.hpp"
 #include "stepper.hpp"

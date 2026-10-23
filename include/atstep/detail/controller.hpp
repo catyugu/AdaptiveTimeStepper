@@ -2,45 +2,14 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-#include "settings.hpp"
+#include "bdf.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <optional>
 #include <stdexcept>
 
-namespace atstep {
-
-  /// The local error estimates of one step, and the value the step is held to.
-  ///
-  /// They are IDA's (`IDATestError`), which is the solver COMSOL's BDF is.
-  /// With `k` the order of the step and `ee` its correction — the difference
-  /// between the corrected state and the value the predictor extrapolated to
-  /// it — the estimate at the order `j` is `sigma_j ||ee_j||`, the weighted
-  /// norm of the correction a polynomial of order `j` would have left:
-  ///
-  ///     at     = sigma_k   ||ee_k||      the order the step was taken at
-  ///     below  = sigma_k-1 ||ee_k-1||    one order lower, where it exists
-  ///     below2 = sigma_k-2 ||ee_k-2||    two orders lower, where it exists
-  ///     above  = ||ee_k - ee_k-1|| / (k + 2), the estimate at the order above
-  ///
-  /// `test` is `ck ||ee_k||`, and the step is accepted while it is at most
-  /// one: `ck` differs from `sigma_k` only when the step size changed, and
-  /// IDA tests the former. `passed()` is that test.
-  struct StepErrors {
-    double test = 0.0;
-    double at = 0.0;
-    std::optional<double> below;
-    std::optional<double> below2;
-    std::optional<double> above;
-
-    /// Whether the step met the tolerance.
-    bool passed() const noexcept
-    {
-      return std::isfinite(test) and test >= 0.0 and test <= 1.0;
-    }
-  };
+namespace atstep::detail {
 
   /// Scalar BDF step-size and order control, following IDA's startup,
   /// error test and completion rules. It is independent of state and equations.
@@ -395,4 +364,4 @@ namespace atstep {
     h_ = std::max(ida::eta_min_ef * step, smallest_);
   }
 
-} // namespace atstep
+} // namespace atstep::detail

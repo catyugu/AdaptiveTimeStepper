@@ -1,4 +1,4 @@
-// A second-order equation in time, written the way COMSOL and IDA write it: as
+﻿// A second-order equation in time, written the way COMSOL and IDA write it: as
 // a first-order system in `(u, v = u')`. The stepper then needs nothing but the
 // weights of the first derivative, and the order is the scheme's own.
 #include <atstep/atstep.hpp>
@@ -37,7 +37,7 @@ namespace {
     atstep::SolveOutcome solve(const atstep::StepRequest<State>& request,
       State& y) const
     {
-      const auto known = request.derivative_history();
+      const State& known = request.derivative_history();
       const double ru = -known.u;
       const double rv = -known.v;
       // a0 u - v = ru  and  u + (a0 + c) v = rv: the two-by-two system

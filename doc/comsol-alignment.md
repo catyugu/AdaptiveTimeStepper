@@ -1,4 +1,4 @@
-# COMSOL BDF alignment
+﻿# COMSOL BDF alignment
 
 The first-order BDF implementation is checked against COMSOL 6.2.0.290 on
 `u' + u = 0`, `u(0) = 1`, over `[0,10]`. All 21 recorded configurations agree
@@ -95,8 +95,8 @@ after a step or order change. This is a change to the numerical formula, not a
 constant fitted to the reference step counts.
 
 Use `request.derivative_weight()`, `request.derivative_history()` and
-`request.derivative(y)` when assembling first-order systems. The older
-`request.formula->weights(1)` interface describes the classical stencil and
+`request.derivative(y, dy)` when assembling first-order systems. The classical
+stencil's `StepFormula::weights(1)` describes a different discretization and
 cannot express the confirmed fixed-leading history.
 
 ### Tolerances and output

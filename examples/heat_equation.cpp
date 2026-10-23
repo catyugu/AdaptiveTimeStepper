@@ -1,4 +1,4 @@
-// A one-dimensional heat conduction problem, the way a finite element code
+﻿// A one-dimensional heat conduction problem, the way a finite element code
 // would drive the stepper: the operator is assembled by the caller, and the
 // library only supplies the weights of the step.
 #include <atstep/atstep.hpp>
@@ -34,7 +34,7 @@ namespace {
       std::vector<double>& u) const
     {
       const double a0 = request.derivative_weight();
-      const auto known = request.derivative_history();
+      const std::vector<double>& known = request.derivative_history();
       std::vector<double> rhs(n, 0.0);
       for (std::size_t i = 0; i < n; ++i)
         rhs[i] = -mass[i] * known[i];

@@ -1,4 +1,4 @@
-// A nonlinear system the caller iterates itself: the stepper asks for a step
+﻿// A nonlinear system the caller iterates itself: the stepper asks for a step
 // and the example's Newton loop supplies it. The state is a plain
 // `std::vector<double>`, which the library takes without an adapter.
 #include <atstep/atstep.hpp>
@@ -24,7 +24,7 @@ namespace {
       std::vector<double>& y) const
     {
       const double a0 = request.derivative_weight();
-      const auto known = request.derivative_history();
+      const std::vector<double>& known = request.derivative_history();
       const double history_u = known[0];
       const double history_v = known[1];
 
