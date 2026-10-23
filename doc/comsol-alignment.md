@@ -26,7 +26,7 @@ magnitude of margin without a special case per quantity.
 
 | Configuration                                      | COMSOL accepted steps |
 | -------------------------------------------------- | :-------------------- |
-| Default, maximum order 5                           | 37                    |
+| Global-equation baseline, maximum order 5          | 37                    |
 | Maximum orders 1, 2, 3, 4                          | 108, 58, 39, 39       |
 | Relative tolerances 1e-3, 1e-5                     | 60, 98                |
 | Strict, intermediate                               | 49, 37                |
@@ -41,6 +41,37 @@ magnitude of margin without a special case per quantity.
 The nonuniform schedule is `0 .001 .01 .05 .2 .3 .7 1 1.1 1.4 2 3 5 8 10`.
 It forces the mode constraints to act; checking only equally spaced outputs
 with a smaller maximum step would not exercise intermediate stepping.
+
+## Default order depends on the physics interface
+
+There is no single maximum-order default for all COMSOL transient models.
+The generic Time solver's API default is `maxorder = 5`, but physics-controlled
+solver generation can select a lower maximum.
+
+A local COMSOL 6.2.0.290 readback on 2026-10-23, without setting `maxorder`,
+`bdforder` or `timemethod`, gave:
+
+| Configuration                                    | Method | Maximum BDF order (`maxorder`) | Manual BDF order (`bdforder`) |
+| ------------------------------------------------ | ------ | ------------------------------ | ----------------------------- |
+| Directly created Time solver node                | BDF    | 5                              | 2                             |
+| Global Equations, automatically generated solver | BDF    | 5                              | 2                             |
+| Heat Transfer, automatically generated solver    | BDF    | 2                              | 2                             |
+
+The [COMSOL 6.2 Time API](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/comsol_api_solver.49.48.html)
+lists `maxorder = 5` and the separate manual-mode `bdforder = 2`.
+The [Heat Transfer documentation](https://doc.comsol.com/6.3/doc/com.comsol.help.comsol/comsol_ref_heattransfer.30.65.html)
+specifies second-order BDF as its physics default. The
+[Navier–Stokes solver documentation](https://doc.comsol.com/6.4/doc/com.comsol.help.cfd/cfd_ug_fluidflow_single.06.103.html)
+also specifies a maximum order of two; that interface was not included in
+the local readback above.
+
+`Settings::max_order = 5` follows the generic solver default. Set it to 2 to
+match the automatic Heat Transfer or Navier–Stokes configuration. This limits
+adaptive orders to 1–2; it does not force every step to use order 2.
+
+The recorded case named `default` uses Global Equations and explicitly sets
+`maxorder = 5` in `GeDecayTransient.java`. It is a configured regression
+baseline, not evidence that all COMSOL physics interfaces default to 5.
 
 ## What caused the mismatch
 

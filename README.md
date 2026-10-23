@@ -110,6 +110,19 @@ error with zero weight has infinite norm. Mismatched vector sizes are rejected.
 | `manual_step`, `manual_order` | 0, 2 | Fixed step and target order in manual mode |
 | `derivative_orders` | 1 | Derivative levels available to the solve, up to 3 |
 
+### Why the default maximum order is 5
+
+The library's `max_order = 5` matches COMSOL's generic Time solver node and
+the automatically generated solver for Global Equations. Physics interfaces
+can override that default: Heat Transfer and Navier–Stokes use a maximum BDF
+order of 2 in their automatic solver configurations. To match those settings,
+set `settings.max_order = 2`; the adaptive method then uses orders 1–2 as
+history and error estimates allow, rather than fixing every step at order 2.
+
+This is separate from `manual_order = 2`, which selects the target BDF order
+in manual stepping mode. See the [default-setting verification](doc/comsol-alignment.md#default-order-depends-on-the-physics-interface)
+for local readbacks and official documentation.
+
 Step modes:
 
 - `free`: choose steps from error estimates.
