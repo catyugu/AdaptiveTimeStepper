@@ -80,7 +80,7 @@ Ten configurations of the same model, and the accepted steps each run took
 | rtol 1e-3 | 60 | 43 | −28 % |
 | rtol 1e-5 | 98 | 75 | −24 % |
 | steps taken by solver: strict | 49 | 41 | −16 % |
-| steps taken by solver: intermediate | 37 | 29 | −22 % |
+| steps taken by solver: intermediate | 37 | 33 | −11 % |
 | maximum step constant 0.05 s | 204 | 204 | 0 % |
 
 Two of them agree exactly, the maximum step among them — where the step is the

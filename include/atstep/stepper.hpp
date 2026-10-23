@@ -466,8 +466,11 @@ public:
 
             if (settings_.store_mode == StoreMode::steps)
                 store(time, history_.state(0), false, hooks, report);
+            const std::size_t reached = next;
             next = store_outputs(next, from, time, output_times, hooks, report);
-            landed = next < output_times.size() and time < output_times[next];
+            // A step that reached no output time ended inside the interval it
+            // started in, which is what `intermediate` asks of every interval.
+            landed = next == reached;
         }
         return report;
     }
@@ -486,7 +489,7 @@ public:
         const auto weights = lagrange_value(
             std::span<const double>(nodes.data(), count), 0.0,
             static_cast<int>(count));
-        combine(interpolated_, weights, count);
+        combine(interpolated_, std::span<const double>(weights.data(), count));
         return interpolated_;
     }
 
@@ -500,9 +503,9 @@ private:
 
     /// `out = weights[0] y_0 + ... + weights[count - 1] y_{count - 1}`, from the
     /// levels of the history.
-    void combine(State& out, const std::array<double, max_levels>& weights,
-        std::size_t count) const
+    void combine(State& out, std::span<const double> weights) const
     {
+        const std::size_t count = std::min(weights.size(), history_.size());
         out = history_.state(0);
         atstep::axpy(out, weights[0] - 1.0, history_.state(0));
         for (std::size_t j = 1; j < count; ++j)
@@ -521,23 +524,7 @@ private:
             atstep::axpy(predictor_, step / probe_, derivative_);
             return;
         }
-        const auto weights = predictor_weights();
-        combine(predictor_, weights, predictor_count());
-    }
-
-    std::array<double, max_levels> predictor_weights() const
-    {
-        const auto span = formula_.predictor();
-        std::array<double, max_levels> weights {};
-        for (std::size_t j = 0; j < span.size(); ++j)
-            weights[j] = span[j];
-        return weights;
-    }
-
-    std::size_t predictor_count() const
-    {
-        return std::min<std::size_t>(
-            formula_.predictor().size(), history_.size());
+        combine(predictor_, formula_.predictor());
     }
 
     /// The error estimates of the step at `order`, whose state is `work_` and
@@ -556,10 +543,10 @@ private:
         // the previous step left.
         if (order >= 2)
             errors.below = formula_.sigma(order - 1)
-                * correction(order, formula_.extrapolation(order));
+                * correction(formula_.extrapolation(order));
         if (order >= 3)
             errors.below2 = formula_.sigma(order - 2)
-                * correction(order - 1, formula_.extrapolation(order - 1));
+                * correction(formula_.extrapolation(order - 1));
         if (has_previous_ee_ and previous_order_ == order) {
             scratch_ = ee_;
             atstep::axpy(scratch_, -1.0, previous_ee_);
@@ -568,13 +555,11 @@ private:
         return errors;
     }
 
-    /// The weighted norm of `y - p`, `p` being the polynomial through `count`
-    /// levels with `weights`.
-    double correction(int count, const std::array<double, max_levels>& weights)
+    /// The weighted norm of `y - p`, `p` being the polynomial through the levels
+    /// with `weights`.
+    double correction(std::span<const double> weights)
     {
-        const std::size_t levels = std::min<std::size_t>(
-            static_cast<std::size_t>(count), history_.size());
-        combine(scratch_, weights, levels);
+        combine(scratch_, weights);
         atstep::axpy(scratch_, -1.0, work_);
         return norm_(scratch_, work_);
     }

@@ -115,7 +115,7 @@ TEST_CASE("comsol: the step counts are the ones this library produces")
     // A regression of this library against itself: the counts below are what the
     // runs of the reference configurations take, and a change of the step-size
     // or order control shows up here first.
-    const std::vector<int> expected {29, 63, 38, 30, 29, 43, 75, 41, 29, 204};
+    const std::vector<int> expected {29, 63, 38, 30, 29, 43, 75, 41, 33, 204};
     const auto& runs = comsol::runs();
     CHECK_EQ(runs.size(), expected.size());
     for (std::size_t i = 0; i < runs.size(); ++i) {

@@ -367,13 +367,15 @@ TEST_CASE("stepper: the strict mode ends every step at an output time")
 
 TEST_CASE("stepper: the intermediate mode puts a step in every subinterval")
 {
+    // COMSOL's "Intermediate": at least one step in each interval between two
+    // output times, whatever the tolerance would let the solver skip.
     atstep::Settings settings;
     settings.step_mode = atstep::StepMode::intermediate;
     settings.max_order = 2;
-    settings.relative_tolerance = 1e-1; // steps large enough to overshoot
+    settings.relative_tolerance = 1e-1; // steps large enough to jump an interval
     atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
     stepper.start(0.0, Scalar {1.0}, 10.0);
-    std::vector<double> times {0.0, 5.0, 10.0};
+    const std::vector<double> times {0.0, 2.5, 5.0, 7.5, 10.0};
 
     std::vector<double> lands;
     atstep::RunHooks<Scalar> hooks;
@@ -381,12 +383,12 @@ TEST_CASE("stepper: the intermediate mode puts a step in every subinterval")
         lands.push_back(record.time);
     };
     stepper.run(times, hooks);
-    // A step lands inside (0, 5): the subinterval is not stepped over.
-    CHECK(std::any_of(lands.begin(), lands.end(), [](double t) {
-        return t > 0.0 && t < 5.0;
-    }));
+    for (std::size_t i = 1; i < times.size(); ++i) {
+        const bool inside = std::any_of(lands.begin(), lands.end(),
+            [&](double t) { return t > times[i - 1] and t < times[i]; });
+        CHECK(inside);
+    }
 }
-
 TEST_CASE("stepper: the free mode steps over an output time and interpolates it")
 {
     atstep::Settings settings;
