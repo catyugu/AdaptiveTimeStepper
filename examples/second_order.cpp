@@ -1,6 +1,8 @@
-﻿// A second-order equation in time, written the way COMSOL and IDA write it: as
-// a first-order system in `(u, v = u')`. The stepper then needs nothing but the
-// weights of the first derivative, and the order is the scheme's own.
+// A second-order equation in time, handed to the library as it is:
+// `M u'' + C u' + K u = f`. `SecondOrderStepper` introduces the velocity the
+// first-order BDF kernel needs, keeps it consistent with the displacement, and
+// gives the solve the condensed system of the displacement alone — the state
+// augmentation and linear-system reduction COMSOL's IDA path performs.
 #include <atstep/atstep.hpp>
 
 #include <cmath>
@@ -9,51 +11,61 @@
 
 namespace {
 
-  /// `u'' + c u' + u = 0` — a damped oscillator — as `u' = v`, `v' = -c v -
-  /// u`.
+  /// The damped oscillator `u'' + 2 zeta w u' + w^2 u = 0`, with unit mass.
   struct Oscillator {
-    double damping = 0.1;
+    double frequency = 1.0;
+    double damping = 0.05;
 
-    /// The state of the system is the pair, and the stepper's arithmetic is
-    /// the one operation it needs on it.
-    struct State {
+    /// The state of the equation is the displacement; the velocity is the
+    /// library's to carry.
+    struct Displacement {
       double u = 0.0;
-      double v = 0.0;
-      void axpy(double a, const State& x)
+      void axpy(double a, const Displacement& x)
       {
         u += a * x.u;
-        v += a * x.v;
       }
       std::size_t size() const
       {
-        return 2;
+        return 1;
       }
-      double operator[](std::size_t i) const
+      double operator[](std::size_t) const
       {
-        return i == 0 ? u : v;
+        return u;
       }
     };
 
-    atstep::SolveOutcome solve(const atstep::StepRequest<State>& request,
-      State& y) const
+    /// The condensed step: `u' = cj u + known(1)` and `u'' = cj^2 u + known(2)`
+    /// leave
+    ///
+    ///     (K + cj C + cj^2 M) u = -(M known(2) + C known(1)),
+    ///
+    /// one scalar equation in the displacement, at every order.
+    atstep::SolveOutcome solve(
+      const atstep::SecondOrderRequest<Displacement>& request,
+      Displacement& y) const
     {
-      const State& known = request.derivative_history();
-      const double ru = -known.u;
-      const double rv = -known.v;
-      // a0 u - v = ru  and  u + (a0 + c) v = rv: the two-by-two system
-      // the coupled equations make at the new level.
-      const double a0 = request.derivative_weight();
-      const double determinant = a0 * (a0 + damping) + 1.0;
-      y.u = (ru * (a0 + damping) + rv) / determinant;
-      y.v = (a0 * rv - ru) / determinant;
-      return atstep::SolveOutcome {true, 2};
+      const double stiffness = frequency * frequency;
+      const double viscosity = 2.0 * damping * frequency;
+      const double known2 = request.derivative_history(2)[0];
+      const double known1 = request.derivative_history()[0];
+      y.u = -(known2 + viscosity * known1) / (stiffness + viscosity * request.derivative_weight() + request.derivative_weight(2));
+      return atstep::SolveOutcome {true, 1};
     }
 
-    static double exact(double t, double damping)
+    /// The solution from `u(0) = 1`, `u'(0) = 0`, and its velocity.
+    double value(double t) const
     {
-      const double decay = 0.5 * damping;
-      const double omega = std::sqrt(1.0 - decay * decay);
-      return std::exp(-decay * t) * (std::cos(omega * t) + decay / omega * std::sin(omega * t));
+      const double decay = damping * frequency;
+      const double omega = frequency * std::sqrt(1.0 - damping * damping);
+      return std::exp(-decay * t)
+        * (std::cos(omega * t) + decay / omega * std::sin(omega * t));
+    }
+
+    double velocity(double t) const
+    {
+      const double decay = damping * frequency;
+      const double omega = frequency * std::sqrt(1.0 - damping * damping);
+      return -std::exp(-decay * t) * frequency * frequency / omega * std::sin(omega * t);
     }
   };
 
@@ -63,36 +75,43 @@ int main()
 {
   const Oscillator oscillator;
   atstep::Settings settings;
-  settings.max_order = 5;
   settings.relative_tolerance = 1e-6;
 
-  atstep::TimeStepper<Oscillator::State> stepper(
+  atstep::SecondOrderStepper<Oscillator::Displacement> stepper(
     settings,
-    [&oscillator](const atstep::StepRequest<Oscillator::State>& request,
-      Oscillator::State& y) {
-      return oscillator.solve(request, y);
-    });
+    [&oscillator](const atstep::SecondOrderRequest<Oscillator::Displacement>& request,
+      Oscillator::Displacement& y) { return oscillator.solve(request, y); });
 
   const double end = 10.0;
-  stepper.start(0.0, Oscillator::State {1.0, 0.0}, end);
+  stepper.start(0.0,
+    Oscillator::Displacement {1.0},
+    Oscillator::Displacement {0.0},
+    end);
 
   std::vector<double> times;
   for (int i = 0; i <= 100; ++i)
     times.push_back(end * static_cast<double>(i) / 100.0);
 
-  double worst = 0.0;
-  atstep::RunHooks<Oscillator::State> hooks;
-  hooks.on_store = [&](double time, const Oscillator::State& state, bool) {
-    const double exact = Oscillator::exact(time, oscillator.damping);
-    worst = std::max(worst, std::abs(state.u - exact));
+  double worst_displacement = 0.0;
+  double worst_velocity = 0.0;
+  atstep::SecondOrderHooks<Oscillator::Displacement> hooks;
+  hooks.on_store = [&](double time,
+                     const Oscillator::Displacement& u,
+                     const Oscillator::Displacement& v,
+                     bool) {
+    worst_displacement = std::max(
+      worst_displacement, std::abs(u[0] - oscillator.value(time)));
+    worst_velocity = std::max(
+      worst_velocity, std::abs(v[0] - oscillator.velocity(time)));
   };
   const auto report = stepper.run(times, hooks);
 
   std::printf("oscillator: %d steps (%d rejected), orders to %d, worst error "
-              "%.3e\n",
+              "%.3e in u and %.3e in u'\n",
     report.steps,
     report.rejected,
     report.max_order,
-    worst);
-  return worst < 1e-4 ? 0 : 1;
+    worst_displacement,
+    worst_velocity);
+  return worst_displacement < 1e-4 and worst_velocity < 1e-3 ? 0 : 1;
 }

@@ -9,6 +9,7 @@
 set(ATSTEP_TEST_SOURCES
     unit/test_controller.cpp
     unit/test_stepper.cpp
+    unit/test_second_order.cpp
     unit/test_norm.cpp
     reference/test_comsol_thermoelastic.cpp
     reference/test_comsol_ode.cpp
