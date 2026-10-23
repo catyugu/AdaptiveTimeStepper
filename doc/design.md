@@ -1,19 +1,21 @@
 # Design
 
-Two headers are public, and everything they need is under `detail`:
+`settings.hpp`, `stepper.hpp` and `second_order.hpp` are the public headers, with
+`atstep.hpp` as their umbrella, and everything they need is under `detail`:
 
 | Header                  | Responsibility                                        |
 | ----------------------- | ----------------------------------------------------- |
 | `settings.hpp`          | Configuration and validation                          |
 | `stepper.hpp`           | The solve request, the run, and its output            |
+| `second_order.hpp`      | The second-order-in-time adapter                      |
 | `detail/state.hpp`      | State arithmetic and the default weighted RMS norm    |
-| `detail/bdf.hpp`        | Accepted levels, polynomial stencils, error estimates |
+| `detail/bdf.hpp`        | The accepted level, and IDA's error estimates         |
 | `detail/controller.hpp` | Scalar step-size and order decisions                  |
 | `detail/output.hpp`     | Step placement against the output times               |
 
 The `detail` headers are installed like the rest, because a header-only library
 cannot do without them, and they carry no compatibility promise: they are the
-implementation of the two public headers, in the namespace `atstep::detail`.
+implementation of the public headers, in the namespace `atstep::detail`.
 
 ## Ownership and solve boundary
 
@@ -22,10 +24,10 @@ a run in four parts:
 
 | Member        | What it is                                             |
 | ------------- | ------------------------------------------------------ |
-| `levels_`     | the accepted steps, newest first                       |
-| `table_`      | the scaled differences a first-order run reads instead |
+| `accepted_`   | the accepted level, and its time                       |
+| `table_`      | the scaled differences the scheme reads as its history |
 | `controller_` | the step size and order proposed for the next step     |
-| `work_`       | the eleven buffers of a step                           |
+| `work_`       | the ten buffers of a step                              |
 
 A step's own coefficients — its size, order, the factors the trial reads the
 table through, the distances back to the levels, IDA's `sigma`, and its error
@@ -40,9 +42,8 @@ An integrator is therefore neither copyable nor movable: it is one run's state
 from `start` to its last step, and `start` begins it again.
 
 A `StepRequest` borrows its references for the duration of the solve, and a
-state it exposes is the stepper's buffer. Its derivative formulation is a
-variant: fixed-leading BDF or a classical polynomial stencil. Callers use the
-same affine derivative interface for both:
+state it exposes is the stepper's buffer. There is one formulation, the
+fixed-leading BDF history of a first-order equation:
 
 ```text
 y' = cj*y + known
@@ -51,16 +52,19 @@ M y' + K y = f  =>  (cj*M + K)*y = f - M*known
 
 `derivative_history()` returns `known` by reference, and `derivative(y, out)`
 evaluates `cj*y + known` in correction form into a buffer of the caller's,
-reducing cancellation where the predictor is good. A derivative level above the
-first is written by `derivative_history(level, out)`. The solve starts from the
+reducing cancellation where the predictor is good. The solve starts from the
 predictor and returns convergence and iteration information; matrix assembly and
 algebraic solvers belong to the caller. Custom states implement `axpy`; custom
 norms implement `norm(error, reference)`.
 
+A second time derivative is not a second formulation: it is an equation the
+adapter writes as a first-order system over the same kernel (see below). A third
+is the caller's to write that way itself.
+
 ## Accepted history
 
-First-order integration stores scaled divided-difference columns and step
-distances. A step size rescales every column the scheme reads by one factor: the
+Integration stores scaled divided-difference columns and step distances. A step
+size rescales every column the scheme reads by one factor: the
 rescaled column of order `j` is `beta_j * phi_j`, the accepted column scaled. An
 attempt therefore keeps the factors and no column at all — it reads the accepted
 table and writes nothing, so a step the solve or the error test refuses leaves it
@@ -72,24 +76,19 @@ the same factors.
 The table is therefore never copied and never written speculatively: an attempt
 costs a few doubles, not one state. Dense output reads the accepted columns.
 
-The level behind it is the table alone: a first-order run keeps one accepted
-level, which `previous()` and the error weights read, and no older one. The
-levels are a ring of the depth the formulation needs — one, or `max_levels` for
-a higher-derivative run, whose classical stencil reads them — so an accepted
-step costs one state copy, no allocation and no shifting of older levels.
-`previous(level)` is what starts that stencil.
+The table is the whole history: nothing behind the accepted level is kept, and
+an accepted step costs one state copy. Older levels are the columns' business,
+which is what lets a rejection leave the history untouched.
 
 A level pairs its state with its time in one object, so a copy that throws
-cannot leave the two out of step; a level is constructed before the ring is
-written, which is what leaves the accepted history alone when it throws.
+cannot leave the two out of step; a level is constructed before the accepted one
+is written, which is what leaves the accepted history alone when it throws.
 
-`start` resets the levels, the table, the controller, the tolerance indexing,
-and the correction the estimate at the order above compares against.
+`start` resets the level, the table, the controller and the tolerance indexing.
 
-The stepper holds the eleven buffers of a step, the seven columns and the
-accepted levels as states: nineteen objects for a first-order run whatever the
-order, and twenty-five for a higher-derivative one. A state's storage is
-allocated when a step first writes it, so a first-order run at order `k`
+The stepper holds the ten buffers of a step, the seven columns and the accepted
+level as states: eighteen objects, whatever the order and whatever the equation.
+A state's storage is allocated when a step first writes it, so a run at order `k`
 allocates the columns `0..k+1` and the buffers the estimates read.
 
 `StepController` consumes scalar estimates independently of state and equation
@@ -97,11 +96,76 @@ types. It implements startup growth, settled-step order selection and retries.
 Maximum-step arithmetic preserves rounding at the transition to a constant
 step: a one-bit overshoot can reset the settled-step counter.
 
-`StepFormula` serves classical stencils, including higher derivatives. It is
-not reconstructed for first-order fixed-leading steps. Lagrange values and
-derivatives share one evaluator. Counts, node uniqueness and finiteness are
-checked before accessing fixed-size buffers; extra step history is bounded
-to the supported order range.
+## Second-order equations
+
+`SecondOrderStepper` advances `M u'' + C u' + K u = f(t)` with the first-order
+kernel, the way COMSOL's IDA path does: "extra variables are internally
+introduced so that it is possible to form a first-order time-derivative system",
+and "the linearized system is reduced to the original size with the matrix
+E + σD + σ²K" ([COMSOL 6.4, About the Time-Dependent
+Solver](https://doc.comsol.com/6.4/doc/com.comsol.help.comsol/comsol_ref_solver.36.122.html)).
+
+The pair the adapter integrates in the kernel's state is `(u, v = u')`:
+
+```text
+u' - v            = 0
+M v' + C v + K u  = f
+```
+
+The caller's state is the displacement, and the velocity is a companion the
+adapter keeps in a `detail::Augmented` state: prediction, levels, table, dense
+output and the error test of the kernel all run on the pair without knowing
+which half is which.
+
+The step's solve is then the condensed system of the displacement alone. With
+`cj` the step's first-derivative weight, the two derivative levels are the
+affine forms
+
+```text
+u'  = cj    u + known(1)
+u'' = cj^2  u + known(2),   known(2) = cj known(1) + known(v),
+```
+
+where `known(v)` is the known term of the velocity's own formula.
+
+and substituting them into the equation leaves
+
+```text
+(K + cj C + cj^2 M) u_{n+1} = f(t_{n+1}) - M known(2) - C known(1).
+```
+
+A nonlinear residual is condensed the same way, and its Jacobian is
+`dF/du + cj dF/du' + cj² dF/du''`. The linear system is the size it was before
+the augmentation, and the adapter is the only place that knows about it. The
+solve returns the displacement; the adapter derives the level's velocity from
+the kinematic constraint, `v = cj u + known(1)`, which is what makes the pair at
+every accepted level a consistent one.
+
+`run` reports the velocity with every stored displacement, `velocity()` is the
+newest level's, and `interpolate(t, 1)` is the dense velocity: the kernel's dense
+derivative of the pair, whose velocity block is the displacement's derivative.
+
+Two consequences of the layering are deliberate:
+
+- The error test measures the displacement alone, because the norm of the kernel
+  is applied to `Augmented`, whose `size()` and `operator[]` are the
+  displacement's. The velocity's error is the derivative of the displacement's,
+  so a norm over it would hold the step to the accuracy of a derivative — a
+  factor `1/h` tighter — rather than to the accuracy of the solution. COMSOL's
+  error test excludes its auxiliary velocity for the same reason. State
+  augmentation and error-norm selection are therefore separate decisions: the
+  caller's norm describes its own variables, and the pairs never reach it.
+- No equation ever carries two derivatives into the kernel, so there is one
+  integration path, one order selection and one error estimate. Differencing the
+  displacement levels twice — the classical stencil of version 1.0 — is a
+  different and worse discretization: the BDF polynomial through the levels has
+  a parasitic root of multiplicity two, and the run is first order however high
+  the scheme's order is.
+
+The initialization is the kernel's: two artificial backward-Euler steps of the
+pair. The initial velocity is a second initial value, and the increment of the
+displacement over the probe is what the first step is sized from, as the
+measured derivative is for a first-order run.
 
 ## Output and error weights
 
@@ -128,7 +192,7 @@ enough to advance floating-point time.
 
 ## Validation boundaries
 
-Unit tests cover polynomial reproduction, controller rules, convergence,
+Unit tests cover controller rules, convergence, the second-order adapter,
 rejection, restart, invalid input and level-copy failure. CTest also runs
 four examples. The [scalar COMSOL regressions](comsol-alignment.md) compare 21 recorded
 scalar configurations, totaling 1,336 output samples, including times, states,

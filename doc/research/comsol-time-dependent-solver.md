@@ -11,6 +11,9 @@ into the URL as `#page=N` so each one opens on the page being quoted.
   `comsol_ref_solver.html`, `comsol_ref.html`, `index.html`). `https://doc.comsol.com/` now redirects to
   `https://doc.comsol.com/6.4/docserver/`, a Vaadin single-page application (`docserver.js`, no static
   per-chapter HTML), so there is no quotable chapter URL for 6.x.
+- Exception: **6.4 does serve per-chapter HTML** under `.../6.4/doc/com.comsol.help.comsol/comsol_ref_solver.<n>.<m>.html`,
+  and `comsol_ref_solver.36.122.html` ("About the Time-Dependent Solver") returns HTTP 200 with the
+  second-order passage of §9 verbatim.
 - What *is* published and fetchable: the full Reference Manual PDFs, `.../doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf`,
   for 6.0, 6.1, 6.2, 6.3, 6.4 (HTTP 200, ~48 MB). All quotes below come from the **6.2** PDF unless marked,
   and the load-bearing passages were re-checked in the **6.0** and **6.4** PDFs.
@@ -198,6 +201,13 @@ So "Intermediate" = at least one step per output subinterval, not necessarily la
   the variable Uv unless consistent initialization is on**, in which case the differential Uv-variables are
   included in the error test and the error estimation strategy applies to the algebraic Uv-variables."
   (pp. 1581–1582)
+- The 6.4 HTML page ([`comsol_ref_solver.36.122.html`](https://doc.comsol.com/6.4/doc/com.comsol.help.comsol/comsol_ref_solver.36.122.html))
+  states the same passage with the two parentheticals a library author needs: the augmentation happens
+  "**(this does not happen when using generalized-α because it can integrate second-order equations)**",
+  and "By the added equation, the original variable U is therefore always a differential variable
+  (index-0)." On the mixed system: "The implementation of the generalized-α method in COMSOL Multiphysics
+  detects which variables are first order in time and which variables are second order in time and applies
+  the correct formulas to the variables."
 - The documented statement about what selects the time step is only the error test of §10 plus the
   test in §5/§7. **No safety factor for the BDF step-size update is documented**, and no explicit
   `h_new = h * f(err)` formula is given for BDF. (`Step size safety factor`, default 0.9, and the PI

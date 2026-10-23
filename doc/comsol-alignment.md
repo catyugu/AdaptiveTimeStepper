@@ -95,9 +95,12 @@ after a step or order change. This is a change to the numerical formula, not a
 constant fitted to the reference step counts.
 
 Use `request.derivative_weight()`, `request.derivative_history()` and
-`request.derivative(y, dy)` when assembling first-order systems. The classical
-stencil's `StepFormula::weights(1)` describes a different discretization and
-cannot express the confirmed fixed-leading history.
+`request.derivative(y, dy)` when assembling first-order systems. A second time
+derivative is not a weight of this formula: `SecondOrderStepper` gives the same
+first-derivative weight to the pair `(u, u')` and condenses the step back to the
+displacement, which is what COMSOL's IDA path does. The classical stencil
+version 1.0 offered for a second derivative is gone: it is a different
+discretization, first order whatever the scheme's order.
 
 ### Tolerances and output
 
@@ -175,8 +178,9 @@ IDA source supplied hypotheses and a control-law reference; COMSOL experiments
 decided whether those hypotheses held. The validation does not establish
 bitwise equality for arbitrary models or undocumented COMSOL configurations.
 Coupled-field weighting, nonlinear physics, events and other COMSOL versions
-need their own reference runs. Direct second derivatives use the separately
-documented classical formula; first-order systems use the validated BDF path.
+need their own reference runs. A second-order equation keeps the validated BDF
+path, through the state augmentation COMSOL documents, rather than a separate
+discretization.
 
 ## Reproduce
 

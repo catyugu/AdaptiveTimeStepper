@@ -6,7 +6,10 @@
 Header-only C++20 adaptive BDF integration, with variable order 1–5 and no
 external dependencies. The caller solves the equations; the library manages
 prediction, history, error estimates, step size, order and output.
-The first-order method is checked against recorded COMSOL 6.2 scalar runs.
+First-order-in-time systems go to the stepper directly; a second-order-in-time
+equation goes to the same kernel through an adapter that introduces the velocity
+and condenses the Newton system back to the displacement, as COMSOL's IDA path
+does. The first-order method is checked against recorded COMSOL 6.2 scalar runs.
 
 ## Example
 
@@ -47,11 +50,24 @@ In a nonlinear residual, `request.derivative(y, dy)` writes the derivative into
 the solve fails; the stepper retries at a quarter of the step size.
 
 Runnable examples cover [heat conduction](examples/heat_equation.cpp),
-a [first-order oscillator](examples/second_order.cpp), a
+a [damped oscillator as a second-order equation](examples/second_order.cpp), a
 [nonlinear reaction system](examples/vector_state.cpp) and an
 [electrical–thermal–mechanical motor](examples/coupled_motor.cpp).
 The [coupled cases](doc/multiphysics.md) also include a thermoelastic
 COMSOL trajectory regression.
+
+## Second-order equations
+
+`M u'' + C u' + K u = f(t)` goes to `SecondOrderStepper`. It introduces the
+velocity the BDF kernel needs and condenses each step back to the displacement,
+so the solve is the size it was — the state augmentation and reduction COMSOL's
+IDA path performs. The error test measures the displacement, and `run` reports the
+velocity with every stored value. See
+[the oscillator example](examples/second_order.cpp) and the
+[design](doc/design.md#second-order-equations).
+
+A third or higher derivative in time is the caller's to write as a first-order
+system.
 
 ## Use in a project
 
@@ -111,12 +127,6 @@ error with zero weight has infinite norm. Mismatched vector sizes are rejected.
 | `store_mode`                  | `interpolate` | Output selection                                     |
 | `interpolate_end_time`        | true          | Allow an internal step past the final time           |
 | `manual_step`, `manual_order` | 0, 2          | Fixed step and target order in manual mode           |
-| `derivative_orders`           | 1             | Derivative levels the solve is given, 1 to 3         |
-
-`derivative_orders = 1` is the fixed-leading BDF history of the library's own
-method. A higher value switches the same stepping to a classical stencil, which
-supplies the second or third derivative the residual asks for; the two are different discretizations, and a second derivative taken
-directly from levels converges at first order (see the scope note below).
 
 ### Why the default maximum order is 5
 
@@ -145,10 +155,11 @@ Store modes:
 - `closest`: return the first internal step reaching each requested time.
 - `steps`: return every accepted internal step.
 
-`start(t0, initial, end)` resets the run. First-order initialization performs
-two artificial backward-Euler solves, so the first returned state can differ
-slightly from `initial`. `run(times, hooks)` requires strictly increasing times
-starting at `t0` and ending at `end`.
+`start(t0, initial, end)` resets the run. Initialization performs two artificial
+backward-Euler solves, so the first returned state can differ slightly from
+`initial`; a second-order run gives `start(t0, u0, v0, end)` its velocity as the
+second initial value and advances the pair the same way. `run(times, hooks)`
+requires strictly increasing times starting at `t0` and ending at `end`.
 
 `on_step` receives each accepted step's record and the state it left; `on_store`
 receives output values. `RunReport` contains step, rejection, failed-solve and
@@ -173,27 +184,27 @@ ctest --test-dir build --output-on-failure
 cmake --install build --prefix .cache/install
 ```
 
-Tests cover polynomial stencils, control rules, convergence, rejection, restart,
-output modes, invalid inputs and recorded COMSOL trajectories. The four
+Tests cover control rules, convergence, the second-order adapter, rejection,
+restart, output modes, invalid inputs and recorded COMSOL trajectories. The four
 examples also run under CTest. COMSOL is needed only to regenerate reference data.
 
 ## Scope and documentation
 
-First-order systems use fixed-leading BDF history. Higher-derivative equations
-use classical polynomial derivative weights instead; reconstructing those
-weights from time levels does not reproduce adaptive fixed-leading BDF history.
-Directly discretizing a second derivative has different convergence behavior;
-prefer a first-order system `(u, u')`, as in the oscillator example.
+The kernel integrates first-order states; a second-order equation goes through
+`SecondOrderStepper`, and a third or higher derivative is the caller's to reduce
+to a first-order system. BDF orders 1–5 are the accuracy of the time
+discretization, not the derivatives an equation may carry.
 
 The library does not provide algebraic solvers, events, generalized alpha or
 Runge–Kutta methods. Matching recorded COMSOL trajectories also requires
 matching its algebraic solve strategy; the scalar references do not establish
 equivalence for arbitrary models.
 
-Version 1.0 freezes the public surface: `atstep/atstep.hpp`, with
-`atstep/stepper.hpp` and `atstep/settings.hpp`. Everything under
-`atstep/detail` is the implementation of those headers and carries no
-compatibility promise.
+Version 1.1 is the public surface: `atstep/atstep.hpp`, with
+`atstep/stepper.hpp`, `atstep/second_order.hpp` and `atstep/settings.hpp`. It
+replaces the `derivative_orders` setting of 1.0 and the classical-stencil path it
+selected with the second-order adapter. Everything under `atstep/detail` is the
+implementation of those headers and carries no compatibility promise.
 
 - [Design](doc/design.md): ownership, history and numerical boundaries.
 - [COMSOL alignment](doc/comsol-alignment.md): measured configurations and reproduction.
