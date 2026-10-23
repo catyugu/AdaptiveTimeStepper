@@ -1,5 +1,4 @@
-# Build trees — CMakePresets.json puts them under build/, build/check and
-# build/prefix are the same rule.
+# Local build and validation output.
 build*/
 .cache/
 out/
@@ -10,6 +9,7 @@ scratch/
 # Compiler and linker output.
 *.exe
 *.obj
+*.class
 *.o
 *.a
 *.lib
@@ -24,9 +24,6 @@ scratch/
 .idea/
 .vscode/
 compile_commands.json
-
-# CMake writes this one for the local machine only.
-CMakeUserPresets.json
 
 # OS clutter.
 .DS_Store
