@@ -44,7 +44,9 @@ namespace atstep {
   ///
   /// A request borrows the stepper's states. It is valid for the solve
   /// callback's own call and never after: a solve that stores a reference to
-  /// it, or to a state it returns, reads the next step's values.
+  /// it, or to a state it returns, reads the next step's values. It is neither
+  /// copyable nor movable, so a reference to one cannot outlive the call it was
+  /// passed to by being kept.
   template <class State>
   class StepRequest {
   public:
@@ -74,6 +76,11 @@ namespace atstep {
       , absolute_scale_(absolute_scale)
     {
     }
+
+    StepRequest(const StepRequest&) = delete;
+    StepRequest& operator=(const StepRequest&) = delete;
+    StepRequest(StepRequest&&) = delete;
+    StepRequest& operator=(StepRequest&&) = delete;
 
     const double time;
     const double step;
@@ -266,10 +273,6 @@ namespace atstep {
       if constexpr (std::is_same_v<Norm, detail::WeightedRmsNorm>)
         norm_.step_index = 0;
       last_order_ = 1;
-      probe_ = 1.0;
-
-      accepted_.commit(time, initial);
-      work_.scale_reference = initial;
 
       const double probe = (settings_.step_mode == StepMode::manual
                                ? settings_.manual_step
@@ -280,42 +283,45 @@ namespace atstep {
           "atstep: the initialization step of the run is too small to represent");
       const double cj = 1.0 / probe;
 
-      // COMSOL's backward-Euler initialization advances twice. Its stored
-      // initial state is the second result, labeled with the start time.
+      // COMSOL's backward-Euler initialization advances twice, and neither is
+      // a step of the scheme: the level is a local until the second one, so a
+      // run that cannot initialize accepts nothing.
+      State level = initial;
+      State increment {};
       for (int j = 1; j <= 2; ++j) {
         // A backward-Euler step of the level: the level itself is the
         // predictor, and its derivative is zero.
-        work_.predictor = accepted_.state();
+        work_.predictor = level;
         work_.derivative_predictor = work_.predictor;
         detail::axpy(work_.derivative_predictor, -1.0, work_.predictor);
-        work_.derivative_history = work_.derivative_predictor;
-        detail::axpy(work_.derivative_history, -cj, work_.predictor);
+        work_.known = work_.derivative_predictor;
+        detail::axpy(work_.known, -cj, work_.predictor);
         work_.solution = work_.predictor;
-        StepRequest<State> request {
+        const StepRequest<State> request {
           time + static_cast<double>(j) * probe,
           probe,
           1,
           work_.predictor,
           work_.derivative_predictor,
           cj,
-          accepted_.state(),
-          work_.derivative_history,
+          level,
+          work_.known,
           work_.scratch,
-          accepted_.state(),
+          level,
           0,
           true};
         const SolveOutcome outcome = solve_(request, work_.solution);
         if (not outcome.converged)
           throw std::runtime_error(
             "atstep: the initialization step of the run at t = " + std::to_string(time) + " did not converge");
-        work_.scratch = work_.solution;
-        detail::axpy(work_.scratch, -1.0, accepted_.state());
-        accepted_.commit(request.time, work_.solution);
+        increment = work_.solution;
+        detail::axpy(increment, -1.0, level);
+        level = work_.solution;
       }
 
       // The time derivative the first step is read from and predicted by:
       // the increment of the initialization step over its size.
-      const double derivative_norm = norm_(work_.scratch, work_.solution) / probe;
+      const double derivative_norm = norm_(increment, level) / probe;
 
       // The initialization step is not a level of the scheme: its
       // interval is a thousandth of the first step, and a polynomial
@@ -323,25 +329,27 @@ namespace atstep {
       // and the derivative it measured, which is what the first step is
       // predicted — and sized — from. IDA starts the same way, from a
       // state and a time derivative and no history at all.
-      work_.derivative = work_.scratch;
-      probe_ = probe;
-      work_.scale_reference = work_.solution;
-      controller_.begin(controller_.first_step(derivative_norm));
-      work_.last_derivative = work_.derivative;
-      detail::axpy(work_.last_derivative, 1.0 / probe - 1.0, work_.derivative);
+      State slope = increment;
+      detail::axpy(slope, 1.0 / probe - 1.0, increment);
+      accepted_.commit(time + 2.0 * probe, level, slope);
+      output_.reference = level;
+      controller_->begin(controller_->first_step(derivative_norm));
       // Zero only the columns the configured order can reach: the scheme
       // reads `phi[0..max_order+1]`, and a state allocated here is a
       // state held for the whole run.
       for (int j = 0; j <= settings_.max_order + 1; ++j) {
-        State& column = table_.phi[static_cast<std::size_t>(j)];
-        column = work_.solution;
-        detail::axpy(column, -1.0, work_.solution);
+        State& column = accepted_.phi[static_cast<std::size_t>(j)];
+        column = level;
+        detail::axpy(column, -1.0, level);
       }
-      table_.phi[0] = work_.solution;
+      // The first difference the scheme reads is the initialized derivative
+      // at the size the first step proposes — IDA's `phi[2] = h yp_0`. A step
+      // rescaled to another size reads it through its own factor.
+      accepted_.phi[0] = level;
       detail::axpy(
-        table_.phi[1], controller_.step_size() / probe, work_.derivative);
-      table_.psi.fill(0.0);
-      table_.psi[0] = controller_.step_size();
+        accepted_.phi[1], controller_->step_size() / probe, increment);
+      accepted_.psi.fill(0.0);
+      accepted_.psi[0] = controller_->step_size();
       started_ = true;
     }
 
@@ -376,11 +384,11 @@ namespace atstep {
     /// The step size and order of the next step.
     double step_size() const
     {
-      return controller_.step_size();
+      return controller().step_size();
     }
     int order() const
     {
-      return controller_.order();
+      return controller().order();
     }
 
     /// Take one step the error test accepts, from the newest level, and
@@ -453,37 +461,35 @@ namespace atstep {
         throw std::invalid_argument(
           "atstep: interpolation supports value or first derivative");
       if (derivative == 1 and time == accepted_.time())
-        return work_.last_derivative;
+        return accepted_.derivative();
       const double delta = time - accepted_.time();
       double coefficient = 1.0;
       double slope = 0.0;
-      double gamma = delta / table_.psi[0];
-      work_.interpolated = table_.phi[0];
+      double gamma = delta / accepted_.psi[0];
+      output_.interpolated = accepted_.phi[0];
       if (derivative == 1)
-        detail::axpy(work_.interpolated, -1.0, table_.phi[0]);
+        detail::axpy(output_.interpolated, -1.0, accepted_.phi[0]);
       for (int j = 1; j <= last_order_; ++j) {
-        slope = slope * gamma + coefficient / table_.psi[static_cast<std::size_t>(j - 1)];
+        slope = slope * gamma + coefficient / accepted_.psi[static_cast<std::size_t>(j - 1)];
         coefficient *= gamma;
-        detail::axpy(work_.interpolated,
+        detail::axpy(output_.interpolated,
           derivative == 0 ? coefficient : slope,
-          table_.phi[static_cast<std::size_t>(j)]);
-        gamma = (delta + table_.psi[static_cast<std::size_t>(j - 1)]) / table_.psi[static_cast<std::size_t>(j)];
+          accepted_.phi[static_cast<std::size_t>(j)]);
+        gamma = (delta + accepted_.psi[static_cast<std::size_t>(j - 1)]) / accepted_.psi[static_cast<std::size_t>(j)];
       }
-      return work_.interpolated;
+      return output_.interpolated;
     }
 
   private:
-    /// One attempt: the step, its order, the coefficients the trial reads the
-    /// accepted table through, and the estimates it produced. It borrows the
-    /// workspace's states, so it is created and consumed inside one step and
-    /// never outlives it.
+    /// One attempt: the step, its order, the coefficients it reads the accepted
+    /// table through, and the estimates it produced. It is created and consumed
+    /// inside one step of `take_step` and never outlives it: a refused attempt
+    /// is a `continue` of that loop, not a state the stepper keeps.
     struct Trial {
       double step = 0.0;
       double time = 0.0;
       int order = 1;
       int iterations = 0;
-      bool solved = false;
-      bool passed = false;
       detail::StepErrors errors;
       /// The weight `y'` carries on the state being solved for, the factor the
       /// error test is held to, the columns' factors at this step size, the
@@ -495,34 +501,78 @@ namespace atstep {
       std::array<double, max_levels> sigma {};
     };
 
-    /// The columns of the fixed-leading table: `phi[j]` is the j-th scaled
-    /// difference of the accepted steps, and `phi[0]` the level the predictor
-    /// extrapolates from — which the solve's own state need not equal in its
-    /// last bits. Only `accept` writes a column of it beyond the first step; an
-    /// attempt reads it. `psi[j]` is the distance back to the level `j`.
-    struct Table {
+    /// The accepted history: the step the run accepted, and the scaled
+    /// differences it reads the levels behind it through. `accept` is the only
+    /// writer, so a refused step is invisible to everything that follows.
+    ///
+    /// `phi[j]` is the j-th scaled difference, and `phi[0]` the level the
+    /// predictor extrapolates from, which the solve's own state need not equal
+    /// in its last bits. `psi[j]` is the distance back to the level `j`.
+    struct History {
+      /// Publish `state` and its derivative as the accepted step at `time`.
+      void commit(double time, const State& state, const State& derivative)
+      {
+        step.commit(time, state, derivative);
+      }
+
+      double time() const noexcept
+      {
+        return step.time();
+      }
+      const State& state() const noexcept
+      {
+        return step.state();
+      }
+      const State& derivative() const noexcept
+      {
+        return step.derivative();
+      }
+
+      detail::AcceptedStep<State> step;
       std::array<State, max_levels> phi {};
       std::array<double, max_levels> psi {};
     };
 
-    /// The states of a step. `scratch` is shared by the derivative's
-    /// correction form and the error estimates, which never run at the same
-    /// time.
-    struct Workspace {
-      State derivative {};
+    /// The states of one attempt: the predictor, the derivative's predictor and
+    /// the known term of the derivative, the solution, the correction, and the
+    /// scratch the derivative's correction form and the estimates share — those
+    /// never run at the same time. Nothing here survives its attempt.
+    struct Work {
       State predictor {};
+      State derivative_predictor {};
+      State known {};
       State solution {};
       State correction {};
       State scratch {};
-      State interpolated {};
-      State derivative_history {};
-      State derivative_predictor {};
-      State last_derivative {};
-      State scale_reference {};
     };
+
+    /// The states of the output: the value the last store reported, which the
+    /// scaled absolute tolerance is measured against, and the dense-output
+    /// buffer `interpolate` returns.
+    struct Output {
+      State reference {};
+      State interpolated {};
+    };
+
+    /// The step size and order control, which a run has only once it has been
+    /// started: before that there is no span to propose a step over.
+    const detail::StepController& controller() const
+    {
+      require_started();
+      return *controller_;
+    }
+    detail::StepController& controller()
+    {
+      require_started();
+      return *controller_;
+    }
 
     /// Take one step the error test accepts, retrying it smaller while the
     /// solve or the test refuses it.
+    ///
+    /// The accepted history is written at the end of a pass and nowhere else, so
+    /// a refusal is a `continue` that leaves the run as the accepted steps left
+    /// it.
     ///
     /// @param[in] schedule the output times the step is placed against, or
     /// nullptr for a step of the controller's own.
@@ -531,7 +581,7 @@ namespace atstep {
     {
       const double from = accepted_.time();
       for (;;) {
-        double step = controller_.step_size();
+        double step = controller().step_size();
         std::optional<double> boundary;
         if (schedule) {
           const detail::StepSchedule::Placement placement
@@ -542,29 +592,62 @@ namespace atstep {
         if (not(step > 0.0))
           throw std::runtime_error(
             "atstep: no step is left at t = " + std::to_string(from));
+        const double next_time = from + step;
+        if (not std::isfinite(step) or not std::isfinite(next_time) or not(next_time > from))
+          throw std::invalid_argument(
+            "atstep: step must be finite, positive and advance time");
 
-        Trial trial = attempt(step);
-        if (not trial.solved) {
+        // An order-k step reads k levels, and the run has one level per accepted
+        // step on top of the one it started from.
+        const int available = std::min(controller().steps() + 1, max_levels);
+        Trial trial;
+        trial.step = step;
+        trial.time = next_time;
+        trial.order = std::min(controller().order(), std::max(1, available - 1));
+        controller().begin_attempt(step, trial.order);
+        prepare(trial);
+
+        work_.solution = work_.predictor;
+        const StepRequest<State> request {
+          next_time,
+          step,
+          trial.order,
+          work_.predictor,
+          work_.derivative_predictor,
+          trial.cj,
+          accepted_.state(),
+          work_.known,
+          work_.scratch,
+          output_.reference,
+          static_cast<std::size_t>(controller().steps())};
+        const SolveOutcome outcome = solve_(request, work_.solution);
+        trial.iterations = outcome.iterations;
+        if (not outcome.converged) {
           if (report)
             ++report->failed_solves;
-          const double tried = trial.step;
-          controller_.reject_convergence(tried);
-          if (tried <= controller_.smallest_step())
+          controller().reject_convergence(step);
+          if (step <= controller().smallest_step())
             throw std::runtime_error(
               "atstep: the solve of the step from t = " + std::to_string(from) + " did not converge at the smallest step "
-              + std::to_string(tried));
+              + std::to_string(step));
           continue;
         }
-        if (not trial.passed) {
-          if (report)
-            ++report->rejected;
-          const double error = trial.errors.test;
-          controller_.reject(trial.errors, trial.step);
-          if (controller_.step_size() <= controller_.smallest_step())
-            throw std::runtime_error(
-              "atstep: the time step at t = " + std::to_string(from) + " fell to " + std::to_string(controller_.step_size()) + " and the local error is still " + std::to_string(error) + "; the tolerance cannot be met on this interval");
-          continue;
+
+        work_.correction = work_.solution;
+        detail::axpy(work_.correction, -1.0, work_.predictor);
+        if (controller().error_controlled()) {
+          trial.errors = estimate(trial);
+          if (not trial.errors.passed()) {
+            if (report)
+              ++report->rejected;
+            controller().reject(trial.errors, step);
+            if (controller().step_size() <= controller().smallest_step())
+              throw std::runtime_error(
+                "atstep: the time step at t = " + std::to_string(from) + " fell to " + std::to_string(controller().step_size()) + " and the local error is still " + std::to_string(trial.errors.test) + "; the tolerance cannot be met on this interval");
+            continue;
+          }
         }
+
         if (boundary)
           trial.time = *boundary;
         const StepRecord record {trial.time,
@@ -577,66 +660,20 @@ namespace atstep {
       }
     }
 
-    /// Solve the step of size `step` and estimate its error. The accepted
-    /// level and table are read, not written, apart from the first step's
-    /// column, which the attempt states: only `accept` commits a step.
-    Trial attempt(double step)
-    {
-      const double next_time = accepted_.time() + step;
-      if (not std::isfinite(step) or not(step > 0.0)
-        or not std::isfinite(next_time) or not(next_time > accepted_.time()))
-        throw std::invalid_argument("atstep: step must be finite, positive and advance time");
-
-      // An order-k step reads k levels, and the run has one level per accepted
-      // step on top of the one it started from.
-      const int available = std::min(
-        controller_.steps() + 1, max_levels);
-      const int order = std::min(controller_.order(), std::max(1, available - 1));
-      controller_.begin_attempt(step, order);
-
-      Trial trial;
-      trial.step = step;
-      trial.time = next_time;
-      trial.order = order;
-      prepare(trial);
-
-      work_.solution = work_.predictor;
-      StepRequest<State> request {
-        next_time,
-        step,
-        order,
-        work_.predictor,
-        work_.derivative_predictor,
-        trial.cj,
-        accepted_.state(),
-        work_.derivative_history,
-        work_.scratch,
-        work_.scale_reference,
-        static_cast<std::size_t>(controller_.steps())};
-      const SolveOutcome outcome = solve_(request, work_.solution);
-      trial.iterations = outcome.iterations;
-      if (not outcome.converged)
-        return trial;
-      trial.solved = true;
-
-      work_.correction = work_.solution;
-      detail::axpy(work_.correction, -1.0, work_.predictor);
-      if (not controller_.error_controlled()) {
-        trial.passed = true;
-        return trial;
-      }
-      trial.errors = estimate(trial);
-      trial.passed = trial.errors.passed();
-      return trial;
-    }
-
-    /// Commit the step: the level, the table, and the controller's next size
-    /// and order.
+    /// Commit the step: the accepted history first — it is the publication —
+    /// and then the controller's next size and order, and the value the error
+    /// weights are measured against.
     void accept(const Trial& trial)
     {
-      work_.last_derivative = work_.derivative_predictor;
-      detail::axpy(work_.last_derivative, trial.cj, work_.correction);
-      accepted_.commit(trial.time, work_.solution);
+      // The derivative the level pairs with: the predictor's derivative plus the
+      // correction's, which is the formula's derivative at the new level.
+      work_.scratch = work_.derivative_predictor;
+      detail::axpy(work_.scratch, trial.cj, work_.correction);
+      // The only operation that publishes the step, and the only one that can be
+      // all-or-nothing: the new step is copied before the accepted one is
+      // written. What follows are in-place updates of states it has published;
+      // an `axpy` that throws there leaves the run to `start` again.
+      accepted_.commit(trial.time, work_.solution, work_.scratch);
       last_order_ = trial.order;
       const auto k = static_cast<std::size_t>(trial.order);
       // The factors the trial read are the factors the table keeps: the
@@ -644,16 +681,16 @@ namespace atstep {
       // accepted one, so a dropped attempt has nothing to put back.
       for (std::size_t j = 1; j <= k; ++j)
         detail::axpy(
-          table_.phi[j], trial.beta[j] - 1.0, table_.phi[j]);
-      table_.phi[k + 1] = work_.correction;
-      detail::axpy(table_.phi[k], 1.0, work_.correction);
+          accepted_.phi[j], trial.beta[j] - 1.0, accepted_.phi[j]);
+      accepted_.phi[k + 1] = work_.correction;
+      detail::axpy(accepted_.phi[k], 1.0, work_.correction);
       for (std::size_t j = k; j > 0; --j)
-        detail::axpy(table_.phi[j - 1], 1.0, table_.phi[j]);
-      table_.psi = trial.psi;
-      controller_.accept(trial.errors, trial.step);
-      work_.scale_reference = work_.solution;
+        detail::axpy(accepted_.phi[j - 1], 1.0, accepted_.phi[j]);
+      accepted_.psi = trial.psi;
+      controller().accept(trial.errors, trial.step);
+      output_.reference = work_.solution;
       if constexpr (std::is_same_v<Norm, detail::WeightedRmsNorm>)
-        norm_.step_index = static_cast<std::size_t>(controller_.steps());
+        norm_.step_index = static_cast<std::size_t>(controller().steps());
     }
 
     void require_started() const
@@ -667,25 +704,10 @@ namespace atstep {
     /// derivative's predictor and the known term of the derivative.
     void prepare(Trial& trial)
     {
-      trial.psi = table_.psi;
-      if (controller_.steps() == 0) {
-        // The first step of a run has no accepted column behind it: the one the
-        // scheme reads is the derivative the initialization measured, at the
-        // size this attempt takes. It is a function of the attempt, so the
-        // attempt states it, and a retry states it again.
-        trial.psi[0] = trial.step;
-        table_.phi[1] = work_.derivative;
-        detail::axpy(
-          table_.phi[1], trial.step / probe_ - 1.0, work_.derivative);
-      }
-      // Beyond that column the trial reads the accepted table and writes none
-      // of it: the rescaled column of the order it is at is `beta_j phi[j]`,
-      // which is a scalar multiple of the accepted column, so the factors
-      // `beta_j` are all it keeps. A refused attempt therefore has nothing to
-      // put back, and an accepted one writes the factors in.
-      work_.predictor = table_.phi[0];
-      work_.derivative_predictor = table_.phi[0];
-      detail::axpy(work_.derivative_predictor, -1.0, table_.phi[0]);
+      trial.psi = accepted_.psi;
+      work_.predictor = accepted_.phi[0];
+      work_.derivative_predictor = accepted_.phi[0];
+      detail::axpy(work_.derivative_predictor, -1.0, accepted_.phi[0]);
       double beta = 1.0;
       double distance = trial.step;
       double alpha = 1.0;
@@ -706,14 +728,14 @@ namespace atstep {
         harmonic += 1.0 / static_cast<double>(i);
         trial.sigma[j] = static_cast<double>(i) * trial.sigma[j - 1] * alpha;
         trial.beta[j] = beta;
-        detail::axpy(work_.predictor, beta, table_.phi[j]);
-        detail::axpy(work_.derivative_predictor, gamma * beta, table_.phi[j]);
+        detail::axpy(work_.predictor, beta, accepted_.phi[j]);
+        detail::axpy(work_.derivative_predictor, gamma * beta, accepted_.phi[j]);
       }
       trial.psi[static_cast<std::size_t>(trial.order)] = distance;
       trial.ck = std::max(alpha, std::abs(alpha - harmonic - alpha0));
       trial.cj = harmonic / trial.step;
-      work_.derivative_history = work_.derivative_predictor;
-      detail::axpy(work_.derivative_history, -trial.cj, work_.predictor);
+      work_.known = work_.derivative_predictor;
+      detail::axpy(work_.known, -trial.cj, work_.predictor);
     }
 
     /// The error estimates of the trial, whose solved state is `solution` and
@@ -730,16 +752,16 @@ namespace atstep {
       errors.at = trial.sigma[k] * enorm;
       work_.scratch = work_.correction;
       if (trial.order >= 2) {
-        detail::axpy(work_.scratch, trial.beta[k], table_.phi[k]);
+        detail::axpy(work_.scratch, trial.beta[k], accepted_.phi[k]);
         errors.below = trial.sigma[k - 1] * error_norm(work_.scratch);
       }
       if (trial.order >= 3) {
         detail::axpy(
-          work_.scratch, trial.beta[k - 1], table_.phi[k - 1]);
+          work_.scratch, trial.beta[k - 1], accepted_.phi[k - 1]);
         errors.below2 = trial.sigma[k - 2] * error_norm(work_.scratch);
       }
       work_.scratch = work_.correction;
-      detail::axpy(work_.scratch, -1.0, table_.phi[k + 1]);
+      detail::axpy(work_.scratch, -1.0, accepted_.phi[k + 1]);
       errors.above = error_norm(work_.scratch) / static_cast<double>(trial.order + 2);
       return errors;
     }
@@ -747,7 +769,7 @@ namespace atstep {
     double error_norm(const State& error)
     {
       if constexpr (std::is_same_v<Norm, detail::WeightedRmsNorm>)
-        return norm_(error, accepted_.state(), work_.scale_reference);
+        return norm_(error, accepted_.state(), output_.reference);
       else
         return norm_(error, accepted_.state());
     }
@@ -759,7 +781,7 @@ namespace atstep {
       RunReport& report)
     {
       ++report.stored;
-      work_.scale_reference = state;
+      output_.reference = state;
       if (hooks.on_store)
         hooks.on_store(time, state, interpolated);
     }
@@ -768,15 +790,13 @@ namespace atstep {
     Solve solve_;
     Norm norm_;
 
-    detail::StepController controller_ {Settings {}, 1.0};
-    detail::AcceptedLevel<State> accepted_;
-    Table table_;
-    Workspace work_;
+    std::optional<detail::StepController> controller_;
+    History accepted_;
+    Work work_;
+    Output output_;
 
     double start_time_ = 0.0;
     double end_time_ = 0.0;
-    /// The size of the initialization step (see `start`).
-    double probe_ = 1.0;
     bool started_ = false;
 
     /// The order of the last accepted step, which the dense output reads.

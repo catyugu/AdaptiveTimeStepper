@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <optional>
 #include <stdexcept>
+#include <utility>
 
 namespace atstep::detail {
 
@@ -39,44 +40,55 @@ namespace atstep::detail {
     }
   };
 
-  /// The level a run has accepted: the state, and the time it was accepted at.
+  /// The step a run has accepted: the level, the time it was accepted at, and
+  /// the time derivative the solve left there.
   ///
-  /// A level pairs its state with its time in one object, so a copy that throws
-  /// in the member-wise assignment leaves the time alone. The new level is
-  /// constructed before the member is written, which is what leaves the
-  /// accepted level alone when the copy throws.
+  /// The three are one object because `accept` publishes them together: a run
+  /// either has the whole step or none of it, and no caller can see a level
+  /// that is not paired with its own derivative. The new step is constructed
+  /// before the accepted one is written, so a copy that throws while the step
+  /// is being published leaves the accepted step alone.
   ///
   /// Nothing behind it is kept: the scaled differences of the accepted steps
   /// are the history the scheme reads, and they are differences of states, not
   /// older levels.
-  template <class State> class AcceptedLevel {
+  template <class State> class AcceptedStep {
   public:
-    /// Take `state` as the accepted level, at `time`.
-    void commit(double time, const State& state)
+    /// Publish `state` and its derivative `derivative` as the accepted step at
+    /// `time`.
+    void commit(double time, const State& state, const State& derivative)
     {
-      Level level {state, time};
-      level_ = level;
+      Step step {state, derivative, time};
+      step_ = std::move(step);
     }
 
     double time() const noexcept
     {
-      return level_.time;
+      return step_.time;
     }
 
     const State& state() const noexcept
     {
-      return level_.state;
+      return step_.state;
+    }
+
+    /// The derivative the solve of the step evaluated at the level, which the
+    /// dense output returns at the newest time.
+    const State& derivative() const noexcept
+    {
+      return step_.derivative;
     }
 
   private:
-    /// The state comes first so that a copy that throws in the member-wise
-    /// assignment leaves the time alone.
-    struct Level {
+    /// The state and its derivative come first: a copy that throws in the
+    /// member-wise assignment then leaves the time alone.
+    struct Step {
       State state {};
+      State derivative {};
       double time = 0.0;
     };
 
-    Level level_ {};
+    Step step_ {};
   };
 
 } // namespace atstep::detail
