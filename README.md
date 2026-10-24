@@ -1,4 +1,4 @@
-﻿# AdaptiveTimeStepper
+# AdaptiveTimeStepper
 
 [![CI](https://github.com/catyugu/AdaptiveTimeStepper/actions/workflows/ci.yml/badge.svg)](https://github.com/catyugu/AdaptiveTimeStepper/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -226,7 +226,7 @@ is the implementation of those headers and carries no compatibility promise.
 - [Design](doc/design.md): ownership, history and numerical boundaries.
 - [COMSOL alignment](doc/comsol-alignment.md): measured configurations and reproduction.
 - [Coupled multiphysics](doc/multiphysics.md): thermoelastic COMSOL comparison and motor example.
-- [Research notes](doc/research/comsol-time-dependent-solver.md): source quotations
-  and the original documentation investigation.
+- [Research notes](doc/research/comsol-time-dependent-solver.md): what the COMSOL
+  documentation established, and which of those claims the code verifies.
 
 Licensed under [MIT](LICENSE).

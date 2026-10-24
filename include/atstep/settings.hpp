@@ -141,14 +141,17 @@ namespace atstep {
     AbsoluteTolerance absolute_tolerance = ScaledAbsoluteTolerance {};
 
     /// The first step, as a fraction of the span integrated. COMSOL's
-    /// "Initial step: Automatic", 0.1% of the end time. The initial
-    /// derivative of the state may take the first step below it (see
+    /// "Initial step: Automatic" is 0.1% of the end time for BDF, subject to
+    /// DT * yp_norm <= 1/2; the span and the end time differ when the run
+    /// starts after zero, and which one COMSOL uses there is unverified. The
+    /// initial derivative may take the first step below it (see
     /// `StepController::first_step()`).
     double first_step_fraction = 1e-3;
 
-    /// The largest step, as a fraction of the span integrated: COMSOL's
-    /// "Maximum step constraint: Automatic", 10% of the span. A finite
-    /// nonpositive value disables the maximum-step constraint.
+    /// The largest step, as a fraction of the span integrated. COMSOL's
+    /// "Maximum step constraint: Automatic" has no documented value; this
+    /// 10% of the span is the library's own choice, and no recorded run makes
+    /// it bind. A finite nonpositive value disables the constraint.
     double max_step_fraction = 0.1;
 
     /// The smallest step, as a fraction of the span integrated: below it
