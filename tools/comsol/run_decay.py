@@ -5,6 +5,11 @@
     python tools/comsol/run_decay.py --header-only --directory .cache/comsol-reference
 
 Only regeneration needs COMSOL. The C++ tests use the recorded reference.
+
+A regeneration is not byte-stable: the solver log prints a wall-clock sampled
+subset of its rows, so `logged_orders` changes between runs of the same input
+while every recorded double stays the same. The header is therefore never
+overwritten with different bytes unless --force is given.
 """
 
 from __future__ import annotations
@@ -23,7 +28,7 @@ SOURCE = ROOT / "tools" / "comsol" / "GeDecayTransient.java"
 HEADER = ROOT / "test" / "reference" / "comsol_trajectories.hpp"
 
 
-def write_trajectories(directory: Path) -> None:
+def write_trajectories(directory: Path, force: bool = False) -> None:
     """Preserve COMSOL doubles and logged decisions; do not infer missing steps."""
     batch_log = (directory / "batch.log").read_text(encoding="utf-8", errors="replace")
     version_match = re.search(r"COMSOL ([0-9.]+) progress", batch_log)
@@ -108,8 +113,16 @@ def write_trajectories(directory: Path) -> None:
         rows_total += len(samples)
     output.extend(["    }; return all;", "}", "} // namespace comsol", ""])
     # Fixed line endings, so a regeneration on any platform is a no-op in git.
-    with HEADER.open("w", newline="\n", encoding="utf-8") as stream:
-        stream.write("\n".join(output))
+    text = "\n".join(output)
+    if HEADER.exists() and not force and HEADER.read_text(encoding="utf-8") != text:
+        candidate = directory / "comsol_trajectories.regenerated.hpp"
+        candidate.write_text(text, newline="\n", encoding="utf-8")
+        raise SystemExit(
+            f"{HEADER.relative_to(ROOT)} differs from this regeneration; wrote "
+            f"{candidate} instead. Compare the two, then pass --force to replace "
+            "the recorded reference."
+        )
+    HEADER.write_text(text, newline="\n", encoding="utf-8")
     print(f"{HEADER.relative_to(ROOT)}: {len(cases)} runs, {rows_total} samples")
 
 
@@ -123,6 +136,11 @@ def main() -> int:
     parser.add_argument(
         "--directory", type=Path, help="directory for the COMSOL run and raw evidence"
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="replace the recorded reference even when the bytes differ",
+    )
     args = parser.parse_args()
     if args.header_only and args.directory is None:
         parser.error("--header-only requires --directory")
@@ -130,12 +148,12 @@ def main() -> int:
         with tempfile.TemporaryDirectory(prefix="atstep-comsol-") as temporary:
             directory = Path(temporary)
             run_comsol(directory, SOURCE, "ALL_CASES_OK")
-            write_trajectories(directory)
+            write_trajectories(directory, force=args.force)
     else:
         args.directory.mkdir(parents=True, exist_ok=True)
         if not args.header_only:
             run_comsol(args.directory, SOURCE, "ALL_CASES_OK")
-        write_trajectories(args.directory)
+        write_trajectories(args.directory, force=args.force)
     return 0
 
 
