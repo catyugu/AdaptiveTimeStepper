@@ -9,8 +9,7 @@
 | `stepper.hpp`           | The solve request, the run, and its output            |
 | `second_order.hpp`      | The second-order-in-time adapter                      |
 | `detail/state.hpp`      | State arithmetic and the default weighted RMS norm    |
-| `detail/bdf.hpp`        | The accepted step, and IDA's error estimates          |
-| `detail/controller.hpp` | Scalar step-size and order decisions                  |
+| `detail/controller.hpp` | Scalar error estimates, step-size and order decisions |
 | `detail/output.hpp`     | Step placement against the output times               |
 
 The `detail` headers are installed like the rest, because a header-only library
@@ -24,16 +23,17 @@ a run in four parts, grouped by lifetime:
 
 | Member        | What it is                                                 |
 | ------------- | ---------------------------------------------------------- |
-| `accepted_`   | the accepted history: the step, and the difference columns |
+| `accepted_`   | the accepted state, derivative, time, order and difference columns |
 | `controller_` | the step size and order proposed for the next step         |
-| `work_`       | the six buffers of one attempt                             |
+| `work_`       | five buffers reused by successive attempts                  |
 | `output_`     | the value last stored, and the dense-output buffer         |
 
-Only `accepted_` survives a step. `output_` is separate because COMSOL measures
-the scaled absolute tolerance against the value it last returned to the caller,
-which may be interpolated. `controller_` is built by `start`: a step size without
-a span is not a proposal, and a run that has not been started says so rather than
-report a placeholder.
+All four are owned by the stepper. Accepted history, controller decisions and
+the last output reference persist across steps; work-buffer contents do not.
+`output_` is separate because COMSOL measures the scaled absolute tolerance
+against the value it last returned to the caller, which may be interpolated.
+`controller_` is built by `start`, once the run's span is known. State, time,
+step size, order and interpolation require a successfully initialized run.
 
 A step's own coefficients — its size, order, the factors the trial reads the
 table through, the distances back to the levels, IDA's `sigma`, and its error
@@ -44,10 +44,10 @@ attempt and the caller sees only accepted steps.
 An integrator is therefore neither copyable nor movable: it is one run's state
 from `start` to its last step, and `start` begins it again.
 
-A `StepRequest` borrows its references for the duration of the solve, and a
-state it exposes is the stepper's buffer. It is neither copyable nor movable, so
-a reference to one cannot be carried out of the call it was passed to. There is
-one formulation, the fixed-leading BDF history of a first-order equation:
+A `StepRequest` is constructed only by the stepper and borrows its buffers for
+one solve callback. It is neither copyable nor movable; storing a pointer or
+reference still does not extend its lifetime. There is one formulation, the
+fixed-leading BDF history of a first-order equation:
 
 ```text
 y' = cj*y + known
@@ -60,6 +60,13 @@ reducing cancellation where the predictor is good. The solve starts from the
 predictor and returns convergence and iteration information; matrix assembly and
 algebraic solvers belong to the caller. Custom states implement `axpy`; custom
 norms implement `norm(error, reference)`.
+
+The private `solve` function bounds the request's lifetime. During that call,
+`work_.scratch` holds the known derivative term and `work_.correction` is scratch
+for evaluating a requested derivative. After it returns, the correction buffer
+holds the final solution minus predictor, and scratch is reused for error
+estimates and the accepted derivative. Neither buffer needs a separate owning
+view or a second allocation for each use. `derivative(y, y)` is supported.
 
 A second time derivative is not a second formulation: it is an equation the
 adapter writes as a first-order system over the same kernel (see below). A third
@@ -84,26 +91,32 @@ accepted history, not to an attempt, so a refused first step changes nothing.
 The table is therefore never copied and never written speculatively: an attempt
 costs a few doubles, not one state. Dense output reads the accepted columns.
 
-The table is the whole history: nothing behind the accepted level is kept, and
-an accepted step costs one state copy. Older levels are the columns' business,
-which is what lets a rejection leave the history untouched.
+The private `History` owns the accepted state and derivative alongside the
+table, time and interpolation order. Older solution levels are not stored.
+The solved state and `phi[0]` remain separate: the latter is accumulated from
+differences and can differ in the last bits, which matters for reproducible
+error weights and trajectories.
 
-A step pairs its state, its derivative and its time in one object, and is copied
-before the accepted one is written: a copy that throws leaves the history alone.
-That copy is the only publication a step makes, and it comes before the in-place
-updates that follow it. An `axpy` that throws mid-step leaves the columns
-rescaled but unpublished, so the contract is that the run is restarted with
-`start`; surviving that would cost one state per order on every step.
+Accepting assigns into existing buffers instead of constructing temporary
+copies of the state and derivative. With fixed-size `std::vector` states, these
+assignments reuse capacity. The run becomes unreadable before the first history
+write and readable again only after every history, controller and output update
+succeeds. If assignment or `axpy` throws during publication, `start` is required
+before further access or stepping. There is no rollback table and no exception
+handler. This differs from an ordinary failed solve or error-test rejection,
+which leaves accepted history readable and can be retried.
 
 `start` resets the level, the derivative, the table, the controller and the
 tolerance indexing. Its two backward-Euler probes accept nothing until the
-second, so a run that cannot initialize leaves no half-initialized history.
+second. Their times must be finite, advance time and remain inside the run;
+their derivative weight must be finite. A failed restart cannot expose old
+history paired with newly assigned run bounds.
 
-The stepper holds the six buffers of an attempt, the two of the output, the seven
-columns, the accepted level and its derivative as states: seventeen objects,
+The stepper holds five work buffers, two output buffers, seven difference
+columns, and the accepted state and derivative: sixteen state objects,
 whatever the order and whatever the equation. A state's storage is allocated when
-a step first writes it, so a run at order `k` allocates the columns `0..k+1` and
-the buffers the estimates read.
+a step first writes it. Initialization allocates columns `0..max_order+1`;
+unused higher columns and unused output buffers remain empty.
 
 `StepController` consumes scalar estimates independently of state and equation
 types. It implements startup growth, settled-step order selection and retries.
@@ -130,6 +143,13 @@ The caller's state is the displacement, and the velocity is a companion the
 adapter keeps in a `detail::Augmented` state: prediction, levels, table, dense
 output and the error test of the kernel all run on the pair without knowing
 which half is which.
+
+The adapter owns only three additional displacement-sized buffers: the first
+and second derivative predictors and the second derivative's known term. Its
+request borrows the displacement predictor, first known term and derivative
+scratch from the kernel request. These borrowed references live for the same
+solve callback; no separate reference bundle is stored. A failed solve returns
+immediately, without trying to reconstruct velocity from a failed candidate.
 
 The step's solve is then the condensed system of the displacement alone. With
 `cj` the step's first-derivative weight, the two derivative levels are the
@@ -189,6 +209,14 @@ Landing logic preserves a step already reaching its target, otherwise shortens
 it with a rounding margin or splits the final two steps. `StepSchedule` holds
 the output times and the two modes, and answers the two questions a step asks of
 them: the size it must be cut to, and the values to report once it ended.
+It borrows the caller's schedule for the duration of `run` and emits each output
+synchronously, without allocating a list of pending output records. The caller
+must keep the schedule unchanged during the run.
+
+`run` consumes a complete schedule immediately after `start`. Calling it after
+`advance` or after a completed `run` is rejected, so a later state cannot be
+mislabelled as the initial output. Caller-driven stepping uses `advance`;
+starting a new scheduled run requires `start` again.
 
 Dense output uses committed BDF columns. At the newest node the returned
 derivative is the solve derivative; it can differ from the dense polynomial's
@@ -207,7 +235,8 @@ enough to advance floating-point time.
 ## Validation boundaries
 
 Unit tests cover controller rules, convergence, the second-order adapter,
-rejection, restart, invalid input and level-copy failure. CTest also runs
+rejection, restart, invalid input, aliased derivative output and failed history
+updates. CTest also runs
 four examples. The [scalar COMSOL regressions](comsol-alignment.md) compare 21 recorded
 scalar configurations, totaling 1,336 output samples, including times, states,
 derivatives, failure counts and logged orders. Reference data is never injected

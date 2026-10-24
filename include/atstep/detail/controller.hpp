@@ -3,14 +3,30 @@
 #pragma once
 
 #include "../settings.hpp"
-#include "bdf.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 
 namespace atstep::detail {
+
+  /// IDA local error estimates: the acceptance test and estimates at the
+  /// current, lower and higher orders. `test` uses ck; order selection uses
+  /// sigma-scaled correction norms (see TimeStepper::estimate).
+  struct StepErrors {
+    double test = 0.0;
+    double at = 0.0;
+    std::optional<double> below;
+    std::optional<double> below2;
+    std::optional<double> above;
+
+    bool passed() const noexcept
+    {
+      return std::isfinite(test) and test >= 0.0 and test <= 1.0;
+    }
+  };
 
   /// Scalar BDF step-size and order control, following IDA's startup,
   /// error test and completion rules. It is independent of state and equations.

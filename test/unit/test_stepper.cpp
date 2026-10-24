@@ -135,6 +135,11 @@ TEST_CASE("request: the derivative is the affine form its weights define")
       ++evaluated;
       const Scalar& known = request.derivative_history();
       y.value = -known.value / (weight + 1.0);
+      const Scalar solved = y;
+      request.derivative(y, derivative);
+      request.derivative(y, y);
+      CHECK_NEAR(y.value, derivative.value, 0.0);
+      y = solved;
       return atstep::SolveOutcome {true, 1};
     });
   stepper.start(0.0, Scalar {1.0}, 1.0);
@@ -610,11 +615,10 @@ TEST_CASE("stepper: the step and the order are only readable once the run starte
   CHECK_EQ(stepper.order(), 1);
 }
 
-TEST_CASE("request: a step's request cannot be copied out of its call")
+TEST_CASE("request: a step's request cannot be retained by value")
 {
-  // A request borrows the stepper's buffers, so a copy could outlive them: the
-  // type is neither copyable nor movable, and the only way to reach it is the
-  // callback's own argument.
+  // Borrowed references remain valid only during the callback. Disabling copy
+  // and move prevents accidentally retaining the request by value.
   static_assert(
     not std::is_copy_constructible_v<atstep::StepRequest<Scalar>>);
   static_assert(
@@ -648,47 +652,84 @@ TEST_CASE("stepper: advance takes one acceptable step and moves the run")
   CHECK(std::abs(other.state().value - exact(other.time())) < 1e-2);
 }
 
-TEST_CASE("accepted step: the level, its derivative and its time, and a failed "
-          "copy that leaves them alone")
+TEST_CASE("stepper: a failed history update requires a restart")
 {
-  // The three are one object, so a copy that throws cannot publish a level
-  // without the derivative it was solved with. The new step is constructed
-  // before the accepted one is written, so a copy that throws leaves the run's
-  // step as it was, which is what a step the caller's solve refuses must not
-  // disturb.
+  struct Failure {
+    const void* assignment_target = nullptr;
+    bool self_axpy = false;
+    bool triggered = false;
+  };
   struct State {
     double value = 0.0;
-    bool fail = false;
+    Failure* failure = nullptr;
+
     State() = default;
-    State(double v, bool throws = false)
+    State(double v, Failure& fault)
       : value(v)
-      , fail(throws)
+      , failure(&fault)
     {
     }
-    State(const State& other)
-      : value(other.value)
-      , fail(other.fail)
+    State(const State&) = default;
+    State& operator=(const State& other)
     {
-      if (fail)
-        throw std::runtime_error("copy failed");
+      value = other.value;
+      failure = other.failure;
+      if (failure and failure->assignment_target == this) {
+        failure->triggered = true;
+        throw std::runtime_error("state assignment failed");
+      }
+      return *this;
     }
-    State& operator=(const State&) = default;
+    void axpy(double a, const State& x)
+    {
+      value += a * x.value;
+      if (failure and failure->self_axpy and this == &x) {
+        failure->triggered = true;
+        throw std::runtime_error("state rescaling failed");
+      }
+    }
   };
-  atstep::detail::AcceptedStep<State> step;
-  step.commit(1.0, State {2.0}, State {-2.0});
-  CHECK_EQ(step.time(), 1.0);
-  CHECK_EQ(step.state().value, 2.0);
-  CHECK_EQ(step.derivative().value, -2.0);
+  const auto norm = [](const State& error, const State&) {
+    return std::abs(error.value);
+  };
+  for (bool assignment : {true, false}) {
+    Failure fault;
+    bool fail = false;
+    atstep::TimeStepper<State, decltype(norm)> stepper(
+      manual_settings(2, 0.1),
+      [&](const atstep::StepRequest<State>& request, State& y) {
+        y.value = -request.derivative_history().value
+          / (request.derivative_weight() + 1.0);
+        if (fail and not request.initializing) {
+          // Target the accepted level, or the in-place rescaling of a history
+          // column. Both failures occur after the solve returned successfully.
+          if (assignment)
+            fault.assignment_target = &request.previous();
+          else
+            fault.self_axpy = true;
+        }
+        return atstep::SolveOutcome {true, 1};
+      },
+      norm);
+    stepper.start(0.0, State {1.0, fault}, 1.0);
+    stepper.advance();
+    fail = true;
+    CHECK_THROWS(stepper.advance());
+    CHECK(fault.triggered);
+    CHECK_THROWS(stepper.time());
+    CHECK_THROWS(stepper.state());
+    CHECK_THROWS(stepper.step_size());
+    CHECK_THROWS(stepper.order());
+    CHECK_THROWS(stepper.interpolate(0.0));
+    CHECK_THROWS(stepper.advance());
 
-  CHECK_THROWS(step.commit(2.0, State {3.0, true}, State {-3.0}));
-  CHECK_EQ(step.time(), 1.0);
-  CHECK_EQ(step.state().value, 2.0);
-  CHECK_EQ(step.derivative().value, -2.0);
-
-  step.commit(2.0, State {3.0}, State {-3.0});
-  CHECK_EQ(step.time(), 2.0);
-  CHECK_EQ(step.state().value, 3.0);
-  CHECK_EQ(step.derivative().value, -3.0);
+    fault = {};
+    fail = false;
+    stepper.start(0.0, State {1.0, fault}, 1.0);
+    const auto report = stepper.run(std::vector<double> {0.0, 1.0});
+    CHECK(report.steps > 0);
+    CHECK(std::abs(stepper.state().value - exact(stepper.time())) < 0.05);
+  }
 }
 
 TEST_CASE("stepper: a start time the run cannot integrate from is refused")
@@ -708,4 +749,50 @@ TEST_CASE("stepper: a start time the run cannot integrate from is refused")
   CHECK_EQ(calls, 0);
   stepper.start(1.0, Scalar {1.0}, 2.0);
   CHECK_EQ(calls, 2); // the two backward-Euler initialization steps
+
+  const double largest = std::numeric_limits<double>::max();
+  CHECK_THROWS(stepper.start(-largest, Scalar {1.0}, largest)); // span overflows
+  CHECK_THROWS(stepper.time());
+  CHECK_THROWS(stepper.advance());
+  CHECK_THROWS(stepper.start(
+    1.0, Scalar {1.0}, std::nextafter(1.0, infinity))); // probe cannot advance time
+  CHECK_THROWS(stepper.start(0.0, Scalar {1.0}, 1e-303)); // reciprocal probe overflows
+  CHECK_EQ(calls, 2);
+
+  stepper.start(0.0, Scalar {1.0}, 1.0);
+  CHECK_EQ(calls, 4);
+  CHECK(stepper.advance().time > 0.0);
+
+  atstep::Settings settings;
+  settings.init_step_fraction = 1e3;
+  int probe_calls = 0;
+  atstep::TimeStepper<Scalar> oversized(settings,
+    [&](const atstep::StepRequest<Scalar>& request, Scalar& y) {
+      ++probe_calls;
+      return solve_decay(request, y);
+    });
+  CHECK_THROWS(oversized.start(0.0, Scalar {1.0}, 1.0));
+  CHECK_EQ(probe_calls, 0);
+}
+
+TEST_CASE("stepper: a full schedule starts immediately after start")
+{
+  atstep::TimeStepper<Scalar> stepper(atstep::Settings {}, solve_decay);
+  const std::vector<double> times {0.0, 0.5, 1.0};
+  int stored = 0;
+  atstep::RunHooks<Scalar> hooks;
+  hooks.on_store = [&](double, const Scalar&, bool) { ++stored; };
+
+  stepper.start(0.0, Scalar {1.0}, 1.0);
+  stepper.advance();
+  const double time = stepper.time();
+  CHECK_THROWS(stepper.run(times, hooks));
+  CHECK_EQ(stored, 0);
+  CHECK_EQ(stepper.time(), time);
+
+  stepper.start(0.0, Scalar {1.0}, 1.0);
+  stepper.run(times, hooks);
+  CHECK_EQ(stored, 3);
+  CHECK_THROWS(stepper.run(times, hooks));
+  CHECK_EQ(stored, 3);
 }

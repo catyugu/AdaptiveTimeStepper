@@ -10,7 +10,6 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
-#include <vector>
 
 namespace atstep::detail {
 
@@ -29,13 +28,6 @@ namespace atstep::detail {
       std::optional<double> boundary;
     };
 
-    /// A value to report: the time, and whether it is the scheme's polynomial
-    /// there rather than the state of a step.
-    struct Store {
-      double time = 0.0;
-      bool interpolated = false;
-    };
-
     /// @param[in] settings the step and store modes of the run.
     /// @param[in] output_times the times to store, increasing, from the start
     /// time to the end time of the run. The value at the start time is the one
@@ -49,8 +41,9 @@ namespace atstep::detail {
     /// `time`: a step that must land on an output time is cut to it.
     Placement place(double step, double time) const;
 
-    /// The values to report after a step that ended at `time`.
-    std::span<const Store> stores(double time);
+    /// Call emit(time, interpolated) for each output of the completed step.
+    /// The callback is used synchronously and is never retained.
+    template <class Emit> void for_each_store(double time, Emit&& emit);
 
   private:
     StepMode step_mode_;
@@ -62,7 +55,6 @@ namespace atstep::detail {
     /// current interval.
     std::size_t next_ = 0;
     bool landed_ = false;
-    std::vector<Store> stores_;
   };
 
   /// The step to take instead of `step` so that a step from `time` ends at
@@ -145,40 +137,32 @@ namespace atstep::detail {
     return placement;
   }
 
-  inline std::span<const StepSchedule::Store> StepSchedule::stores(double time)
+  template <class Emit>
+  void StepSchedule::for_each_store(double time, Emit&& emit)
   {
-    stores_.clear();
+    const std::size_t first = next_;
+    while (next_ < times_.size() and times_[next_] <= time)
+      ++next_;
+    // A crossing step can already lie inside the next interval. Advance the
+    // schedule before callbacks, as all outputs belong to this completed step.
+    landed_ = next_ > 0 and time > times_[next_ - 1];
+
     if (store_mode_ == StoreMode::steps) {
       // The steps of the run, and none of the output times in between: a run
       // that passed the end time stores its own state there by interpolation.
-      if (time > end_time_ and interpolate_end_time_)
-        stores_.push_back({end_time_, true});
-      else
-        stores_.push_back({time, false});
+      const bool interpolated = time > end_time_ and interpolate_end_time_;
+      emit(interpolated ? end_time_ : time, interpolated);
+      return;
     }
-    while (next_ < times_.size() and times_[next_] <= time) {
-      const double target = times_[next_];
-      switch (store_mode_) {
-      case StoreMode::interpolate:
-        stores_.push_back({target, true});
-        break;
-      case StoreMode::closest:
-        // COMSOL's tstepsclosest stores the first step that reaches an output
-        // time, even if the preceding step is nearer to it.
-        if (target == end_time_ and time > end_time_ and interpolate_end_time_)
-          stores_.push_back({target, true});
-        else
-          stores_.push_back({time, false});
-        break;
-      case StoreMode::steps:
-        break; // the output times are only counted, not stored
-      }
-      ++next_;
+
+    for (std::size_t i = first; i < next_; ++i) {
+      const double target = times_[i];
+      // closest reports once per crossed output time, even when several map
+      // to the same internal step. The final time can still be interpolated.
+      const bool interpolated = store_mode_ == StoreMode::interpolate
+        or (target == end_time_ and time > end_time_ and interpolate_end_time_);
+      emit(interpolated ? target : time, interpolated);
     }
-    // A step crossing an output time can already lie inside the next interval.
-    // Count that landing instead of forcing another step.
-    landed_ = next_ > 0 and time > times_[next_ - 1];
-    return stores_;
   }
 
 } // namespace atstep::detail

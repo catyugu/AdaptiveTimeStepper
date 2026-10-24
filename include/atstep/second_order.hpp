@@ -17,23 +17,9 @@ namespace atstep {
 
   namespace detail {
 
-    /// The state of an equation of the second order in time, written the way
-    /// IDA integrates it: the displacement, and the velocity as a variable of
-    /// its own.
-    ///
-    /// The two blocks are advanced by the same BDF formula, at the same order
-    /// and step, and the step's solve keeps them consistent: the velocity is
-    /// the derivative the formula gives the displacement. That is the state
-    /// augmentation COMSOL documents for a second-order system under IDA —
-    /// "extra variables are internally introduced so that it is possible to
-    /// form a first-order time-derivative system".
-    ///
-    /// `size()` and `operator[]` are the variables the error test measures,
-    /// and they are the displacement alone: the auxiliary velocity carries no
-    /// independent error, being the derivative of the displacement's, and a
-    /// norm over it would hold the step to the derivative's accuracy rather
-    /// than the solution's. COMSOL's error test excludes the augmented
-    /// velocity for the same reason.
+    /// Displacement and velocity, advanced by the same BDF formula. The
+    /// default error norm measures only displacement, as COMSOL's IDA path
+    /// does; the solve enforces the velocity's kinematic constraint.
     template <class State> struct Augmented {
       State value {};
       State derivative {};
@@ -55,8 +41,7 @@ namespace atstep {
       }
     };
 
-    /// A norm of the caller's over the variables of the model, applied to the
-    /// pair the augmentation carries.
+    /// Apply a caller-supplied norm to displacement only.
     template <class State, class Norm> struct ValueNorm {
       Norm norm;
 
@@ -67,28 +52,21 @@ namespace atstep {
       }
     };
 
-    /// The coefficients of one condensed step, which the request reads (see
-    /// `SecondOrderRequest`). The states are the stepper's; the known terms
-    /// are formed once per attempt.
+    /// Owned by the adapter and overwritten on each attempt. The displacement
+    /// predictor, first history and derivative scratch belong to the kernel.
     template <class State> struct SecondOrderWork {
-      /// The weight of the first derivative, which the second carries squared.
-      double cj = 0.0;
-      /// The known term of the first derivative, `u' = cj u + known1`.
-      const State& known1;
-      /// The known term of the second, `u'' = cj^2 u + known2`.
-      const State& known2;
-      /// The predictor of the displacement, and of its two derivatives.
-      const State& predictor;
-      const State& first_predictor;
-      const State& second_predictor;
-      /// The difference `u - predictor` of the correction form, borrowed from
-      /// the stepper.
-      State& scratch;
+      State first_predictor {};
+      State second_predictor {};
+      State second_history {};
     };
 
   } // namespace detail
 
-  /// What a step of a second-order-in-time equation is told about the step.
+  template <class State, class Norm>
+    requires detail::StateVector<State>
+  class SecondOrderStepper;
+
+  /// Coefficients for a solve in displacement alone.
   ///
   /// The equation is `M u'' + C u' + K u = f(t)`, or any residual in `u`, `u'`
   /// and `u''`, and the step holds its derivatives to the affine forms
@@ -96,40 +74,20 @@ namespace atstep {
   ///     u'  = cj    u + known(1),   cj     = derivative_weight(),
   ///     u'' = cj^2  u + known(2),   known(d) = derivative_history(d).
   ///
-  /// `cj` is the weight the BDF step gives the first derivative; the second
-  /// carries it squared, because the velocity is itself the derivative of the
-  /// displacement. Substituting the two into the equation leaves the condensed
-  /// system of the displacement alone,
+  /// Substitution gives the condensed linear system
   ///
   ///     (K + cj C + cj^2 M) u_{n+1} = f(t_{n+1}) - M known(2) - C known(1),
   ///
-  /// which is what COMSOL's IDA path solves: the velocity never enters the
-  /// linear system, so a step costs a matrix of the displacement's size, not
-  /// twice it. A nonlinear residual is condensed the same way, and its
-  /// Jacobian is `dF/du + cj dF/du' + cj^2 dF/du''`.
+  /// or the nonlinear Jacobian `dF/du + cj dF/du' + cj^2 dF/du''`.
   ///
   /// `derivative(u, out, d)` evaluates `u^(d)` in correction form,
   /// `u^(d)_predictor + weight(d) (u - predictor)`, which is small where the
   /// predictor is good and free of the direct form's cancellation.
   ///
-  /// A request borrows the stepper's states. It is valid for the solve
-  /// callback's own call and never after, and it is neither copyable nor
-  /// movable, so a reference to one cannot outlive the call it was passed to.
+  /// The request and its state references are valid only during the solve
+  /// callback. Do not retain pointers or references to them.
   template <class State> class SecondOrderRequest {
   public:
-    SecondOrderRequest(
-      const StepRequest<detail::Augmented<State>>& step_request,
-      const detail::SecondOrderWork<State>& work)
-      : time(step_request.time)
-      , step(step_request.step)
-      , order(step_request.order)
-      , step_index(step_request.step_index)
-      , initializing(step_request.initializing)
-      , step_(step_request)
-      , work_(work)
-    {
-    }
-
     SecondOrderRequest(const SecondOrderRequest&) = delete;
     SecondOrderRequest& operator=(const SecondOrderRequest&) = delete;
     SecondOrderRequest(SecondOrderRequest&&) = delete;
@@ -151,7 +109,8 @@ namespace atstep {
     double derivative_weight(int derivative = 1) const
     {
       require_supported(derivative);
-      return derivative == 1 ? work_.cj : work_.cj * work_.cj;
+      const double cj = step_.derivative_weight();
+      return derivative == 1 ? cj : cj * cj;
     }
 
     /// The known term of the derivative level `derivative` of the affine
@@ -159,7 +118,8 @@ namespace atstep {
     const State& derivative_history(int derivative = 1) const
     {
       require_supported(derivative);
-      return derivative == 1 ? work_.known1 : work_.known2;
+      return derivative == 1 ? step_.derivative_history().value
+                             : work_.second_history;
     }
 
     /// `out = u^(derivative)` of the displacement `u`. `out` is a state of the
@@ -167,13 +127,32 @@ namespace atstep {
     void derivative(const State& u, State& out, int derivative = 1) const
     {
       require_supported(derivative);
-      work_.scratch = u;
-      detail::axpy(work_.scratch, -1.0, work_.predictor);
+      State& scratch = step_.derivative_scratch_.value;
+      scratch = u;
+      detail::axpy(scratch, -1.0, step_.predictor_.value);
       out = derivative == 1 ? work_.first_predictor : work_.second_predictor;
-      detail::axpy(out, derivative_weight(derivative), work_.scratch);
+      const double cj = step_.derivative_weight();
+      detail::axpy(out, derivative == 1 ? cj : cj * cj, scratch);
     }
 
   private:
+    template <class S, class N>
+      requires detail::StateVector<S>
+    friend class SecondOrderStepper;
+
+    SecondOrderRequest(
+      const StepRequest<detail::Augmented<State>>& step_request,
+      const detail::SecondOrderWork<State>& work)
+      : time(step_request.time)
+      , step(step_request.step)
+      , order(step_request.order)
+      , step_index(step_request.step_index)
+      , initializing(step_request.initializing)
+      , step_(step_request)
+      , work_(work)
+    {
+    }
+
     static void require_supported(int derivative)
     {
       if (derivative < 1 or derivative > 2)
@@ -199,49 +178,23 @@ namespace atstep {
     std::function<void(double, const State&, const State&, bool)> on_store;
   };
 
-  /// Advances an equation of the second order in time with COMSOL's adaptive
-  /// BDF method.
-  ///
-  /// The equation is handed to the library as it is — `M u'' + C u' + K u =
-  /// f(t)`, or any residual in `u`, `u'` and `u''` — and the caller's solve is
-  /// a solve of the displacement alone. The library introduces the velocity
-  /// the first-order kernel needs, integrates it with the same formula and
-  /// keeps it consistent with the displacement, and gives the solve the
-  /// condensed coefficients of the substitution (see `SecondOrderRequest`).
-  /// Nothing of the velocity reaches the linear system, the settings or the
-  /// tolerances; it is a companion state, not another unknown of the model.
-  ///
-  ///     atstep::SecondOrderStepper<Vector> stepper(settings,
-  ///         [&](const atstep::SecondOrderRequest<Vector>& request, Vector& u) {
-  ///             // u' = cj u + k1, u'' = cj^2 u + k2
-  ///             solve((K + cj*C + cj*cj*M), u, f(t) - M*k2 - C*k1);
-  ///             return atstep::SolveOutcome {true, iterations};
-  ///         });
-  ///     stepper.start(0.0, u0, v0, 10.0);  // displacement and velocity
-  ///     const auto report = stepper.run(times, hooks);
-  ///
-  /// The initial velocity is the second initial condition, and `start` runs the
-  /// same two artificial backward-Euler steps of consistent initialization as a
-  /// first-order run does: the pair is advanced, the displacement's increment
-  /// is what the first step is sized from, and the first returned state is at
-  /// `t0 + 2 step_probe`, as it is there.
-  ///
-  /// The error test measures the displacement alone. A third or higher
-  /// derivative in time is the caller's to write as a first-order system in
-  /// `TimeStepper`; there is no formula for it here.
+  /// Integrates `(displacement, velocity)` through TimeStepper, with each
+  /// solve condensed to displacement (see SecondOrderRequest). The error test
+  /// measures displacement only. `start(t0, u0, v0, end)` applies the kernel's
+  /// two artificial backward-Euler steps to both initial conditions.
   ///
   /// An integrator is neither copyable nor movable.
   template <class State, class Norm = detail::WeightedRmsNorm>
     requires detail::StateVector<State>
   class SecondOrderStepper {
-  public:
-    using Solve
-      = std::function<SolveOutcome(const SecondOrderRequest<State>&, State&)>;
     using InnerNorm = std::conditional_t<std::is_same_v<Norm, detail::WeightedRmsNorm>,
       Norm,
       detail::ValueNorm<State, Norm>>;
     using Inner = TimeStepper<detail::Augmented<State>, InnerNorm>;
-    using Work = detail::SecondOrderWork<State>;
+
+  public:
+    using Solve
+      = std::function<SolveOutcome(const SecondOrderRequest<State>&, State&)>;
 
     /// @param[in] settings the method's settings.
     /// @param[in] solve the solve of one condensed step (see the class
@@ -369,40 +322,24 @@ namespace atstep {
     {
       const double cj = request.derivative_weight();
       const State& known1 = request.derivative_history().value;
-      work_.value_predictor = y.value;
       work_.second_history = request.derivative_history().derivative;
       detail::axpy(work_.second_history, cj, known1);
       work_.first_predictor = known1;
-      detail::axpy(work_.first_predictor, cj, work_.value_predictor);
+      detail::axpy(work_.first_predictor, cj, y.value);
       work_.second_predictor = work_.second_history;
-      detail::axpy(work_.second_predictor, cj * cj, work_.value_predictor);
-      const Work view {cj,
-        known1,
-        work_.second_history,
-        work_.value_predictor,
-        work_.first_predictor,
-        work_.second_predictor,
-        work_.scratch};
-      const SecondOrderRequest<State> condensed(request, view);
+      detail::axpy(work_.second_predictor, cj * cj, y.value);
+      const SecondOrderRequest<State> condensed(request, work_);
       const SolveOutcome outcome = solve_(condensed, y.value);
-      // The kinematic constraint of the augmentation: the level's velocity is
-      // the derivative the formula gives the level's displacement.
-      y.derivative = known1;
-      detail::axpy(y.derivative, cj, y.value);
+      if (outcome.converged) {
+        // Restore the kinematic constraint only for a solved candidate.
+        y.derivative = known1;
+        detail::axpy(y.derivative, cj, y.value);
+      }
       return outcome;
     }
 
-    /// The states of one condensed step. `scratch` is the correction form's.
-    struct Workspace {
-      State value_predictor {};
-      State first_predictor {};
-      State second_predictor {};
-      State second_history {};
-      State scratch {};
-    };
-
     Solve solve_;
-    Workspace work_;
+    detail::SecondOrderWork<State> work_;
     Inner inner_;
   };
 

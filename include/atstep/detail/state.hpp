@@ -45,9 +45,10 @@ namespace atstep::detail {
     y.axpy(a, x);
   }
 
-  /// The states the stepper advances: a copyable value the arithmetic above
-  /// is defined on. A state is held by value, so a run copies it once per
-  /// level.
+  /// A default-constructible, copyable value with the arithmetic above.
+  /// Assignment should reuse storage when dimensions are unchanged. State
+  /// operations may throw; if a history update fails, start must rebuild the
+  /// run before it can be read or advanced again.
   template <class State>
   concept StateVector = std::is_copy_assignable_v<State> && std::is_copy_constructible_v<State> && std::is_default_constructible_v<State> && requires(State& y, const State& x, double a) { atstep::detail::axpy(y, a, x); };
 
