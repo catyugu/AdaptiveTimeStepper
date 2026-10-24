@@ -43,7 +43,8 @@ namespace atstep::detail {
 
     /// Call emit(time, interpolated) for each output of the completed step.
     /// The callback is used synchronously and is never retained.
-    template <class Emit> void for_each_store(double time, Emit&& emit);
+    template <class Emit>
+    void for_each_store(double time, Emit&& emit);
 
   private:
     StepMode step_mode_;
