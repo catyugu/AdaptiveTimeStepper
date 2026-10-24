@@ -161,8 +161,8 @@ namespace atstep {
     std::function<void(const StepRecord&, const State&)> on_step;
     /// Every stored value: the time, the state, and whether it was interpolated
     /// from the steps around it rather than being a level. The state is the
-    /// stepper's own buffer and is only valid during the call — copy it, or
-    /// evaluate the derivative first, before calling `interpolate` again.
+    /// stepper's own buffer and is only valid during the call: copy it to
+    /// retain it.
     std::function<void(double, const State&, bool)> on_store;
   };
 
@@ -183,9 +183,10 @@ namespace atstep {
   /// and output. `advance` retries internally until one step is accepted.
   /// `run` performs the same loop over a complete output schedule.
   ///
-  /// The integrator is neither copyable nor movable. `start` resets it.
-  /// Returned states are borrowed; copy values that must survive another step
-  /// or interpolation call. See doc/design.md for the numerical formulation.
+  /// The integrator is neither copyable nor movable. `start` resets it. The
+  /// states a hook is handed are borrowed for the call; `state()` hands out
+  /// the run's own buffer, while `interpolate` writes into a state of the
+  /// caller's. See doc/design.md for the numerical formulation.
   template <class State, class Norm = detail::WeightedRmsNorm>
     requires detail::StateVector<State>
   class TimeStepper {
@@ -402,44 +403,48 @@ namespace atstep {
         if (hooks.on_step)
           hooks.on_step(record, accepted_.state);
         schedule.for_each_store(time, [&](double output_time, bool interpolated) {
-          store(output_time,
-            interpolated ? interpolate(output_time) : accepted_.state,
-            interpolated, hooks, report);
+          if (not interpolated) {
+            store(output_time, accepted_.state, false, hooks, report);
+            return;
+          }
+          interpolate(output_time, work_.scratch);
+          store(output_time, work_.scratch, true, hooks, report);
         });
       }
       return report;
     }
 
-    /// The dense-output value (derivative=0) or first derivative
-    /// (derivative=1). At the newest level the stored derivative is the
-    /// actual solve derivative; inside a step it is the derivative of the
-    /// BDF dense-output polynomial. The result is kept in the stepper:
-    /// another call can overwrite it.
-    const State& interpolate(double time, int derivative = 0)
+    /// Write the dense-output value (derivative=0) or first derivative
+    /// (derivative=1) at `time` into `out`. At the newest level the stored
+    /// derivative is the actual solve derivative; inside a step it is the
+    /// derivative of the BDF dense-output polynomial. `out` is the caller's,
+    /// and may be the same state on every call.
+    void interpolate(double time, State& out, int derivative = 0)
     {
       require_started();
       if (derivative < 0 or derivative > 1)
         throw std::invalid_argument(
           "atstep: interpolation supports value or first derivative");
-      if (derivative == 1 and time == accepted_.time)
-        return accepted_.derivative;
+      if (derivative == 1 and time == accepted_.time) {
+        out = accepted_.derivative;
+        return;
+      }
       const double delta = time - accepted_.time;
       double coefficient = 1.0;
       double slope = 0.0;
       double gamma = delta / accepted_.psi[0];
-      output_.interpolated = accepted_.phi[0];
+      out = accepted_.phi[0];
       if (derivative == 1)
-        detail::axpy(output_.interpolated, -1.0, accepted_.phi[0]);
+        detail::axpy(out, -1.0, accepted_.phi[0]);
       for (int j = 1; j <= accepted_.order; ++j) {
         slope = slope * gamma + coefficient / accepted_.psi[static_cast<std::size_t>(j - 1)];
         coefficient *= gamma;
-        detail::axpy(output_.interpolated,
+        detail::axpy(out,
           derivative == 0 ? coefficient : slope,
           accepted_.phi[static_cast<std::size_t>(j)]);
         if (j < accepted_.order)
           gamma = (delta + accepted_.psi[static_cast<std::size_t>(j - 1)]) / accepted_.psi[static_cast<std::size_t>(j)];
       }
-      return output_.interpolated;
     }
 
   private:
@@ -477,8 +482,9 @@ namespace atstep {
 
     /// Reused across attempts. During solve, scratch holds the known term and
     /// correction is the request's derivative workspace. After solve returns,
-    /// correction holds the solved-state increment; scratch serves estimates
-    /// and the accepted derivative. No request survives that phase boundary.
+    /// correction holds the solved-state increment; scratch serves estimates,
+    /// the accepted derivative, and the dense output a store reports. No
+    /// request survives that phase boundary.
     struct Work {
       State predictor {};
       State derivative_predictor {};
@@ -487,12 +493,11 @@ namespace atstep {
       State scratch {};
     };
 
-    /// The states of the output: the value the last store reported, which the
-    /// scaled absolute tolerance is measured against, and the dense-output
-    /// buffer `interpolate` returns.
+    /// The state of the output: the value the last store reported, which the
+    /// scaled absolute tolerance is measured against. The dense output itself
+    /// is the caller's, so the stepper keeps no buffer of it.
     struct Output {
       State reference {};
-      State interpolated {};
     };
 
     /// Construct the request only for the duration of the callback. This is

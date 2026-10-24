@@ -20,7 +20,8 @@ namespace atstep {
     /// Displacement and velocity, advanced by the same BDF formula. The
     /// default error norm measures only displacement, as COMSOL's IDA path
     /// does; the solve enforces the velocity's kinematic constraint.
-    template <class State> struct Augmented {
+    template <class State>
+    struct Augmented {
       State value {};
       State derivative {};
 
@@ -42,7 +43,8 @@ namespace atstep {
     };
 
     /// Apply a caller-supplied norm to displacement only.
-    template <class State, class Norm> struct ValueNorm {
+    template <class State, class Norm>
+    struct ValueNorm {
       Norm norm;
 
       double operator()(const Augmented<State>& error,
@@ -54,7 +56,8 @@ namespace atstep {
 
     /// Owned by the adapter and overwritten on each attempt. The displacement
     /// predictor, first history and derivative scratch belong to the kernel.
-    template <class State> struct SecondOrderWork {
+    template <class State>
+    struct SecondOrderWork {
       State first_predictor {};
       State second_predictor {};
       State second_history {};
@@ -86,7 +89,8 @@ namespace atstep {
   ///
   /// The request and its state references are valid only during the solve
   /// callback. Do not retain pointers or references to them.
-  template <class State> class SecondOrderRequest {
+  template <class State>
+  class SecondOrderRequest {
   public:
     SecondOrderRequest(const SecondOrderRequest&) = delete;
     SecondOrderRequest& operator=(const SecondOrderRequest&) = delete;
@@ -166,7 +170,8 @@ namespace atstep {
   };
 
   /// What a second-order run reports as it goes.
-  template <class State> struct SecondOrderHooks {
+  template <class State>
+  struct SecondOrderHooks {
     /// Every accepted step, with the displacement and the velocity it left.
     /// The states are the stepper's own buffers and are only valid during the
     /// call.
@@ -206,10 +211,7 @@ namespace atstep {
       Solve solve,
       Norm norm = Norm {})
       : solve_(std::move(solve))
-      , inner_(settings,
-          [this](const StepRequest<detail::Augmented<State>>& request,
-            detail::Augmented<State>& y) { return solve_step(request, y); },
-          inner_norm(std::move(norm)))
+      , inner_(settings, [this](const StepRequest<detail::Augmented<State>>& request, detail::Augmented<State>& y) { return solve_step(request, y); }, inner_norm(std::move(norm)))
     {
       if (not solve_)
         throw std::invalid_argument("atstep: a run needs a solve");
@@ -281,27 +283,31 @@ namespace atstep {
       RunHooks<detail::Augmented<State>> inner_hooks;
       if (hooks.on_step)
         inner_hooks.on_step = [&hooks](const StepRecord& record,
-                                 const detail::Augmented<State>& y) {
+                                const detail::Augmented<State>& y) {
           hooks.on_step(record, y.value, y.derivative);
         };
       if (hooks.on_store)
         inner_hooks.on_store = [&hooks](double time,
-                                  const detail::Augmented<State>& y,
-                                  bool interpolated) {
+                                 const detail::Augmented<State>& y,
+                                 bool interpolated) {
           hooks.on_store(time, y.value, y.derivative, interpolated);
         };
       return inner_.run(output_times, std::move(inner_hooks));
     }
 
-    /// The dense-output displacement (derivative=0) or velocity
-    /// (derivative=1). At the newest level the velocity is the derivative the
-    /// solve left, which agrees with `velocity()` to round-off; between the
-    /// levels it is the derivative of the dense-output polynomial, which is not
-    /// the pair's own `u'` there. The result is kept in the stepper: another
-    /// call can overwrite it.
-    const State& interpolate(double time, int derivative = 0)
+    /// Write the dense-output displacement (derivative=0) or velocity
+    /// (derivative=1) at `time` into `out`. The pair's dense output of order
+    /// `derivative` is `(u, v)^(derivative)`, so its first half is the
+    /// displacement's derivative of that order: the velocity at derivative=1,
+    /// not the velocity's own derivative. At the newest level the velocity is
+    /// the derivative the solve left, which agrees with `velocity()` to
+    /// round-off; between the levels it is the derivative of the dense-output
+    /// polynomial, which is not the pair's own `u'` there. `out` is the
+    /// caller's, and may be the same state on every call.
+    void interpolate(double time, State& out, int derivative = 0)
     {
-      return inner_.interpolate(time, derivative).value;
+      inner_.interpolate(time, dense_, derivative);
+      out = dense_.value;
     }
 
   private:
@@ -341,6 +347,9 @@ namespace atstep {
     Solve solve_;
     detail::SecondOrderWork<State> work_;
     Inner inner_;
+    /// The pair the dense output is written into before one half of it is
+    /// handed to the caller: the kernel interpolates both halves together.
+    detail::Augmented<State> dense_ {};
   };
 
 } // namespace atstep

@@ -281,8 +281,9 @@ TEST_CASE(
   CHECK_EQ(calls, 2);
   CHECK_NEAR(probe, 10.0 * 1e-3 * 1e-3, 1e-12);
   CHECK_NEAR(stepper.time(), 2.0 * probe, 1e-12);
-  CHECK_NEAR(stepper.interpolate(stepper.time(), 1).value,
-    -stepper.state().value, 2e-10);
+  Scalar initialized_derivative;
+  stepper.interpolate(stepper.time(), initialized_derivative, 1);
+  CHECK_NEAR(initialized_derivative.value, -stepper.state().value, 2e-10);
   // The first step of the run is the one the derivative justifies: the
   // weight of a dof of value one is `0.01 * (1 + 0.1)`, so the derivative is
   // 90.9 and the step is 0.5 / 90.9, well below the 0.01 of the span rule.
@@ -311,12 +312,14 @@ TEST_CASE("stepper: the interpolation reproduces the polynomial through the "
     stepper.advance();
   // At the newest level: the level itself. A first-order run keeps no level
   // behind it, so an older one is reached through the dense output alone.
-  CHECK_NEAR(stepper.interpolate(stepper.time()).value,
-    stepper.state().value,
-    1e-15);
+  Scalar dense;
+  stepper.interpolate(stepper.time(), dense);
+  CHECK_NEAR(dense.value, stepper.state().value, 1e-15);
   // At a past level, and between them: the cubic, to round-off.
-  for (double t : {0.5, 0.13, 0.37, 0.62, 0.88})
-    CHECK_NEAR(stepper.interpolate(t).value, cubic(t), 1e-10);
+  for (double t : {0.5, 0.13, 0.37, 0.62, 0.88}) {
+    stepper.interpolate(t, dense);
+    CHECK_NEAR(dense.value, cubic(t), 1e-10);
+  }
 }
 
 TEST_CASE("stepper: the strict mode ends every step at an output time")
@@ -488,8 +491,9 @@ TEST_CASE("stepper: a state and a norm of the caller's own")
 TEST_CASE("stepper: a schedule the run cannot follow is refused")
 {
   atstep::TimeStepper<Scalar> stepper(atstep::Settings {}, solve_decay);
+  Scalar out;
   CHECK_THROWS(stepper.run(std::vector<double> {0.0, 1.0})); // not started
-  CHECK_THROWS(stepper.interpolate(0.0));
+  CHECK_THROWS(stepper.interpolate(0.0, out));
   stepper.start(0.0, Scalar {1.0}, 1.0);
   CHECK_THROWS(stepper.run(std::vector<double> {0.0})); // one time
   CHECK_THROWS(stepper.run(std::vector<double> {0.0, 2.0})); // past the end
@@ -546,8 +550,12 @@ TEST_CASE("stepper: a refused step leaves the accepted history and its dense out
   const double value = stepper.state().value;
   const double proposed = stepper.step_size();
   const double between = time - 0.1;
-  const double accepted = stepper.interpolate(between).value;
-  const double slope = stepper.interpolate(between, 1).value;
+  Scalar dense;
+  Scalar slope;
+  stepper.interpolate(between, dense);
+  stepper.interpolate(between, slope, 1);
+  const double accepted = dense.value;
+  const double dense_slope = slope.value;
 
   // A solve that keeps failing takes the step down to the smallest one the
   // controller proposes, and then the run gives up.
@@ -556,8 +564,10 @@ TEST_CASE("stepper: a refused step leaves the accepted history and its dense out
   CHECK_NEAR(stepper.time(), time, 0.0);
   CHECK_NEAR(stepper.state().value, value, 0.0);
   CHECK(stepper.step_size() < proposed);
-  CHECK_NEAR(stepper.interpolate(between).value, accepted, 0.0);
-  CHECK_NEAR(stepper.interpolate(between, 1).value, slope, 0.0);
+  stepper.interpolate(between, dense);
+  stepper.interpolate(between, slope, 1);
+  CHECK_NEAR(dense.value, accepted, 0.0);
+  CHECK_NEAR(slope.value, dense_slope, 0.0);
 
   // The run carries on once the solve converges again, from the level the
   // failures left alone.
@@ -566,7 +576,8 @@ TEST_CASE("stepper: a refused step leaves the accepted history and its dense out
   CHECK(record.time > time);
   CHECK(record.error <= 1.0);
   CHECK_NEAR(stepper.time(), record.time, 0.0);
-  CHECK_NEAR(stepper.state().value, stepper.interpolate(record.time).value, 1e-14);
+  stepper.interpolate(record.time, dense);
+  CHECK_NEAR(stepper.state().value, dense.value, 1e-14);
 }
 TEST_CASE("stepper: a refused first step leaves the run at its initialized level")
 {
@@ -585,18 +596,25 @@ TEST_CASE("stepper: a refused first step leaves the run at its initialized level
   stepper.start(0.0, Scalar {1.0}, 10.0);
   const double time = stepper.time();
   const double value = stepper.state().value;
-  const double slope = stepper.interpolate(time, 1).value;
+  Scalar out;
+  stepper.interpolate(time, out, 1);
+  const double slope = out.value;
   const double inside = time + 0.5 * stepper.step_size();
-  const double dense = stepper.interpolate(inside).value;
-  const double dense_slope = stepper.interpolate(inside, 1).value;
+  stepper.interpolate(inside, out);
+  const double dense = out.value;
+  stepper.interpolate(inside, out, 1);
+  const double dense_slope = out.value;
 
   failing = true;
   CHECK_THROWS(stepper.advance()); // every retry fails, down to the smallest step
   CHECK_NEAR(stepper.time(), time, 0.0);
   CHECK_NEAR(stepper.state().value, value, 0.0);
-  CHECK_NEAR(stepper.interpolate(time, 1).value, slope, 0.0);
-  CHECK_NEAR(stepper.interpolate(inside).value, dense, 0.0);
-  CHECK_NEAR(stepper.interpolate(inside, 1).value, dense_slope, 0.0);
+  stepper.interpolate(time, out, 1);
+  CHECK_NEAR(out.value, slope, 0.0);
+  stepper.interpolate(inside, out);
+  CHECK_NEAR(out.value, dense, 0.0);
+  stepper.interpolate(inside, out, 1);
+  CHECK_NEAR(out.value, dense_slope, 0.0);
 
   // The dense output is still the initialized derivative's straight line: the
   // first step's column was never written by a refused attempt.
@@ -720,7 +738,8 @@ TEST_CASE("stepper: a failed history update requires a restart")
     CHECK_THROWS(stepper.state());
     CHECK_THROWS(stepper.step_size());
     CHECK_THROWS(stepper.order());
-    CHECK_THROWS(stepper.interpolate(0.0));
+    State out;
+    CHECK_THROWS(stepper.interpolate(0.0, out));
     CHECK_THROWS(stepper.advance());
 
     fault = {};

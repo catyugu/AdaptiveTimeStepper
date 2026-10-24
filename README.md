@@ -166,8 +166,9 @@ caller-driven loop; call `start` before switching to a new run.
 `on_step` receives each accepted step's record and the state it left; `on_store`
 receives output values. `RunReport` contains step, rejection, failed-solve and
 output counts. Callback state references are valid only during the callback:
-copy values you want to retain. `interpolate(t, 0)` returns the dense value and
-`interpolate(t, 1)` its derivative in a reusable internal buffer.
+copy values you want to retain. `interpolate(t, out)` writes the dense value into
+`out` and `interpolate(t, out, 1)` its derivative; `out` is yours, so one buffer
+can serve every call.
 
 `time()` and `state()` are the current solution: the newest accepted level.
 

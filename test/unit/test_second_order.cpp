@@ -324,10 +324,11 @@ TEST_CASE("second order: an adaptive run meets its tolerance")
   CHECK_NEAR(stepper.velocity()[0],
     oscillator.slope(stepper.time()),
     1e-4);
-  CHECK_NEAR(stepper.interpolate(stepper.time(), 1)[0],
-    stepper.velocity()[0],
-    1e-9);
-  CHECK_NEAR(stepper.interpolate(stepper.time())[0], stepper.state()[0], 1e-12);
+  State out;
+  stepper.interpolate(stepper.time(), out, 1);
+  CHECK_NEAR(out[0], stepper.velocity()[0], 1e-9);
+  stepper.interpolate(stepper.time(), out);
+  CHECK_NEAR(out[0], stepper.state()[0], 1e-12);
 }
 
 TEST_CASE("second order: the velocity the run starts from is an initial condition")

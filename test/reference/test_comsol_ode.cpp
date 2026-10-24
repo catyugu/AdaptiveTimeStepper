@@ -122,6 +122,7 @@ TEST_CASE("comsol: full-precision trajectories, derivatives, orders and "
     chord.settings = settings;
     double last_derivative = 0.0;
     State dy;
+    State dense;
     atstep::TimeStepper<State> stepper(
       settings, [&](const atstep::StepRequest<State>& request, State& y) {
         atstep::SolveOutcome outcome;
@@ -146,7 +147,9 @@ TEST_CASE("comsol: full-precision trajectories, derivatives, orders and "
     };
     hooks.on_store = [&](double t, const State& y, bool) {
       const double value = y.u;
-      const double derivative = steps.empty() ? last_derivative : stepper.interpolate(t, 1).u;
+      if (not steps.empty())
+        stepper.interpolate(t, dense, 1);
+      const double derivative = steps.empty() ? last_derivative : dense.u;
       stored.push_back({t, value, derivative});
     };
     const auto report = stepper.run(reference.output_times, hooks);

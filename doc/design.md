@@ -26,7 +26,7 @@ a run in four parts, grouped by lifetime:
 | `accepted_`   | the accepted state, derivative, time, order and difference columns |
 | `controller_` | the step size and order proposed for the next step                 |
 | `work_`       | five buffers reused by successive attempts                         |
-| `output_`     | the value last stored, and the dense-output buffer                 |
+| `output_`     | the value last stored, which the tolerance is measured against     |
 
 All four are owned by the stepper. Accepted history, controller decisions and
 the last output reference persist across steps; work-buffer contents do not.
@@ -112,11 +112,11 @@ second. Their times must be finite, advance time and remain inside the run;
 their derivative weight must be finite. A failed restart cannot expose old
 history paired with newly assigned run bounds.
 
-The stepper holds five work buffers, two output buffers, seven difference
-columns, and the accepted state and derivative: sixteen state objects,
-whatever the order and whatever the equation. A state's storage is allocated when
-a step first writes it. Initialization allocates columns `0..max_order+1`;
-unused higher columns and unused output buffers remain empty.
+The stepper holds five work buffers, seven difference columns, and the accepted
+state, derivative and output reference: fifteen state objects, whatever the
+order and whatever the equation. A state's storage is allocated when a step
+first writes it. Initialization allocates columns `0..max_order+1`; unused higher
+columns remain empty. Dense output allocates only the buffer its caller passes.
 
 `StepController` consumes scalar estimates independently of state and equation
 types. It implements startup growth, settled-step order selection and retries.
@@ -220,8 +220,10 @@ starting a new scheduled run requires `start` again.
 
 Dense output uses committed BDF columns. At the newest node the returned
 derivative is the solve derivative; it can differ from the dense polynomial's
-derivative after a step change. Returned state references use internal buffers
-and must be copied if retained across callbacks or interpolation calls.
+derivative after a step change. `interpolate` writes into a state the caller
+passes, so it keeps nothing and invalidates nothing: the same buffer can serve
+every call. The states a hook is handed do use the run's own buffers and are
+valid only during the call.
 
 The default norm uses the last accepted internal state for relative weights
 and the most recently stored state for scaled absolute weights. Interpolated
