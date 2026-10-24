@@ -21,12 +21,12 @@ implementation of the public headers, in the namespace `atstep::detail`.
 `TimeStepper` owns its settings, its solve callback, its norm, and the state of
 a run in four parts, grouped by lifetime:
 
-| Member        | What it is                                                 |
-| ------------- | ---------------------------------------------------------- |
+| Member        | What it is                                                         |
+| ------------- | ------------------------------------------------------------------ |
 | `accepted_`   | the accepted state, derivative, time, order and difference columns |
-| `controller_` | the step size and order proposed for the next step         |
-| `work_`       | five buffers reused by successive attempts                  |
-| `output_`     | the value last stored, and the dense-output buffer         |
+| `controller_` | the step size and order proposed for the next step                 |
+| `work_`       | five buffers reused by successive attempts                         |
+| `output_`     | the value last stored, and the dense-output buffer                 |
 
 All four are owned by the stepper. Accepted history, controller decisions and
 the last output reference persist across steps; work-buffer contents do not.
