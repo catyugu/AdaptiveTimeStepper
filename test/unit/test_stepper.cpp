@@ -9,7 +9,6 @@
 #include <cstddef>
 #include <functional>
 #include <limits>
-#include <string>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -68,9 +67,7 @@ namespace {
   atstep::Settings manual_settings(int order, double step)
   {
     atstep::Settings settings;
-    settings.step_mode = atstep::StepMode::manual;
-    settings.manual_order = order;
-    settings.manual_step = step;
+    settings.stepping = atstep::ManualStep {step, order};
     return settings;
   }
 
@@ -325,7 +322,7 @@ TEST_CASE("stepper: the interpolation reproduces the polynomial through the "
 TEST_CASE("stepper: the strict mode ends every step at an output time")
 {
   atstep::Settings settings;
-  settings.step_mode = atstep::StepMode::strict;
+  settings.stepping = atstep::AutomaticStep {atstep::StepPlacement::strict};
   settings.max_order = 2;
   atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
   stepper.start(0.0, Scalar {1.0}, 1.0);
@@ -353,7 +350,7 @@ TEST_CASE("stepper: the intermediate mode puts a step in every subinterval")
   // COMSOL's "Intermediate": at least one step in each interval between two
   // output times, whatever the tolerance would let the solver skip.
   atstep::Settings settings;
-  settings.step_mode = atstep::StepMode::intermediate;
+  settings.stepping = atstep::AutomaticStep {atstep::StepPlacement::intermediate};
   settings.max_order = 2;
   settings.relative_tolerance = 1e-1; // steps large enough to jump an interval
   atstep::TimeStepper<Scalar> stepper(settings, solve_decay);

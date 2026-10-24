@@ -98,8 +98,8 @@ atstep::TimeStepper<State, decltype(norm)> stepper(settings, solve, norm);
 ```
 
 The default norm is `sqrt(mean((error_i / (A_i + R*abs(reference_i)))^2))`.
-`R` is `relative_tolerance`; unscaled `A_i` is `R*absolute_factor`.
-With scaled absolute tolerance:
+`R` is `relative_tolerance`. `A_i` is the fixed `R*absolute_factor` of a
+`FixedAbsoluteTolerance`, or, under the default `ScaledAbsoluteTolerance`:
 
 ```text
 A_i = R * absolute_factor * ((2 - exp(-j/5))*abs(returned_i)
@@ -108,25 +108,25 @@ A_i = R * absolute_factor * ((2 - exp(-j/5))*abs(returned_i)
 
 Here `j` counts accepted steps, `reference` is the last accepted internal
 state, and `returned` is the most recently stored state, possibly interpolated.
-`absolute_scale` supplies `sigma_i`; missing entries default to one. A nonzero
-error with zero weight has infinite norm. Mismatched vector sizes are rejected.
+`ScaledAbsoluteTolerance::scale` supplies `sigma_i`; missing entries default to
+one. A nonzero error with zero weight has infinite norm. Mismatched vector
+sizes are rejected.
 
 ## Settings and output
 
-| Setting                       | Default       | Meaning                                              |
-| :---------------------------- | ------------- | ---------------------------------------------------- |
-| `min_order`, `max_order`      | 1, 5          | Adaptive order range; startup uses available history |
-| `relative_tolerance`          | 1e-2          | Relative error weight                                |
-| `absolute_factor`             | 0.1           | Absolute tolerance factor                            |
-| `scale_absolute_tolerance`    | true          | Enable scaled absolute weights                       |
-| `first_step_fraction`         | 1e-3          | Initial step as a fraction of the run span           |
-| `max_step_fraction`           | 0.1           | Maximum step fraction; ≤ 0 disables the constraint   |
-| `min_step_fraction`           | 1e-10         | Minimum step as a fraction of the span               |
-| `init_step_fraction`          | 1e-3          | Artificial initialization step factor                |
-| `step_mode`                   | `free`        | Step placement                                       |
-| `store_mode`                  | `interpolate` | Output selection                                     |
-| `interpolate_end_time`        | true          | Allow an internal step past the final time           |
-| `manual_step`, `manual_order` | 0, 2          | Fixed step and target order in manual mode           |
+| Setting                  | Default                   | Meaning                                              |
+| :----------------------- | ------------------------- | :--------------------------------------------------- |
+| `min_order`, `max_order` | 1, 5                      | Adaptive order range; startup uses available history |
+| `relative_tolerance`     | 1e-2                      | Relative error weight                                |
+| `absolute_factor`        | 0.1                       | Absolute tolerance factor                            |
+| `absolute_tolerance`     | `ScaledAbsoluteTolerance` | Fixed or scaled absolute weights                     |
+| `first_step_fraction`    | 1e-3                      | Initial step as a fraction of the run span           |
+| `max_step_fraction`      | 0.1                       | Maximum step fraction; ≤ 0 disables the constraint   |
+| `min_step_fraction`      | 1e-10                     | Minimum step as a fraction of the span               |
+| `init_step_fraction`     | 1e-3                      | Artificial initialization step factor                |
+| `stepping`               | `AutomaticStep`           | The solver's steps, or a `ManualStep`                |
+| `store_mode`             | `interpolate`             | Output selection                                     |
+| `interpolate_end_time`   | true                      | Allow an internal step past the final time           |
 
 ### Why the default maximum order is 5
 
@@ -137,17 +137,19 @@ order of 2 in their automatic solver configurations. To match those settings,
 set `settings.max_order = 2`; the adaptive method then uses orders 1–2 as
 history and error estimates allow, rather than fixing every step at order 2.
 
-This is separate from `manual_order = 2`, which selects the target BDF order
-in manual stepping mode. See the [default-setting verification](doc/comsol-alignment.md#default-order-depends-on-the-physics-interface)
+This is separate from the `order` of a `ManualStep` (2 by default), which fixes
+the BDF order of a manual step. See the [default-setting verification](doc/comsol-alignment.md#default-order-depends-on-the-physics-interface)
 for local readbacks and official documentation.
 
-Step modes:
+Step control, `settings.stepping`:
 
-- `free`: choose steps from error estimates.
-- `intermediate`: also place at least one step in every output interval.
-- `strict`: land on every output time, with smaller internal steps as needed.
-- `manual`: use a positive `manual_step` and disable the time-step error test;
-  failed algebraic solves still reduce the step.
+- `AutomaticStep {StepPlacement::free}`: choose steps from error estimates.
+- `AutomaticStep {StepPlacement::intermediate}`: also place at least one step in
+  every output interval.
+- `AutomaticStep {StepPlacement::strict}`: land on every output time, with
+  smaller internal steps as needed.
+- `ManualStep {step, order}`: a fixed step at a fixed order with the time-step
+  error test off; failed algebraic solves still reduce the step.
 
 Store modes:
 
@@ -210,13 +212,16 @@ Runge–Kutta methods. Matching recorded COMSOL trajectories also requires
 matching its algebraic solve strategy; the scalar references do not establish
 equivalence for arbitrary models.
 
-Version 1.2 is the public surface: `atstep/atstep.hpp`, with
+Version 1.3 is the public surface: `atstep/atstep.hpp`, with
 `atstep/stepper.hpp`, `atstep/second_order.hpp` and `atstep/settings.hpp`. Version
 1.1 replaced the `derivative_orders` setting of 1.0 and the classical-stencil path
-it selected with the second-order adapter; 1.2 makes a step's request non-copyable
-and publishes the accepted level, its derivative and the difference table as one
-accepted history. Everything under `atstep/detail` is the implementation of those
-headers and carries no compatibility promise.
+it selected with the second-order adapter; 1.2 made a step's request non-copyable
+and published the accepted level, its derivative and the difference table as one
+accepted history; 1.3 states the mutually exclusive halves of the configuration as
+variants — the solver's steps or the model's own, and the fixed or the scaled
+absolute tolerance — in place of `step_mode`, `manual_step`, `manual_order`,
+`scale_absolute_tolerance` and `absolute_scale`. Everything under `atstep/detail`
+is the implementation of those headers and carries no compatibility promise.
 
 - [Design](doc/design.md): ownership, history and numerical boundaries.
 - [COMSOL alignment](doc/comsol-alignment.md): measured configurations and reproduction.

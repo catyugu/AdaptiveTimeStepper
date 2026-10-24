@@ -61,7 +61,7 @@ namespace {
       atstep::detail::WeightedRmsNorm norm;
       norm.relative = settings.relative_tolerance;
       norm.absolute = norm.relative * settings.absolute_factor;
-      norm.scaled = settings.scale_absolute_tolerance;
+      norm.absolute_tolerance = settings.absolute_tolerance;
       norm.step_index = request.step_index;
       double first_norm = 0.0;
       last_cj = cj;
@@ -89,15 +89,19 @@ namespace {
     }
   };
 
-  atstep::StepMode mode_of(const std::string& name)
+  /// The stepping of a recorded run: the placement of the solver's own steps,
+  /// or the fixed step of a manual one, which COMSOL takes at its "BDF order"
+  /// of 2.
+  atstep::StepControl control_of(const comsol::Trajectory& reference)
   {
-    if (name == "strict")
-      return atstep::StepMode::strict;
-    if (name == "intermediate")
-      return atstep::StepMode::intermediate;
-    if (name == "manual")
-      return atstep::StepMode::manual;
-    return atstep::StepMode::free;
+    const std::string mode = reference.step_mode;
+    if (mode == "manual")
+      return atstep::ManualStep {reference.manual_step, 2};
+    if (mode == "strict")
+      return atstep::AutomaticStep {atstep::StepPlacement::strict};
+    if (mode == "intermediate")
+      return atstep::AutomaticStep {atstep::StepPlacement::intermediate};
+    return atstep::AutomaticStep {atstep::StepPlacement::free};
   }
 
 } // namespace
@@ -109,11 +113,10 @@ TEST_CASE("comsol: full-precision trajectories, derivatives, orders and "
     atstep::Settings settings;
     settings.max_order = reference.max_order;
     settings.relative_tolerance = reference.tolerance;
-    settings.step_mode = mode_of(reference.step_mode);
+    settings.stepping = control_of(reference);
     settings.max_step_fraction = reference.max_step_fraction;
     settings.interpolate_end_time = reference.interpolate_end_time;
     settings.store_mode = atstep::StoreMode::steps;
-    settings.manual_step = reference.manual_step;
     if (std::string(reference.store_mode) == "tlist")
       settings.store_mode = atstep::StoreMode::interpolate;
     else if (std::string(reference.store_mode) == "tstepsclosest")

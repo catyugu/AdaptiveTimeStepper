@@ -3,7 +3,6 @@
 #include "atstep/detail/controller.hpp"
 #include "support/check.hpp"
 
-#include <array>
 #include <cmath>
 #include <limits>
 #include <utility>
@@ -17,6 +16,13 @@ namespace {
     atstep::Settings settings;
     settings.max_order = max_order;
     settings.relative_tolerance = tolerance;
+    return settings;
+  }
+
+  atstep::Settings manual_settings(double step, int order)
+  {
+    atstep::Settings settings;
+    settings.stepping = atstep::ManualStep {step, order};
     return settings;
   }
 
@@ -240,11 +246,7 @@ TEST_CASE("controller: the order never leaves its range")
 
 TEST_CASE("controller: manual stepping ignores the error and keeps its step")
 {
-  atstep::Settings settings = settings_with();
-  settings.step_mode = atstep::StepMode::manual;
-  settings.manual_step = 0.25;
-  settings.manual_order = 3;
-  atstep::detail::StepController controller(settings, 10.0);
+  atstep::detail::StepController controller(manual_settings(0.25, 3), 10.0);
   controller.begin(0.01);
   CHECK(not controller.error_controlled());
   CHECK_NEAR(controller.step_size(), 0.25, 1e-12);
@@ -283,8 +285,11 @@ TEST_CASE("controller: a setting that cannot be run is refused")
   CHECK_THROWS(atstep::detail::StepController(settings, 1.0));
 
   settings = atstep::Settings {};
-  settings.step_mode = atstep::StepMode::manual;
-  settings.manual_step = 0.0;
+  settings.stepping = atstep::ManualStep {0.0, 2};
+  CHECK_THROWS(atstep::detail::StepController(settings, 1.0));
+
+  settings = atstep::Settings {};
+  settings.stepping = atstep::ManualStep {0.1, 6};
   CHECK_THROWS(atstep::detail::StepController(settings, 1.0));
 
   settings = atstep::Settings {};
@@ -303,15 +308,17 @@ TEST_CASE("controller: nonfinite settings and reversed bounds are refused")
            &atstep::Settings::first_step_fraction,
            &atstep::Settings::max_step_fraction,
            &atstep::Settings::min_step_fraction,
-           &atstep::Settings::init_step_fraction,
-           &atstep::Settings::manual_step}) {
+           &atstep::Settings::init_step_fraction}) {
       atstep::Settings settings;
       settings.*field = value;
       CHECK_THROWS(atstep::validate(settings));
     }
-    atstep::Settings settings;
-    settings.absolute_scale = {value};
-    CHECK_THROWS(atstep::validate(settings));
+    atstep::Settings scaled;
+    scaled.absolute_tolerance = atstep::ScaledAbsoluteTolerance {{value}};
+    CHECK_THROWS(atstep::validate(scaled));
+    atstep::Settings manual;
+    manual.stepping = atstep::ManualStep {value, 2};
+    CHECK_THROWS(atstep::validate(manual));
     CHECK_THROWS(atstep::detail::StepController(atstep::Settings {}, value));
     atstep::detail::StepErrors error;
     error.test = value;

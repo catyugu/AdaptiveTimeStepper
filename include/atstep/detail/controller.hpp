@@ -60,20 +60,20 @@ namespace atstep::detail {
     /// The step size of the next step.
     double step_size() const
     {
-      return error_controlled() ? h_ : manual_;
+      return manual_ ? manual_step_ : h_;
     }
 
     /// The order the next step is taken at.
     int order() const
     {
-      return error_controlled() ? order_ : manual_order_;
+      return manual_ ? manual_->order : order_;
     }
 
-    /// Whether the local error governs the step. It does not in
-    /// `StepMode::manual`, where the step is the model's own.
+    /// Whether the local error governs the step. It does not in a manual run,
+    /// where the step is the model's own.
     bool error_controlled() const
     {
-      return error_controlled_;
+      return not manual_;
     }
 
     /// The smallest step the controller will propose, below which the error
@@ -132,11 +132,12 @@ namespace atstep::detail {
 
     /// The configuration the control reads, taken from `Settings`. The
     /// state-sized tolerances of one stay with the stepper and the norm.
-    bool error_controlled_ = true;
+    ///
+    /// The manual step of the run, when the model takes it rather than the
+    /// solver: the size `begin` restarts at and the order it is taken at.
+    std::optional<ManualStep> manual_;
     int min_order_ = 1;
     int max_order_ = 5;
-    int manual_order_ = 2;
-    double manual_step_ = 0.0;
     double first_step_fraction_ = 1e-3;
 
     double span_ = 0.0;
@@ -146,10 +147,10 @@ namespace atstep::detail {
     /// The step proposed for the next step, and the one the last accepted
     /// step was taken at.
     double h_ = 0.0;
-    /// The step of a manual run. A manual step is not held to the
-    /// tolerance, so the only thing that changes it is a solve that did not
-    /// converge.
-    double manual_ = 0.0;
+    /// The size of the manual step in effect, which `begin` takes from
+    /// `manual_`. A manual step is not held to the tolerance, so the only
+    /// thing that changes it is a solve that did not converge.
+    double manual_step_ = 0.0;
     double used_ = 0.0;
     /// The order of the next step, and of the last accepted one.
     int order_ = 1;
@@ -181,11 +182,9 @@ namespace atstep::detail {
   } // namespace ida
 
   inline StepController::StepController(const Settings& settings, double span)
-    : error_controlled_(settings.step_mode != StepMode::manual)
+    : manual_(settings.manual())
     , min_order_(settings.min_order)
     , max_order_(settings.max_order)
-    , manual_order_(settings.manual_order)
-    , manual_step_(settings.manual_step)
     , first_step_fraction_(settings.first_step_fraction)
     , span_(span)
     , largest_(span * settings.max_step_fraction)
@@ -212,7 +211,7 @@ namespace atstep::detail {
   inline void StepController::begin(double h)
   {
     h_ = std::clamp(h, smallest_, largest_);
-    manual_ = manual_step_;
+    manual_step_ = manual_ ? manual_->step : 0.0;
     order_ = std::clamp(min_order_, 1, max_order_);
     used_order_ = 0;
     used_ = 0.0;
@@ -265,7 +264,7 @@ namespace atstep::detail {
     used_order_ = order_;
     used_ = step;
 
-    if (not error_controlled())
+    if (manual_)
       return; // the step and the order are the model's
 
     const int knew = suggested_order(errors);
@@ -336,8 +335,8 @@ namespace atstep::detail {
   inline void StepController::reject(const StepErrors& errors, double step)
   {
     ++rejections_;
-    if (not error_controlled()) {
-      manual_ = std::max(0.5 * step, smallest_);
+    if (manual_) {
+      manual_step_ = std::max(0.5 * step, smallest_);
       return;
     }
 
@@ -367,8 +366,8 @@ namespace atstep::detail {
   inline void StepController::reject_convergence(double step)
   {
     ++rejections_;
-    if (not error_controlled()) {
-      manual_ = std::max(ida::eta_min_ef * step, smallest_);
+    if (manual_) {
+      manual_step_ = std::max(ida::eta_min_ef * step, smallest_);
       return;
     }
     phase_ = 1;

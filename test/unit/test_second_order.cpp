@@ -52,9 +52,7 @@ namespace {
   atstep::Settings manual(int order, double step)
   {
     atstep::Settings settings;
-    settings.step_mode = atstep::StepMode::manual;
-    settings.manual_order = order;
-    settings.manual_step = step;
+    settings.stepping = atstep::ManualStep {step, order};
     return settings;
   }
 

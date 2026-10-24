@@ -235,9 +235,8 @@ namespace atstep {
       controller_.emplace(settings_, span);
       configure_norm();
 
-      const double probe = (settings_.step_mode == StepMode::manual
-                               ? settings_.manual_step
-                               : span)
+      const std::optional<ManualStep> manual = settings_.manual();
+      const double probe = (manual ? manual->step : span)
         * settings_.first_step_fraction * settings_.init_step_fraction;
       const double cj = 1.0 / probe;
       const double first_time = time + probe;
@@ -685,8 +684,7 @@ namespace atstep {
         if (not controller_) {
           norm_.relative = settings_.relative_tolerance;
           norm_.absolute = settings_.relative_tolerance * settings_.absolute_factor;
-          norm_.scaled = settings_.scale_absolute_tolerance;
-          norm_.scale = settings_.absolute_scale;
+          norm_.absolute_tolerance = settings_.absolute_tolerance;
         }
         norm_.step_index = controller_ ? static_cast<std::size_t>(controller_->steps()) : 0;
       }

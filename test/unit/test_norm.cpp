@@ -76,7 +76,7 @@ TEST_CASE("norm: the scaled tolerance is twice the plain one at a state of "
   atstep::detail::WeightedRmsNorm scaled;
   scaled.relative = 1e-2;
   scaled.absolute = 1e-3;
-  scaled.scaled = true;
+  scaled.absolute_tolerance = atstep::ScaledAbsoluteTolerance {};
 
   const std::vector<double> state {1.0};
   const std::vector<double> error {1e-3};
@@ -93,24 +93,24 @@ TEST_CASE("norm: the scaled tolerance is R factor (|y| + sigma) at the first "
   atstep::detail::WeightedRmsNorm norm;
   norm.relative = 1e-2;
   norm.absolute = 1e-3;
-  norm.scaled = true;
+  norm.absolute_tolerance = atstep::ScaledAbsoluteTolerance {};
 
   for (double magnitude : {0.25, 0.5, 1.0, 1.5}) {
     const auto state = of({magnitude});
     // A scale equal to the magnitude: A = 2 R factor |y|, the measured form.
-    norm.scale = {magnitude};
+    norm.absolute_tolerance = atstep::ScaledAbsoluteTolerance {{magnitude}};
     const double own = scaled_limit(magnitude, 0, magnitude) + 1e-2 * magnitude;
     CHECK_NEAR(own, 2e-2 * 0.1 * magnitude + 1e-2 * magnitude, 1e-15);
     CHECK_NEAR(norm(of({own}), state), 1.0, 1e-12);
     // The default scale: A = R factor (|y| + 1).
-    norm.scale.clear();
+    norm.absolute_tolerance = atstep::ScaledAbsoluteTolerance {};
     const double unit = scaled_limit(magnitude, 0, 1.0) + 1e-2 * magnitude;
     CHECK_NEAR(norm(of({unit}), state), 1.0, 1e-12);
   }
 
   // A dof at exactly zero is held to the absolute floor of the step, which is
   // the scale itself at the first step.
-  norm.scale.clear();
+  norm.absolute_tolerance = atstep::ScaledAbsoluteTolerance {};
   CHECK_NEAR(norm(of({1e-3}), of({0.0})), 1.0, 1e-12);
 }
 
@@ -122,8 +122,7 @@ TEST_CASE("norm: the scale of each degree of freedom is its own")
   atstep::detail::WeightedRmsNorm norm;
   norm.relative = 1e-2;
   norm.absolute = 1e-3;
-  norm.scaled = true;
-  norm.scale = {1.0, 0.32};
+  norm.absolute_tolerance = atstep::ScaledAbsoluteTolerance {{1.0, 0.32}};
 
   const auto state = of({1.0, 1.0});
   const double slow = norm(of({1.0, 0.0}), state);
@@ -134,14 +133,14 @@ TEST_CASE("norm: the scale of each degree of freedom is its own")
   CHECK(fast > slow);
 
   // A scale vector shorter than the state leaves the rest at one.
-  norm.scale = {0.32};
+  norm.absolute_tolerance = atstep::ScaledAbsoluteTolerance {{0.32}};
   CHECK_NEAR(norm(of({0.0, 1.0}), state), slow, 1e-15);
 }
 
 TEST_CASE("norm: the scaled tolerance tightens with the accepted-step index")
 {
   atstep::detail::WeightedRmsNorm norm;
-  norm.scaled = true;
+  norm.absolute_tolerance = atstep::ScaledAbsoluteTolerance {};
   const double magnitude = 1e-4;
   for (std::size_t j : {std::size_t {0},
          std::size_t {1},
@@ -155,10 +154,10 @@ TEST_CASE("norm: the scaled tolerance tightens with the accepted-step index")
   // The scale replaces the floor the blend tends to, not the magnitude: a
   // larger scale loosens the tolerance.
   const double fixed = scaled_limit(magnitude, 100, 1.0);
-  norm.scale = {4.0};
+  norm.absolute_tolerance = atstep::ScaledAbsoluteTolerance {{4.0}};
   CHECK(scaled_limit(magnitude, 100, 4.0) > fixed);
 
-  norm.scaled = false;
+  norm.absolute_tolerance = atstep::FixedAbsoluteTolerance {};
   CHECK_NEAR(norm(of({0.001001}), of({magnitude})), 1.0, 1e-12);
 }
 
@@ -172,7 +171,7 @@ TEST_CASE("norm: interpolation changes the absolute scale but not the relative "
           "reference")
 {
   atstep::detail::WeightedRmsNorm norm;
-  norm.scaled = true;
+  norm.absolute_tolerance = atstep::ScaledAbsoluteTolerance {};
   norm.step_index = 25;
   const double internal = 0.2;
   const double returned = 0.3;

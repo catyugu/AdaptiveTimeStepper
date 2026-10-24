@@ -16,9 +16,9 @@ namespace atstep::detail {
   /// Where the steps of a run may land, and which output times a step that
   /// reached a time stores.
   ///
-  /// It holds the output times and the two modes that read them: the step mode
-  /// decides the size a step is cut to, the store mode the values reported.
-  /// The stepper holds the steps themselves.
+  /// It holds the output times and the two modes that read them: the step
+  /// placement decides the size a step is cut to, the store mode the values
+  /// reported. The stepper holds the steps themselves.
   class StepSchedule {
   public:
     /// The step the schedule takes, and the time it must end at where it must
@@ -28,7 +28,7 @@ namespace atstep::detail {
       std::optional<double> boundary;
     };
 
-    /// @param[in] settings the step and store modes of the run.
+    /// @param[in] settings the placement and store modes of the run.
     /// @param[in] output_times the times to store, increasing, from the start
     /// time to the end time of the run. The value at the start time is the one
     /// the run begins with, which the stepper stores before it steps.
@@ -47,7 +47,7 @@ namespace atstep::detail {
     void for_each_store(double time, Emit&& emit);
 
   private:
-    StepMode step_mode_;
+    StepPlacement placement_;
     StoreMode store_mode_;
     bool interpolate_end_time_ = true;
     std::span<const double> times_;
@@ -77,7 +77,7 @@ namespace atstep::detail {
     std::span<const double> output_times,
     double start_time,
     double end_time)
-    : step_mode_(settings.step_mode)
+    : placement_(settings.placement())
     , store_mode_(settings.store_mode)
     , interpolate_end_time_(settings.interpolate_end_time)
     , times_(output_times)
@@ -107,22 +107,21 @@ namespace atstep::detail {
     const double intermediate_target = intermediate_index < times_.size()
       ? times_[intermediate_index]
       : std::numeric_limits<double>::infinity();
-    const bool intermediate_landing = step_mode_ == StepMode::intermediate and time + step >= intermediate_target;
+    const bool intermediate_landing = placement_ == StepPlacement::intermediate and time + step >= intermediate_target;
 
-    switch (step_mode_) {
-    case StepMode::strict:
+    switch (placement_) {
+    case StepPlacement::strict:
       // COMSOL avoids a tiny remainder: split the last two steps equally if
       // one full proposed step would leave less than one.
       step = landing_step(step, time, target);
       break;
-    case StepMode::intermediate:
+    case StepPlacement::intermediate:
       // Every subinterval holds at least one step: this one is cut short to
       // land inside the current one.
       if (intermediate_landing)
         step = (intermediate_target - time) * (1.0 - 4.0 * std::numeric_limits<double>::epsilon());
       break;
-    case StepMode::free:
-    case StepMode::manual:
+    case StepPlacement::free:
       break;
     }
     if (not interpolate_end_time_)
@@ -130,8 +129,8 @@ namespace atstep::detail {
 
     const double boundary = intermediate_landing
       ? intermediate_target
-      : (step_mode_ == StepMode::strict ? target : end_time_);
-    const bool snapping = step_mode_ == StepMode::strict or intermediate_landing or not interpolate_end_time_;
+      : (placement_ == StepPlacement::strict ? target : end_time_);
+    const bool snapping = placement_ == StepPlacement::strict or intermediate_landing or not interpolate_end_time_;
     Placement placement {step, std::nullopt};
     if (snapping and std::abs(time + step - boundary) <= 4.0 * std::numeric_limits<double>::epsilon() * (std::abs(time) + std::abs(boundary)))
       placement.boundary = boundary;
