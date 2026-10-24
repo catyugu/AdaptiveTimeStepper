@@ -33,7 +33,8 @@ namespace atstep {
   ///                          known = derivative_history(),
   ///
   /// so `M y' + K y = f` at `time` is `(cj M + K) y = f - M known`.
-  /// `derivative(y, out)` evaluates `y'` in correction form. The request and
+  /// `derivative(y, out)` evaluates `y'` in correction form through one
+  /// scratch buffer: a request is used by one solve at a time. The request and
   /// its references live only for the solve callback.
   template <class State>
   class StepRequest {

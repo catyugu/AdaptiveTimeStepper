@@ -51,8 +51,9 @@ implement `axpy`; custom norms implement `norm(error, reference)`.
 
 `start(t0, initial, end)` performs two artificial backward-Euler solves of size
 `backward_euler_fraction` of the initial step, the COMSOL default. The resulting
-level and derivative are labelled `t0`; the initialization solves are not
-accepted time steps. The initial step is
+level and derivative are the value `run` stores at `t0`; the probes advance the
+internal time to `t0 + 2*probe`, which `time()` reports. The initialization
+solves are not accepted time steps. The initial step is
 `initial_step_fraction * max(abs(end), span)` (the manual step in manual mode),
 limited by `0.5 / norm(y')`.
 
@@ -131,9 +132,10 @@ and `A_i = absolute` unscaled. The relative part uses the accepted internal
 state; the scaled part uses the last state returned to the caller, including an
 interpolated one.
 
-A custom norm receives the error and the accepted internal state. It does not
-receive the scale reference; a caller that needs COMSOL's scaled reference or a
-per-variable scaling implements it in the norm.
+A norm of a caller's own type receives the error and the accepted internal
+state; a `WeightedRmsNorm` passed explicitly also receives the scale reference.
+A caller that needs a per-variable scaling or another reference implements it
+in the norm.
 
 ## Output and step placement
 
@@ -154,8 +156,8 @@ call, and times older than the last step are extrapolated.
 Invalid dimensions, non-finite configuration and output times, and a schedule
 outside the run are rejected. A nonzero error with zero weight has infinite
 norm. A step must be finite, positive and advance floating-point time. State
-operations must not throw; a throwing state operation leaves the run
-unusable and requires `start`.
+operations must not throw; a throwing one leaves the run in an unspecified
+state, and `start` must rebuild it.
 
 The [COMSOL regressions](comsol-alignment.md) cover 21 scalar configurations and
 1,336 samples, plus the 161-sample thermoelastic run. Reference data never

@@ -100,11 +100,12 @@ at the end when `interpolate_end_time` is on).
 ## Running
 
 `start(t0, initial, end)` performs two artificial backward-Euler solves, the
-consistent initialization; the returned state is labelled `t0` and its
-derivative is what the first step is read from. `start(t0, initial, derivative,
-end)` uses consistent initial values supplied by the caller and takes no
-artificial step. The second overload is the way to restart from a solution
-without perturbing it.
+consistent initialization, and the initialized state is what `run` stores at
+`t0`; its derivative is what the first step is read from. The probes advance
+the internal clock by twice their size, which `time()` reports. `start(t0,
+initial, derivative, end)` uses consistent initial values supplied by the
+caller and takes no artificial step; `time()` stays at `t0`. The second overload
+is the way to restart from a solution without perturbing it.
 
 `run(times, hooks)` takes any strictly increasing set of times that are the
 start time or after the initialized time; the initial state is stored when the list

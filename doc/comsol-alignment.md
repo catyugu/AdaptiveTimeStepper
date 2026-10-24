@@ -17,8 +17,8 @@ samples come from COMSOL, not from this library.
 The regression checks each stored time, value and derivative, the accepted,
 error-test-failure and failed-solve counts, and the order of every logged step.
 One tolerance covers every recorded quantity: `1e-8`. The measured worst case
-is `5e-10` in time and `4e-10` in the derivative, so the number keeps an order of
-magnitude of margin.
+is about `5e-10` in time and `4e-10` in the derivative, so the number keeps an
+order of magnitude of margin.
 
 | Configuration | COMSOL accepted steps |
 | :--- | ---: |
