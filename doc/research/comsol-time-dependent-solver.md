@@ -27,8 +27,7 @@ into the URL as `#page=N` so each one opens on the page being quoted.
 ## 1. Where the settings live (study step vs. solver node)
 
 - Study step **Time Dependent** (`Study > Time Dependent`) — `RM62` p. 1490–1491. Sections:
-  `Study Settings` (Time unit; `Times`; `Tolerance` = `Physics controlled` (default) / `User controlled`
-  + `Relative tolerance`), `Results While Solving`, `Adaptation`, `Study Extensions`,
+  `Study Settings` (Time unit; `Times`; `Tolerance` = `Physics controlled` (default) / `User controlled` - `Relative tolerance`), `Results While Solving`, `Adaptation`, `Study Extensions`,
   plus the common sections. There is **no** BDF/step-size setting on the study step.
 - Solver node **Time-Dependent Solver** (`Solver Configurations > Time-Dependent Solver`) — `RM62`
   p. 1616–1624. Sections: `General` (Defined by study step, Time unit, Output times, Times to store,
@@ -85,8 +84,8 @@ So "Intermediate" = at least one step per output subinterval, not necessarily la
   the initial time step taken, if the initial conditions and the boundary conditions do not match".
 - 6.4 (pp. 1779–1780) splits the rule per method and adds the derivative condition — this is the most
   important release-to-release change:
-  - "By default, for generalized-α, the first step is 0.1% of the end time, ..."
-  - "**By default, for BDF, the first step is less than 0.1% of the end time but also fulfills
+    - "By default, for generalized-α, the first step is 0.1% of the end time, ..."
+    - "**By default, for BDF, the first step is less than 0.1% of the end time but also fulfills
     DT·ypnorm <= 1/2, where DT is the initial time step and ypnorm is the weighted norm of the time
     derivative vector.**"
 - Consequence for a reimplementation: the automatic initial step is `min(1e-3 * t_end, DT)` with `DT`
@@ -348,11 +347,11 @@ Interface (Reference Manual, `The Events Interface`, pp. 1351–1354):
 - `Output times`: "enter a vector of times that define the time span for the simulation using the Range
   button if needed (**default: range(0,0.1,1)**)."
 - `Times to store`, exactly three options:
-  - "**Output times by interpolation** (the default) to store the output times using interpolation from the
+    - "**Output times by interpolation** (the default) to store the output times using interpolation from the
     solver's time steps."
-  - "**Steps taken by solver closest to output times** to use the time steps from the solver that are
+    - "**Steps taken by solver closest to output times** to use the time steps from the solver that are
     closest to a given output time among all the steps that have passed this output time."
-  - "**Steps taken by solver** to store the actual time steps from the solver. Specify to store every Nth
+    - "**Steps taken by solver** to store the actual time steps from the solver. Specify to store every Nth
     step in the **Store every Nth step** field (**default value: 1**; that is, all time steps are stored)."
 - (The `Output` section, p. 1624, has a second, narrower list also called `Times to store`: `Specified
   values` — "store solutions at the values entered in the **Times** field in the General section" — or
@@ -418,28 +417,28 @@ Interface (Reference Manual, `The Events Interface`, pp. 1351–1354):
 - COMSOL Multiphysics Reference Manual 6.2 (chapter 20 "Studies and Solvers", chapter 16 "Equation-Based
   Modeling"), PDF, fetched 2026-10:
   [full PDF](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf)
-  - [p. 1490 — Time Dependent study step](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1490)
-  - [p. 1491 — cubic Hermite interpolation, Tolerance list](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1491)
-  - [p. 1580 — The Implicit Time-Dependent Solver Algorithms](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1580)
-  - [p. 1581 — IDA / DASPK / SUNDIALS / STAB controller / IDAS](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1581)
-  - [p. 1582 — Absolute Tolerance Settings, error-test formulas](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1582)
-  - [p. 1583 — BDF vs. generalized-α and explicit methods](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1583)
-  - [p. 1616 — Time-Dependent Solver, General](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1616)
-  - [p. 1617 — Output times, Times to store, Relative tolerance](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1617)
-  - [p. 1618 — Absolute Tolerance section](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1618)
-  - [p. 1619 — Time Stepping (General Settings)](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1619)
-  - [p. 1620 — Steps taken by solver, Initial step, Maximum step constraint](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1620)
-  - [p. 1621 — BDF order, Manual, Event tolerance, Nonlinear controller](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1621)
-  - [p. 1622 — Consistent initialization, Error estimation](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1622)
-  - [p. 1623 — Interpolate solution at end time (RK), step growth ratios](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1623)
-  - [p. 1624 — Output section (Times to store, store before/after events)](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1624)
-  - [p. 1629 — References for the Solution Operation Nodes and Solvers](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1629)
-  - [p. 1351 — The Events Interface](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1351)
-  - [p. 1353 — Implicit Event, About the Reinitialization Process](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1353)
-  - [p. 1354 — Enforcement of consistency after reinitialization](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1354)
-  - [p. 1238 — default heat transfer method: BDF at second order](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1238)
-  - [p. 1165 — Navier–Stokes: BDF with maximum order two](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1165)
-  - [p. 1945 — particle-tracing ODE solver: 10 % automatic maximum step](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1945)
+    - [p. 1490 — Time Dependent study step](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1490)
+    - [p. 1491 — cubic Hermite interpolation, Tolerance list](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1491)
+    - [p. 1580 — The Implicit Time-Dependent Solver Algorithms](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1580)
+    - [p. 1581 — IDA / DASPK / SUNDIALS / STAB controller / IDAS](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1581)
+    - [p. 1582 — Absolute Tolerance Settings, error-test formulas](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1582)
+    - [p. 1583 — BDF vs. generalized-α and explicit methods](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1583)
+    - [p. 1616 — Time-Dependent Solver, General](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1616)
+    - [p. 1617 — Output times, Times to store, Relative tolerance](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1617)
+    - [p. 1618 — Absolute Tolerance section](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1618)
+    - [p. 1619 — Time Stepping (General Settings)](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1619)
+    - [p. 1620 — Steps taken by solver, Initial step, Maximum step constraint](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1620)
+    - [p. 1621 — BDF order, Manual, Event tolerance, Nonlinear controller](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1621)
+    - [p. 1622 — Consistent initialization, Error estimation](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1622)
+    - [p. 1623 — Interpolate solution at end time (RK), step growth ratios](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1623)
+    - [p. 1624 — Output section (Times to store, store before/after events)](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1624)
+    - [p. 1629 — References for the Solution Operation Nodes and Solvers](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1629)
+    - [p. 1351 — The Events Interface](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1351)
+    - [p. 1353 — Implicit Event, About the Reinitialization Process](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1353)
+    - [p. 1354 — Enforcement of consistency after reinitialization](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1354)
+    - [p. 1238 — default heat transfer method: BDF at second order](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1238)
+    - [p. 1165 — Navier–Stokes: BDF with maximum order two](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1165)
+    - [p. 1945 — particle-tracing ODE solver: 10 % automatic maximum step](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1945)
 - Reference Manual 6.0 (for older wording):
   [p. 1485](https://doc.comsol.com/6.0/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1485),
   [p. 1451](https://doc.comsol.com/6.0/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf#page=1451),
