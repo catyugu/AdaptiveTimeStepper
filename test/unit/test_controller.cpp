@@ -1,4 +1,4 @@
-﻿// The step-size and order control: the rules IDA follows, which are the rules
+// The step-size and order control: the rules IDA follows, which are the rules
 // COMSOL's BDF follows.
 #include "atstep/detail/controller.hpp"
 #include "support/check.hpp"
@@ -6,6 +6,7 @@
 #include <cmath>
 #include <limits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -14,16 +15,22 @@ namespace {
     double tolerance = 1e-2)
   {
     atstep::Settings settings;
-    settings.max_order = max_order;
-    settings.relative_tolerance = tolerance;
+    settings.error.relative = tolerance;
+    std::get<atstep::AdaptiveSteps>(settings.steps).max_order = max_order;
     return settings;
   }
 
   atstep::Settings manual_settings(double step, int order)
   {
     atstep::Settings settings;
-    settings.stepping = atstep::ManualStep {step, order};
+    settings.steps = atstep::ManualSteps {step, order};
     return settings;
+  }
+
+  /// The adaptive alternative of `settings`, whose fields a test tweaks.
+  atstep::AdaptiveSteps& adaptive_of(atstep::Settings& settings)
+  {
+    return std::get<atstep::AdaptiveSteps>(settings.steps);
   }
 
   /// StepError values whose every estimate is `value`.
@@ -71,8 +78,12 @@ TEST_CASE("controller: the first step is a thousandth of the span, bounded by "
   CHECK_NEAR(controller.first_step(1e6), 0.5e-6, 1e-12);
 
   // The largest step is a tenth of the span, the automatic maximum step
-  // constraint COMSOL reports (60 s over 600 s).
-  CHECK_NEAR(controller.largest_step(), 60.0, 1e-12);
+  // constraint COMSOL reports (60 s over 600 s): the startup doubles until it
+  // binds.
+  controller.begin(10.0);
+  const std::vector<double> grown = sequence(controller, 1e-9, 6);
+  CHECK_EQ(grown.size(), std::size_t {6});
+  CHECK_NEAR(grown.back(), 60.0, 1e-12);
 }
 
 TEST_CASE(
@@ -156,7 +167,6 @@ TEST_CASE(
     controller.step_size(),
     step * 0.9 * std::pow(2.0 * 4.0 + 1e-4, -1.0 / static_cast<double>(order + 1)),
     1e-9);
-  CHECK_EQ(controller.failures(), 1);
 
   const double retried = controller.step_size();
   controller.begin_attempt(retried, controller.order());
@@ -167,7 +177,6 @@ TEST_CASE(
   controller.begin_attempt(third, controller.order());
   controller.reject(errors(4.0), third);
   CHECK_EQ(controller.order(), 1);
-  CHECK_EQ(controller.rejections(), 3);
 }
 
 TEST_CASE("controller: a failed solve takes a quarter of the step")
@@ -230,7 +239,7 @@ TEST_CASE("controller: the order is raised only once the step has settled")
 TEST_CASE("controller: the order never leaves its range")
 {
   atstep::Settings settings = settings_with(3);
-  settings.min_order = 2;
+  adaptive_of(settings).min_order = 2;
   atstep::detail::StepController controller(settings, 10.0);
   controller.begin(0.01);
   for (int n = 0; n < 20; ++n) {
@@ -264,70 +273,131 @@ TEST_CASE("controller: manual stepping ignores the error and keeps its step")
 TEST_CASE("controller: the largest step bounds the growth")
 {
   atstep::Settings settings = settings_with(2);
-  settings.max_step_fraction = 0.01;
+  adaptive_of(settings).max_step = atstep::ConstantMaxStep {0.01};
   atstep::detail::StepController controller(settings, 10.0);
-  CHECK_NEAR(controller.largest_step(), 0.1, 1e-12);
   controller.begin(0.006);
   const std::vector<double> sizes = sequence(controller, 1e-9, 8);
+  CHECK_NEAR(sizes.back(), 0.1, 1e-12);
   for (double size : sizes)
-    CHECK(size <= controller.largest_step() * (1.0 + 1e-12));
+    CHECK(size <= 0.1 * (1.0 + 1e-12));
 }
 
 TEST_CASE("controller: a setting that cannot be run is refused")
 {
   atstep::Settings settings;
-  settings.max_order = 6;
+  adaptive_of(settings).max_order = 6;
   CHECK_THROWS(atstep::detail::StepController(settings, 1.0));
 
   settings = atstep::Settings {};
-  settings.min_order = 4;
-  settings.max_order = 2;
+  adaptive_of(settings).min_order = 4;
   CHECK_THROWS(atstep::detail::StepController(settings, 1.0));
 
   settings = atstep::Settings {};
-  settings.stepping = atstep::ManualStep {0.0, 2};
+  settings.steps = atstep::ManualSteps {0.0, 2};
   CHECK_THROWS(atstep::detail::StepController(settings, 1.0));
 
   settings = atstep::Settings {};
-  settings.stepping = atstep::ManualStep {0.1, 6};
+  settings.steps = atstep::ManualSteps {0.1, 6};
   CHECK_THROWS(atstep::detail::StepController(settings, 1.0));
 
   settings = atstep::Settings {};
-  settings.relative_tolerance = 0.0;
+  settings.error.relative = 0.0;
   CHECK_THROWS(atstep::detail::StepController(settings, 1.0));
+
+  // A smallest step past the maximum of a constant constraint is refused by the
+  // validation itself.
+  settings = atstep::Settings {};
+  adaptive_of(settings).max_step = atstep::ConstantMaxStep {0.01};
+  adaptive_of(settings).min_step_fraction = 0.02;
+  CHECK_THROWS(atstep::validate(settings));
 
   CHECK_THROWS(atstep::detail::StepController(atstep::Settings {}, 0.0));
+}
+
+TEST_CASE("controller: every range check of the validation rejects its boundary")
+{
+  const auto rejects = [](auto tweak) {
+    atstep::Settings settings;
+    tweak(settings);
+    CHECK_THROWS(atstep::validate(settings));
+  };
+
+  rejects([](atstep::Settings& s) { s.error.absolute_factor = -0.1; });
+  rejects([](atstep::Settings& s) { s.error.scale = {-1.0}; });
+  rejects([](atstep::Settings& s) {
+    s.error.relative = 1e300;
+    s.error.absolute_factor = 1e300; // their product overflows
+  });
+  rejects([](atstep::Settings& s) { adaptive_of(s).initial_step_fraction = 0.0; });
+  rejects([](atstep::Settings& s) { adaptive_of(s).min_step_fraction = 0.0; });
+  rejects([](atstep::Settings& s) {
+    adaptive_of(s).max_step = atstep::ConstantMaxStep {-0.1};
+  });
+  rejects([](atstep::Settings& s) { adaptive_of(s).min_order = 0; });
+  rejects([](atstep::Settings& s) { adaptive_of(s).max_order = 0; });
+  rejects([](atstep::Settings& s) {
+    adaptive_of(s).min_order = 2;
+    adaptive_of(s).max_order = 1; // below the minimum
+  });
+  rejects([](atstep::Settings& s) { s.initialization.fraction = 0.0; });
+  rejects([](atstep::Settings& s) { s.steps = atstep::ManualSteps {0.1, 0}; });
 }
 
 TEST_CASE("controller: nonfinite settings and reversed bounds are refused")
 {
   for (double value : {std::numeric_limits<double>::infinity(),
          std::numeric_limits<double>::quiet_NaN()}) {
-    for (auto field : {&atstep::Settings::relative_tolerance,
-           &atstep::Settings::absolute_factor,
-           &atstep::Settings::first_step_fraction,
-           &atstep::Settings::max_step_fraction,
-           &atstep::Settings::min_step_fraction,
-           &atstep::Settings::init_step_fraction}) {
+    {
       atstep::Settings settings;
-      settings.*field = value;
+      settings.error.relative = value;
       CHECK_THROWS(atstep::validate(settings));
     }
-    atstep::Settings scaled;
-    scaled.absolute_tolerance = atstep::ScaledAbsoluteTolerance {{value}};
-    CHECK_THROWS(atstep::validate(scaled));
-    atstep::Settings manual;
-    manual.stepping = atstep::ManualStep {value, 2};
-    CHECK_THROWS(atstep::validate(manual));
+    {
+      atstep::Settings settings;
+      settings.error.absolute_factor = value;
+      CHECK_THROWS(atstep::validate(settings));
+    }
+    {
+      atstep::Settings settings;
+      adaptive_of(settings).initial_step_fraction = value;
+      CHECK_THROWS(atstep::validate(settings));
+    }
+    {
+      atstep::Settings settings;
+      adaptive_of(settings).max_step = atstep::ConstantMaxStep {value};
+      CHECK_THROWS(atstep::validate(settings));
+    }
+    {
+      atstep::Settings settings;
+      adaptive_of(settings).min_step_fraction = value;
+      CHECK_THROWS(atstep::validate(settings));
+    }
+    {
+      atstep::Settings settings;
+      settings.initialization.fraction = value;
+      CHECK_THROWS(atstep::validate(settings));
+    }
+    {
+      atstep::Settings settings;
+      settings.error.scale = {value};
+      CHECK_THROWS(atstep::validate(settings));
+    }
+    {
+      atstep::Settings manual;
+      manual.steps = atstep::ManualSteps {value, 2};
+      CHECK_THROWS(atstep::validate(manual));
+    }
     CHECK_THROWS(atstep::detail::StepController(atstep::Settings {}, value));
     atstep::detail::StepErrors error;
     error.test = value;
     CHECK(not error.passed());
   }
   atstep::Settings settings;
-  settings.min_step_fraction = 0.2;
+  adaptive_of(settings).min_step_fraction = 0.2;
   CHECK_THROWS(atstep::detail::StepController(settings, 1.0));
-  settings.max_step_fraction = 0.0; // no maximum constraint
-  const atstep::detail::StepController controller(settings, 1.0);
-  CHECK(controller.largest_step() > 1.0);
+  // No maximum step constraint: nothing is left to compare the smallest with.
+  adaptive_of(settings).max_step = atstep::UnlimitedMaxStep {};
+  atstep::detail::StepController controller(settings, 1.0);
+  controller.begin(5.0);
+  CHECK(controller.step_size() > 1.0);
 }

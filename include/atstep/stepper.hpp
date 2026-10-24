@@ -18,6 +18,7 @@
 #include <string>
 #include <type_traits>
 #include <utility>
+#include <variant>
 
 namespace atstep {
 
@@ -216,13 +217,14 @@ namespace atstep {
 
     /// Prepare the run: the state at `time`, integrated to `end_time`.
     ///
-    /// The state is advanced by two artificial backward-Euler steps of
-    /// `init_step_fraction * first_step_fraction` of the span (of the
-    /// manual step in manual mode) — COMSOL's measured consistent
-    /// initialization, which reconciles the initial values with the
-    /// constraints of the equations and gives the time derivative the first
-    /// step's size is read from. That step is a solve of the caller's, and
-    /// its result is the level the run starts at.
+    /// The state is advanced by two artificial backward-Euler steps, each
+    /// `initialization.fraction` of the run's initial step: the span times
+    /// `AdaptiveSteps::initial_step_fraction`, or the manual step times the
+    /// library's default fraction. That is COMSOL's measured consistent
+    /// initialization, which reconciles the initial values with the constraints
+    /// of the equations and gives the time derivative the first step's size is
+    /// read from. Each step is a solve of the caller's, and the result of the
+    /// second is the level the run starts at.
     void start(double time, const State& initial, double end_time)
     {
       if (not std::isfinite(time) or not std::isfinite(end_time) or not(end_time > time))
@@ -235,9 +237,20 @@ namespace atstep {
       controller_.emplace(settings_, span);
       configure_norm();
 
-      const std::optional<ManualStep> manual = settings_.manual();
-      const double probe = (manual ? manual->step : span)
-        * settings_.first_step_fraction * settings_.init_step_fraction;
+      // The probe is the initial step of the alternative the run steps in, times
+      // the fraction of it the initialization takes. A manual run has no initial
+      // step fraction, and is scaled by the library default, as it always was
+      // (doc/refactor-plan.md D26).
+      const auto [probe_step, probe_fraction] = std::visit(
+        [span](const auto& steps) -> std::pair<double, double> {
+          using Alternative = std::decay_t<decltype(steps)>;
+          if constexpr (std::is_same_v<Alternative, ManualSteps>)
+            return {steps.step, default_initial_step_fraction};
+          else
+            return {span, steps.initial_step_fraction};
+        },
+        settings_.steps);
+      const double probe = probe_step * probe_fraction * settings_.initialization.fraction;
       const double cj = 1.0 / probe;
       const double first_time = time + probe;
       const double initialized_time = time + 2.0 * probe;
@@ -284,7 +297,7 @@ namespace atstep {
       // Zero only the columns the configured order can reach: the scheme
       // reads `phi[0..max_order+1]`, and a state allocated here is a
       // state held for the whole run.
-      for (int j = 0; j <= settings_.max_order + 1; ++j) {
+      for (int j = 0; j <= controller_->order_limit() + 1; ++j) {
         State& column = accepted_.phi[static_cast<std::size_t>(j)];
         column = level;
         detail::axpy(column, -1.0, level);
@@ -682,9 +695,10 @@ namespace atstep {
     {
       if constexpr (std::is_same_v<Norm, detail::WeightedRmsNorm>) {
         if (not controller_) {
-          norm_.relative = settings_.relative_tolerance;
-          norm_.absolute = settings_.relative_tolerance * settings_.absolute_factor;
-          norm_.absolute_tolerance = settings_.absolute_tolerance;
+          norm_.relative = settings_.error.relative;
+          norm_.absolute = settings_.error.relative * settings_.error.absolute_factor;
+          norm_.scaled = settings_.error.scaled;
+          norm_.scale = settings_.error.scale;
         }
         norm_.step_index = controller_ ? static_cast<std::size_t>(controller_->steps()) : 0;
       }

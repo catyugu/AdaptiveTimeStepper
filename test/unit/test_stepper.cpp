@@ -11,6 +11,7 @@
 #include <limits>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -67,8 +68,14 @@ namespace {
   atstep::Settings manual_settings(int order, double step)
   {
     atstep::Settings settings;
-    settings.stepping = atstep::ManualStep {step, order};
+    settings.steps = atstep::ManualSteps {step, order};
     return settings;
+  }
+
+  /// The adaptive alternative of `settings`, whose fields a test tweaks.
+  atstep::AdaptiveSteps& adaptive_of(atstep::Settings& settings)
+  {
+    return std::get<atstep::AdaptiveSteps>(settings.steps);
   }
 
   /// Integrate y' = -y to or past `end` at a fixed order and step, priming the
@@ -115,7 +122,7 @@ TEST_CASE("request: the derivative is the affine form its weights define")
   // initialization step alone puts at 1e7 — so the comparison is against the
   // size of the terms, not against zero.
   atstep::Settings settings;
-  settings.max_order = 3;
+  adaptive_of(settings).max_order = 3;
   double worst = 0.0;
   int evaluated = 0;
   atstep::TimeStepper<Scalar> stepper(settings,
@@ -227,8 +234,8 @@ TEST_CASE(
   // small multiple of it, and a tighter tolerance costs more steps.
   const auto run = [](double tolerance) {
     atstep::Settings settings;
-    settings.relative_tolerance = tolerance;
-    settings.max_order = 2;
+    settings.error.relative = tolerance;
+    adaptive_of(settings).max_order = 2;
     atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
     stepper.start(0.0, Scalar {1.0}, 10.0);
     std::vector<double> times;
@@ -322,8 +329,8 @@ TEST_CASE("stepper: the interpolation reproduces the polynomial through the "
 TEST_CASE("stepper: the strict mode ends every step at an output time")
 {
   atstep::Settings settings;
-  settings.stepping = atstep::AutomaticStep {atstep::StepPlacement::strict};
-  settings.max_order = 2;
+  adaptive_of(settings).placement = atstep::Strict {};
+  adaptive_of(settings).max_order = 2;
   atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
   stepper.start(0.0, Scalar {1.0}, 1.0);
   std::vector<double> times {0.0, 0.1, 0.2, 0.35, 0.5, 0.75, 1.0};
@@ -350,9 +357,9 @@ TEST_CASE("stepper: the intermediate mode puts a step in every subinterval")
   // COMSOL's "Intermediate": at least one step in each interval between two
   // output times, whatever the tolerance would let the solver skip.
   atstep::Settings settings;
-  settings.stepping = atstep::AutomaticStep {atstep::StepPlacement::intermediate};
-  settings.max_order = 2;
-  settings.relative_tolerance = 1e-1; // steps large enough to jump an interval
+  adaptive_of(settings).placement = atstep::Intermediate {};
+  adaptive_of(settings).max_order = 2;
+  settings.error.relative = 1e-1; // steps large enough to jump an interval
   atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
   stepper.start(0.0, Scalar {1.0}, 10.0);
   const std::vector<double> times {0.0, 2.5, 5.0, 7.5, 10.0};
@@ -374,8 +381,8 @@ TEST_CASE(
   "stepper: the free mode steps over an output time and interpolates it")
 {
   atstep::Settings settings;
-  settings.max_order = 2;
-  settings.relative_tolerance = 1e-1;
+  adaptive_of(settings).max_order = 2;
+  settings.error.relative = 1e-1;
   atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
   stepper.start(0.0, Scalar {1.0}, 10.0);
   std::vector<double> times {0.0, 3.3, 6.6, 10.0};
@@ -397,18 +404,18 @@ TEST_CASE("stepper: the store modes choose what is reported")
 {
   std::vector<double> times {
     0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0};
-  const auto count = [&times](atstep::StoreMode mode) {
+  const auto count = [&times](atstep::Storage storage) {
     atstep::Settings settings;
-    settings.store_mode = mode;
-    settings.relative_tolerance = 1e-2;
+    settings.storage = storage;
+    settings.error.relative = 1e-2;
     atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
     stepper.start(0.0, Scalar {1.0}, 10.0);
     const auto report = stepper.run(times);
     return std::pair<int, int> {report.stored, report.steps};
   };
-  const auto interpolated = count(atstep::StoreMode::interpolate);
-  const auto closest = count(atstep::StoreMode::closest);
-  const auto steps = count(atstep::StoreMode::steps);
+  const auto interpolated = count(atstep::Interpolate {});
+  const auto closest = count(atstep::Closest {});
+  const auto steps = count(atstep::Steps {});
   CHECK_EQ(interpolated.first, 11);
   CHECK_EQ(closest.first, 11);
   // Stored as steps: the initial state and every accepted step.
@@ -419,7 +426,7 @@ TEST_CASE("stepper: the store modes choose what is reported")
 TEST_CASE("stepper: a solve that does not converge is retried at a quarter")
 {
   atstep::Settings settings;
-  settings.max_order = 1;
+  adaptive_of(settings).max_order = 1;
   atstep::TimeStepper<Scalar> stepper(
     settings, [](const atstep::StepRequest<Scalar>& request, Scalar& y) {
       // The third attempt of the run fails, as a nonlinear solve whose
@@ -470,7 +477,7 @@ TEST_CASE("stepper: a state and a norm of the caller's own")
     return std::abs(error.v) / (1e-3 + 0.01 * std::abs(reference.v));
   };
   atstep::Settings settings;
-  settings.max_order = 2;
+  adaptive_of(settings).max_order = 2;
   atstep::TimeStepper<Own, decltype(norm)> stepper(
     settings,
     [](const atstep::StepRequest<Own>& request, Own& y) {
@@ -646,7 +653,7 @@ TEST_CASE("request: a step's request cannot be retained by value")
 TEST_CASE("stepper: advance takes one acceptable step and moves the run")
 {
   atstep::Settings settings;
-  settings.max_order = 2;
+  adaptive_of(settings).max_order = 2;
   atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
   stepper.start(0.0, Scalar {1.0}, 1.0);
   const double start = stepper.time();
@@ -780,7 +787,7 @@ TEST_CASE("stepper: a start time the run cannot integrate from is refused")
   CHECK(stepper.advance().time > 0.0);
 
   atstep::Settings settings;
-  settings.init_step_fraction = 1e3;
+  settings.initialization.fraction = 1e3;
   int probe_calls = 0;
   atstep::TimeStepper<Scalar> oversized(settings,
     [&](const atstep::StepRequest<Scalar>& request, Scalar& y) {

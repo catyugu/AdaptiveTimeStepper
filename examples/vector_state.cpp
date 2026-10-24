@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -66,9 +67,10 @@ int main()
 {
   const Brusselator reaction;
   atstep::Settings settings;
-  settings.max_order = 2; // the order COMSOL's transport physics default to
-  settings.relative_tolerance = 1e-6;
-  settings.absolute_factor = 1.0; // a species that starts at zero has no scale
+  auto& adaptive = std::get<atstep::AdaptiveSteps>(settings.steps);
+  adaptive.max_order = 2; // the order COMSOL's transport physics default to
+  settings.error.relative = 1e-6;
+  settings.error.absolute_factor = 1.0; // a species that starts at zero has no scale
 
   atstep::TimeStepper<std::vector<double>> stepper(
     settings,

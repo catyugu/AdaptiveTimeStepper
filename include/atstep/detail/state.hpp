@@ -2,15 +2,12 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-#include "../settings.hpp"
-
 #include <cmath>
 #include <concepts>
 #include <cstddef>
 #include <limits>
 #include <stdexcept>
 #include <type_traits>
-#include <variant>
 #include <vector>
 
 namespace atstep::detail {
@@ -65,8 +62,8 @@ namespace atstep::detail {
   }
 
   /// Weighted RMS: sqrt(mean((error_i / (A_i + relative*abs(y_i)))^2)).
-  /// `A_i` is `absolute` everywhere under `FixedAbsoluteTolerance`, and under
-  /// `ScaledAbsoluteTolerance`, for accepted-step index j:
+  /// `A_i` is `absolute` everywhere when `scaled` is false, and when it is true,
+  /// for accepted-step index j:
   ///
   ///   A_i = absolute * ((2-exp(-j/5))*abs(returned_i) + exp(-j/5)*sigma_i).
   ///
@@ -77,7 +74,12 @@ namespace atstep::detail {
   struct WeightedRmsNorm {
     double relative = 1e-2;
     double absolute = 1e-3;
-    AbsoluteTolerance absolute_tolerance = FixedAbsoluteTolerance {};
+    /// The scaled form of COMSOL's absolute tolerance, which blends the magnitude
+    /// of the returned solution with `scale`. `TimeStepper` sets it from
+    /// `ErrorTest`; the plain form is what a norm on its own starts with.
+    bool scaled = false;
+    /// `sigma_i`; an empty vector, and an index past its end, are one.
+    std::vector<double> scale;
     std::size_t step_index = 0;
 
     template <class State>
@@ -104,13 +106,12 @@ namespace atstep::detail {
       if (n == 0)
         return 0.0;
       const double decay = std::exp(-0.2 * static_cast<double>(step_index));
-      const auto* scaled = std::get_if<ScaledAbsoluteTolerance>(&absolute_tolerance);
       double sum = 0.0;
       for (std::size_t i = 0; i < n; ++i) {
         double limit = absolute;
         if (scaled) {
           const double magnitude = std::abs(scale_reference[i]);
-          const double sigma = i < scaled->scale.size() ? scaled->scale[i] : 1.0;
+          const double sigma = i < scale.size() ? scale[i] : 1.0;
           limit = absolute * ((2.0 - decay) * magnitude + decay * sigma);
         }
         const double weight = limit + relative * std::abs(reference[i]);

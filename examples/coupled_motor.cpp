@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -90,10 +91,11 @@ int main()
 {
   const Motor motor;
   atstep::Settings settings;
-  settings.max_order = 2;
-  settings.relative_tolerance = 1e-6;
-  settings.absolute_tolerance = atstep::FixedAbsoluteTolerance {};
-  settings.interpolate_end_time = false;
+  auto& adaptive = std::get<atstep::AdaptiveSteps>(settings.steps);
+  adaptive.max_order = 2;
+  adaptive.placement = atstep::Free {false};
+  settings.error.relative = 1e-6;
+  settings.error.scaled = false;
   atstep::TimeStepper<State> stepper(settings, motor);
   stepper.start(0.0, State {0.0, 0.0, 0.0}, 60.0);
 

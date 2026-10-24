@@ -10,6 +10,8 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <type_traits>
+#include <variant>
 
 namespace atstep::detail {
 
@@ -47,8 +49,28 @@ namespace atstep::detail {
     void for_each_store(double time, Emit&& emit);
 
   private:
-    StepPlacement placement_;
-    StoreMode store_mode_;
+    /// Where the steps land: the placement alternative of the settings, as the
+    /// two modes below read it.
+    enum class Mode { free,
+      intermediate,
+      strict };
+
+    /// Which output times a completed step stores: the storage alternative of
+    /// the settings.
+    enum class Store { interpolate,
+      closest,
+      steps };
+
+    /// Resolve the two alternatives of `settings` into the members above. It
+    /// runs once per schedule, so that stepping reads no variant.
+    ///
+    /// A manual step is placed as a free one: the step of the model's own is not
+    /// cut to an output time. `Strict` carries no end interpolation, as a step
+    /// of that placement ends at the end time.
+    void resolve(const Settings& settings);
+
+    Mode placement_ = Mode::free;
+    Store store_ = Store::interpolate;
     bool interpolate_end_time_ = true;
     std::span<const double> times_;
     double end_time_ = 0.0;
@@ -73,14 +95,38 @@ namespace atstep::detail {
     return 2.0 * step > remaining ? 0.5 * remaining : step;
   }
 
+  inline void StepSchedule::resolve(const Settings& settings)
+  {
+    const auto read_placement = [this](const auto& placement) {
+      using Alternative = std::decay_t<decltype(placement)>;
+      if constexpr (std::is_same_v<Alternative, Strict>) {
+        placement_ = Mode::strict;
+      }
+      else {
+        placement_ = std::is_same_v<Alternative, Free> ? Mode::free : Mode::intermediate;
+        interpolate_end_time_ = placement.interpolate_end_time;
+      }
+    };
+    const auto read_steps = [this, &read_placement](const auto& steps) {
+      using Alternative = std::decay_t<decltype(steps)>;
+      if constexpr (std::is_same_v<Alternative, ManualSteps>)
+        interpolate_end_time_ = steps.interpolate_end_time;
+      else
+        std::visit(read_placement, steps.placement);
+    };
+    std::visit(read_steps, settings.steps);
+
+    if (std::holds_alternative<Closest>(settings.storage))
+      store_ = Store::closest;
+    else if (std::holds_alternative<atstep::Steps>(settings.storage))
+      store_ = Store::steps;
+  }
+
   inline StepSchedule::StepSchedule(const Settings& settings,
     std::span<const double> output_times,
     double start_time,
     double end_time)
-    : placement_(settings.placement())
-    , store_mode_(settings.store_mode)
-    , interpolate_end_time_(settings.interpolate_end_time)
-    , times_(output_times)
+    : times_(output_times)
     , end_time_(end_time)
   {
     if (output_times.size() < 2)
@@ -97,6 +143,7 @@ namespace atstep::detail {
     // The first output time is the start time, whose value the caller stores
     // before the first step.
     next_ = 1;
+    resolve(settings);
   }
 
   inline StepSchedule::Placement StepSchedule::place(double step,
@@ -107,21 +154,21 @@ namespace atstep::detail {
     const double intermediate_target = intermediate_index < times_.size()
       ? times_[intermediate_index]
       : std::numeric_limits<double>::infinity();
-    const bool intermediate_landing = placement_ == StepPlacement::intermediate and time + step >= intermediate_target;
+    const bool intermediate_landing = placement_ == Mode::intermediate and time + step >= intermediate_target;
 
     switch (placement_) {
-    case StepPlacement::strict:
+    case Mode::strict:
       // COMSOL avoids a tiny remainder: split the last two steps equally if
       // one full proposed step would leave less than one.
       step = landing_step(step, time, target);
       break;
-    case StepPlacement::intermediate:
+    case Mode::intermediate:
       // Every subinterval holds at least one step: this one is cut short to
       // land inside the current one.
       if (intermediate_landing)
         step = (intermediate_target - time) * (1.0 - 4.0 * std::numeric_limits<double>::epsilon());
       break;
-    case StepPlacement::free:
+    case Mode::free:
       break;
     }
     if (not interpolate_end_time_)
@@ -129,8 +176,8 @@ namespace atstep::detail {
 
     const double boundary = intermediate_landing
       ? intermediate_target
-      : (placement_ == StepPlacement::strict ? target : end_time_);
-    const bool snapping = placement_ == StepPlacement::strict or intermediate_landing or not interpolate_end_time_;
+      : (placement_ == Mode::strict ? target : end_time_);
+    const bool snapping = placement_ == Mode::strict or intermediate_landing or not interpolate_end_time_;
     Placement placement {step, std::nullopt};
     if (snapping and std::abs(time + step - boundary) <= 4.0 * std::numeric_limits<double>::epsilon() * (std::abs(time) + std::abs(boundary)))
       placement.boundary = boundary;
@@ -147,7 +194,7 @@ namespace atstep::detail {
     // schedule before callbacks, as all outputs belong to this completed step.
     landed_ = next_ > 0 and time > times_[next_ - 1];
 
-    if (store_mode_ == StoreMode::steps) {
+    if (store_ == Store::steps) {
       // The steps of the run, and none of the output times in between: a run
       // that passed the end time stores its own state there by interpolation.
       const bool interpolated = time > end_time_ and interpolate_end_time_;
@@ -159,7 +206,7 @@ namespace atstep::detail {
       const double target = times_[i];
       // closest reports once per crossed output time, even when several map
       // to the same internal step. The final time can still be interpolated.
-      const bool interpolated = store_mode_ == StoreMode::interpolate
+      const bool interpolated = store_ == Store::interpolate
         or (target == end_time_ and time > end_time_ and interpolate_end_time_);
       emit(interpolated ? target : time, interpolated);
     }

@@ -80,7 +80,7 @@ int main()
   }
 
   atstep::Settings settings; // COMSOL's defaults: rtol 1e-2, orders 1 to 5
-  settings.relative_tolerance = 1e-3;
+  settings.error.relative = 1e-3;
 
   atstep::TimeStepper<std::vector<double>> stepper(
     settings,

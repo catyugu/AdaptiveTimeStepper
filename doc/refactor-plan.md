@@ -828,3 +828,10 @@ F11（事件）、STAB/非线性控制器、`atoludot`、逐变量容差、`Init
 2. **一致性初始化探测**在三条分支上都是两步，手动分支的探测是 `manual_step × 1e-3 × 1e-3`（手动步 0.1 → 1e-7 s），所以 `start()` 里那个"两个分数相乘"的乘积是 COMSOL 自己的算术，不是历史包袱 —— D26 结案为"保持"。
 
 仍未定：被拒尝试是否参与每 N 步的取模；`intermediate`/`strict` 与其它物理接口未覆盖（见证据文档的 limits 一节）。
+
+### 12.4 M1 的落地记录
+
+- **F01 配置树**：验收不是"测试通过"，而是在 `HEAD` 的独立 worktree 里重建基线，逐行比对 22 条 COMSOL 诊断输出——23 位数字全同，不是 1e-8；`ctest` 5/5；`-DATSTEP_WARNINGS_AS_ERRORS=ON` 零警告；删除符号在 `include/`、`test/`、`examples/` 里零命中（README 的 14 处都在迁移表内）。
+- **类名重命名推迟到 M4**：`Settings→BdfSettings`、`TimeStepper→BdfStepper`、`SecondOrderStepper→SecondOrderBdfStepper` 不在 M1 做。理由：现在只有一种方法，这三个名字不产生歧义；重命名会把迁移表、README 与全部示例再洗一遍而没有语义收益。等 `AlphaStepper` 真正落地时，同一次破坏性变更里一并改名，成本相同、噪声更少。
+- **F01 实施中打回的两点**（均已修）：清洗 `phi` 的循环一度改成 `j < max_levels`，与 `doc/design.md` 的"未用到的更高列保持空"冲突（`max_order = 2` 时白占 4 列），改为 `controller_->order_limit() + 1`；三处注释与 sweep 的实测冲突（初始步的 end time、自动最大步、手动探测），改为引用 `doc/evidence/stepping-sweep.md`。
+- **留给后续 PR**：`RunReport` 字段与计数器归一、`interpolate` 拆成两个方法、输出落点去掉 `boundary` 回填（P3）；二阶适配瘦身（P4）。

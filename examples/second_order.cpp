@@ -75,7 +75,7 @@ int main()
 {
   const Oscillator oscillator;
   atstep::Settings settings;
-  settings.relative_tolerance = 1e-6;
+  settings.error.relative = 1e-6;
 
   atstep::SecondOrderStepper<Oscillator::Displacement> stepper(
     settings,

@@ -6,6 +6,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -52,7 +53,7 @@ namespace {
   atstep::Settings manual(int order, double step)
   {
     atstep::Settings settings;
-    settings.stepping = atstep::ManualStep {step, order};
+    settings.steps = atstep::ManualSteps {step, order};
     return settings;
   }
 
@@ -199,7 +200,7 @@ TEST_CASE("second order: the derivative levels are the affine forms of the weigh
   // size of the level rather than against zero.
   const Oscillator oscillator;
   atstep::Settings settings;
-  settings.max_order = 2;
+  std::get<atstep::AdaptiveSteps>(settings.steps).max_order = 2;
   double worst = 0.0;
   int evaluated = 0;
   bool squared = true;
@@ -250,7 +251,7 @@ TEST_CASE("second order: the hooks report the velocity of the level they see")
 {
   const Oscillator oscillator;
   atstep::Settings settings;
-  settings.max_order = 3;
+  std::get<atstep::AdaptiveSteps>(settings.steps).max_order = 3;
   atstep::SecondOrderStepper<State> stepper(
     settings, condensed_solve(oscillator));
   stepper.start(0.0, State {oscillator.u0}, State {oscillator.v0}, 2.0);
@@ -295,7 +296,7 @@ TEST_CASE("second order: an adaptive run meets its tolerance")
   // derivative reports.
   const Oscillator oscillator;
   atstep::Settings settings;
-  settings.relative_tolerance = 1e-8;
+  settings.error.relative = 1e-8;
   atstep::SecondOrderStepper<State> stepper(
     settings, condensed_solve(oscillator));
   stepper.start(0.0, State {oscillator.u0}, State {oscillator.v0}, 10.0);
@@ -336,7 +337,7 @@ TEST_CASE("second order: the velocity the run starts from is an initial conditio
   // consistent initialization leaves.
   const Oscillator oscillator {0.0, 1.0};
   atstep::Settings settings;
-  settings.relative_tolerance = 1e-8;
+  settings.error.relative = 1e-8;
   atstep::SecondOrderStepper<State> stepper(
     settings, condensed_solve(oscillator));
   stepper.start(0.0, State {oscillator.u0}, State {oscillator.v0}, 2.0);
@@ -376,7 +377,7 @@ TEST_CASE("second order: a run of no solve is refused, and a norm of the caller'
     return std::abs(error.v) / (1e-3 + 0.01 * std::abs(reference.v));
   };
   atstep::Settings settings;
-  settings.max_order = 2;
+  std::get<atstep::AdaptiveSteps>(settings.steps).max_order = 2;
   atstep::SecondOrderStepper<Own, decltype(norm)> stepper(
     settings,
     [](const atstep::SecondOrderRequest<Own>& request, Own& u) {

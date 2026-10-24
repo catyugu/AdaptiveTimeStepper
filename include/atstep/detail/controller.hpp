@@ -42,15 +42,15 @@ namespace atstep::detail {
   /// Order increases require enough steps at constant size and order.
   class StepController {
   public:
-    /// @param[in] settings the method's settings: its order range and its
-    /// step mode.
+    /// @param[in] settings the method's settings: the alternative it steps in,
+    /// and that alternative's order range, initial step and step bounds.
     /// @param[in] span the span the run integrates, from which the first
     /// step and the largest one are taken.
     StepController(const Settings& settings, double span);
 
     /// The first step of the run, from the weighted norm `derivative_norm`
     /// of the time derivative the initial state starts with: at most
-    /// `first_step_fraction` of the span, and at most `1/2 /
+    /// `initial_step_fraction` of the span, and at most `1/2 /
     /// derivative_norm` — the rule COMSOL states as `DT yp_norm <= 1/2`.
     double first_step(double derivative_norm) const;
 
@@ -60,20 +60,20 @@ namespace atstep::detail {
     /// The step size of the next step.
     double step_size() const
     {
-      return manual_ ? manual_step_ : h_;
+      return h_;
     }
 
     /// The order the next step is taken at.
     int order() const
     {
-      return manual_ ? manual_->order : order_;
+      return is_manual_ ? manual_order_ : order_;
     }
 
     /// Whether the local error governs the step. It does not in a manual run,
     /// where the step is the model's own.
     bool error_controlled() const
     {
-      return not manual_;
+      return not is_manual_;
     }
 
     /// The smallest step the controller will propose, below which the error
@@ -83,10 +83,12 @@ namespace atstep::detail {
       return smallest_;
     }
 
-    /// The largest step the controller will propose.
-    double largest_step() const noexcept
+    /// The highest order a step may be taken at, so the last column the
+    /// scaled-difference table is read up to: the table reaches
+    /// `0..order_limit() + 1`.
+    int order_limit() const noexcept
     {
-      return largest_;
+      return max_order_;
     }
 
     /// Announce an attempt: the step of size `step` at `order`, which the
@@ -106,19 +108,10 @@ namespace atstep::detail {
     /// cut to a quarter, the reduction IDA takes for a convergence failure.
     void reject_convergence(double step);
 
-    // --- diagnostics, for tests and logs ---
+    /// The accepted steps of the run.
     int steps() const noexcept
     {
       return steps_;
-    }
-    int rejections() const noexcept
-    {
-      return rejections_;
-    }
-    /// The failures of the step being attempted.
-    int failures() const noexcept
-    {
-      return failures_;
     }
 
   private:
@@ -130,15 +123,16 @@ namespace atstep::detail {
     /// of `error` at `order` (see the deadbeat band above).
     double factor(double error, int order) const;
 
-    /// The configuration the control reads, taken from `Settings`. The
-    /// state-sized tolerances of one stay with the stepper and the norm.
-    ///
-    /// The manual step of the run, when the model takes it rather than the
-    /// solver: the size `begin` restarts at and the order it is taken at.
-    std::optional<ManualStep> manual_;
+    /// The configuration the control reads, resolved from the alternative the
+    /// run steps in. A manual run holds its step and its order, and takes no
+    /// maximum step constraint; the error-controlled one holds the order range
+    /// and the fractions its first step and its smallest step come from.
+    bool is_manual_ = false;
+    double manual_step_ = 0.0;
+    int manual_order_ = 2;
     int min_order_ = 1;
-    int max_order_ = 5;
-    double first_step_fraction_ = 1e-3;
+    int max_order_ = atstep::max_order;
+    double first_step_fraction_ = default_initial_step_fraction;
 
     double span_ = 0.0;
     double largest_ = 0.0;
@@ -147,10 +141,6 @@ namespace atstep::detail {
     /// The step proposed for the next step, and the one the last accepted
     /// step was taken at.
     double h_ = 0.0;
-    /// The size of the manual step in effect, which `begin` takes from
-    /// `manual_`. A manual step is not held to the tolerance, so the only
-    /// thing that changes it is a solve that did not converge.
-    double manual_step_ = 0.0;
     double used_ = 0.0;
     /// The order of the next step, and of the last accepted one.
     int order_ = 1;
@@ -158,7 +148,6 @@ namespace atstep::detail {
     /// The steps taken at this size and order, and accepted over the run.
     int ns_ = 0;
     int steps_ = 0;
-    int rejections_ = 0;
     /// The failures of the step being attempted.
     int failures_ = 0;
     /// Whether the startup phase is still running.
@@ -182,22 +171,38 @@ namespace atstep::detail {
   } // namespace ida
 
   inline StepController::StepController(const Settings& settings, double span)
-    : manual_(settings.manual())
-    , min_order_(settings.min_order)
-    , max_order_(settings.max_order)
-    , first_step_fraction_(settings.first_step_fraction)
-    , span_(span)
-    , largest_(span * settings.max_step_fraction)
-    , smallest_(span * settings.min_step_fraction)
+    : span_(span)
   {
     validate(settings);
     if (not std::isfinite(span) or not(span > 0.0))
       throw std::invalid_argument(
         "atstep: the span of a run must be positive");
-    if (not(settings.max_step_fraction > 0.0))
+    if (const auto* manual = std::get_if<ManualSteps>(&settings.steps)) {
+      is_manual_ = true;
+      manual_step_ = manual->step;
+      manual_order_ = manual->order;
       largest_ = std::numeric_limits<double>::max();
-    if (not std::isfinite(largest_) or not std::isfinite(smallest_) or not(smallest_ > 0.0))
-      throw std::invalid_argument("atstep: step bounds must be finite and positive");
+      smallest_ = span * default_min_step_fraction;
+    }
+    else {
+      const auto& adaptive = std::get<AdaptiveSteps>(settings.steps);
+      min_order_ = adaptive.min_order;
+      max_order_ = adaptive.max_order;
+      first_step_fraction_ = adaptive.initial_step_fraction;
+      smallest_ = span * adaptive.min_step_fraction;
+      if (const auto* constant = std::get_if<ConstantMaxStep>(&adaptive.max_step))
+        largest_ = span * constant->fraction;
+      else if (std::holds_alternative<UnlimitedMaxStep>(adaptive.max_step))
+        largest_ = std::numeric_limits<double>::max();
+      else
+        largest_ = span * automatic_max_step_fraction;
+    }
+    // The bounds are read as std::clamp's, which requires the first not to
+    // exceed the second.
+    if (not std::isfinite(largest_) or not std::isfinite(smallest_)
+      or not(smallest_ > 0.0) or smallest_ > largest_)
+      throw std::invalid_argument(
+        "atstep: the smallest step must be finite, positive and no larger than the largest");
   }
 
   inline double StepController::first_step(double derivative_norm) const
@@ -210,14 +215,12 @@ namespace atstep::detail {
 
   inline void StepController::begin(double h)
   {
-    h_ = std::clamp(h, smallest_, largest_);
-    manual_step_ = manual_ ? manual_->step : 0.0;
+    h_ = is_manual_ ? manual_step_ : std::clamp(h, smallest_, largest_);
     order_ = std::clamp(min_order_, 1, max_order_);
     used_order_ = 0;
     used_ = 0.0;
     ns_ = 0;
     steps_ = 0;
-    rejections_ = 0;
     failures_ = 0;
     phase_ = 0;
   }
@@ -264,7 +267,7 @@ namespace atstep::detail {
     used_order_ = order_;
     used_ = step;
 
-    if (manual_)
+    if (is_manual_)
       return; // the step and the order are the model's
 
     const int knew = suggested_order(errors);
@@ -334,12 +337,6 @@ namespace atstep::detail {
 
   inline void StepController::reject(const StepErrors& errors, double step)
   {
-    ++rejections_;
-    if (manual_) {
-      manual_step_ = std::max(0.5 * step, smallest_);
-      return;
-    }
-
     // A failed step ends the startup phase, and its retry is smaller: by
     // the asymptotic factor at the first failure, by a quarter of the step
     // from the second on, and at the order 1 from the third.
@@ -365,11 +362,6 @@ namespace atstep::detail {
 
   inline void StepController::reject_convergence(double step)
   {
-    ++rejections_;
-    if (manual_) {
-      manual_step_ = std::max(ida::eta_min_ef * step, smallest_);
-      return;
-    }
     phase_ = 1;
     h_ = std::max(ida::eta_min_ef * step, smallest_);
   }

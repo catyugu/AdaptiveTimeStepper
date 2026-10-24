@@ -53,11 +53,11 @@ namespace {
 TEST_CASE("comsol: reciprocal thermoelastic trajectories, derivatives and dissipation agree")
 {
   atstep::Settings settings;
-  settings.relative_tolerance = 1e-7;
-  settings.absolute_tolerance = atstep::FixedAbsoluteTolerance {};
-  settings.init_step_fraction = 1e-5;
-  settings.interpolate_end_time = false;
-  settings.store_mode = atstep::StoreMode::steps;
+  settings.error.relative = 1e-7;
+  settings.error.scaled = false;
+  settings.initialization.fraction = 1e-5;
+  std::get<atstep::AdaptiveSteps>(settings.steps).placement = atstep::Free {false};
+  settings.storage = atstep::Steps {};
   State last_derivative;
   atstep::TimeStepper<State> stepper(settings,
     [&](const atstep::StepRequest<State>& request, State& y) {
