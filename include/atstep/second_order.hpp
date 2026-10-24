@@ -217,19 +217,6 @@ namespace atstep {
         throw std::invalid_argument("atstep: a run needs a solve");
     }
 
-    const Settings& settings() const noexcept
-    {
-      return inner_.settings();
-    }
-    double start_time() const noexcept
-    {
-      return inner_.start_time();
-    }
-    double end_time() const noexcept
-    {
-      return inner_.end_time();
-    }
-
     /// Prepare the run: the displacement and the velocity at `time`,
     /// integrated to `end_time`.
     void start(double time,

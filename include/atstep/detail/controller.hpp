@@ -115,12 +115,6 @@ namespace atstep::detail {
     {
       return rejections_;
     }
-    /// 0 while the startup phase runs, 1 once the estimates select the
-    /// step.
-    int phase() const noexcept
-    {
-      return phase_;
-    }
     /// The failures of the step being attempted.
     int failures() const noexcept
     {

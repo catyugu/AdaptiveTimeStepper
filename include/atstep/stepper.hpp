@@ -173,8 +173,6 @@ namespace atstep {
     int failed_solves = 0;
     int stored = 0;
     int max_order = 1;
-    double first_step = 0.0;
-    double last_step = 0.0;
     double final_time = 0.0;
   };
 
@@ -213,12 +211,7 @@ namespace atstep {
       validate(settings_);
       if (not solve_)
         throw std::invalid_argument("atstep: a run needs a solve");
-      if constexpr (std::is_same_v<Norm, detail::WeightedRmsNorm>) {
-        norm_.relative = settings_.relative_tolerance;
-        norm_.absolute = settings_.relative_tolerance * settings_.absolute_factor;
-        norm_.scaled = settings_.scale_absolute_tolerance;
-        norm_.scale = settings_.absolute_scale;
-      }
+      configure_norm();
     }
 
     /// Prepare the run: the state at `time`, integrated to `end_time`.
@@ -240,8 +233,7 @@ namespace atstep {
       started_ = false;
       const double span = end_time - time;
       controller_.emplace(settings_, span);
-      if constexpr (std::is_same_v<Norm, detail::WeightedRmsNorm>)
-        norm_.step_index = 0;
+      configure_norm();
 
       const double probe = (settings_.step_mode == StepMode::manual
                                ? settings_.manual_step
@@ -309,19 +301,6 @@ namespace atstep {
       start_time_ = time;
       end_time_ = end_time;
       started_ = true;
-    }
-
-    const Settings& settings() const noexcept
-    {
-      return settings_;
-    }
-    double start_time() const noexcept
-    {
-      return start_time_;
-    }
-    double end_time() const noexcept
-    {
-      return end_time_;
     }
 
     /// The time the run has reached: the newest accepted level's.
@@ -396,9 +375,6 @@ namespace atstep {
         time = record.time;
         ++report.steps;
         report.max_order = std::max(report.max_order, record.order);
-        if (report.steps == 1)
-          report.first_step = record.step;
-        report.last_step = record.step;
         report.final_time = time;
         if (hooks.on_step)
           hooks.on_step(record, accepted_.state);
@@ -625,8 +601,7 @@ namespace atstep {
       accepted_.psi = trial.psi;
       controller_->accept(trial.errors, trial.step);
       output_.reference = work_.solution;
-      if constexpr (std::is_same_v<Norm, detail::WeightedRmsNorm>)
-        norm_.step_index = static_cast<std::size_t>(controller_->steps());
+      configure_norm();
       started_ = true;
     }
 
@@ -700,6 +675,23 @@ namespace atstep {
       return errors;
     }
 
+    /// Point the norm at the run: the tolerances of its settings, copied once,
+    /// and the steps it has accepted, which its scaled absolute tolerance
+    /// follows. A norm of the caller's holds neither, and this is nothing for
+    /// it.
+    void configure_norm()
+    {
+      if constexpr (std::is_same_v<Norm, detail::WeightedRmsNorm>) {
+        if (not controller_) {
+          norm_.relative = settings_.relative_tolerance;
+          norm_.absolute = settings_.relative_tolerance * settings_.absolute_factor;
+          norm_.scaled = settings_.scale_absolute_tolerance;
+          norm_.scale = settings_.absolute_scale;
+        }
+        norm_.step_index = controller_ ? static_cast<std::size_t>(controller_->steps()) : 0;
+      }
+    }
+
     double error_norm(const State& error)
     {
       if constexpr (std::is_same_v<Norm, detail::WeightedRmsNorm>)
@@ -732,7 +724,6 @@ namespace atstep {
     double start_time_ = 0.0;
     double end_time_ = 0.0;
     bool started_ = false;
-
   };
 
 } // namespace atstep
