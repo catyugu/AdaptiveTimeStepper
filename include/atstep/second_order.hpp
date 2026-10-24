@@ -113,7 +113,8 @@ namespace atstep {
   /// predictor is good and free of the direct form's cancellation.
   ///
   /// A request borrows the stepper's states. It is valid for the solve
-  /// callback's own call and never after.
+  /// callback's own call and never after, and it is neither copyable nor
+  /// movable, so a reference to one cannot outlive the call it was passed to.
   template <class State> class SecondOrderRequest {
   public:
     SecondOrderRequest(
@@ -128,6 +129,11 @@ namespace atstep {
       , work_(work)
     {
     }
+
+    SecondOrderRequest(const SecondOrderRequest&) = delete;
+    SecondOrderRequest& operator=(const SecondOrderRequest&) = delete;
+    SecondOrderRequest(SecondOrderRequest&&) = delete;
+    SecondOrderRequest& operator=(SecondOrderRequest&&) = delete;
 
     const double time;
     const double step;

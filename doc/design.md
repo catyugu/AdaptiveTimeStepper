@@ -9,7 +9,7 @@
 | `stepper.hpp`           | The solve request, the run, and its output            |
 | `second_order.hpp`      | The second-order-in-time adapter                      |
 | `detail/state.hpp`      | State arithmetic and the default weighted RMS norm    |
-| `detail/bdf.hpp`        | The accepted level, and IDA's error estimates         |
+| `detail/bdf.hpp`        | The accepted step, and IDA's error estimates          |
 | `detail/controller.hpp` | Scalar step-size and order decisions                  |
 | `detail/output.hpp`     | Step placement against the output times               |
 
@@ -20,30 +20,34 @@ implementation of the public headers, in the namespace `atstep::detail`.
 ## Ownership and solve boundary
 
 `TimeStepper` owns its settings, its solve callback, its norm, and the state of
-a run in four parts:
+a run in four parts, grouped by lifetime:
 
-| Member        | What it is                                             |
-| ------------- | ------------------------------------------------------ |
-| `accepted_`   | the accepted level, and its time                       |
-| `table_`      | the scaled differences the scheme reads as its history |
-| `controller_` | the step size and order proposed for the next step     |
-| `work_`       | the ten buffers of a step                              |
+| Member        | What it is                                                 |
+| ------------- | ---------------------------------------------------------- |
+| `accepted_`   | the accepted history: the step, and the difference columns |
+| `controller_` | the step size and order proposed for the next step         |
+| `work_`       | the six buffers of one attempt                             |
+| `output_`     | the value last stored, and the dense-output buffer         |
+
+Only `accepted_` survives a step. `output_` is separate because COMSOL measures
+the scaled absolute tolerance against the value it last returned to the caller,
+which may be interpolated. `controller_` is built by `start`: a step size without
+a span is not a proposal, and a run that has not been started says so rather than
+report a placeholder.
 
 A step's own coefficients — its size, order, the factors the trial reads the
 table through, the distances back to the levels, IDA's `sigma`, and its error
-estimates — are a `Trial`, created by the attempt that computes them and
-consumed by the same call. No attempt outlives its step, so the lifetime of
-every temporary is a C++ scope rather than a runtime flag: the stepper keeps no
-"pending attempt", no attempt identity, and no handle for a caller to settle.
-A step whose solve or error test is refused is retried inside `advance` and
-`run`, and the caller sees only accepted steps.
+estimates — are a `Trial`, created and consumed inside one pass of `take_step`.
+A refused step is a `continue` of that loop, so the stepper keeps no pending
+attempt and the caller sees only accepted steps.
 
 An integrator is therefore neither copyable nor movable: it is one run's state
 from `start` to its last step, and `start` begins it again.
 
 A `StepRequest` borrows its references for the duration of the solve, and a
-state it exposes is the stepper's buffer. There is one formulation, the
-fixed-leading BDF history of a first-order equation:
+state it exposes is the stepper's buffer. It is neither copyable nor movable, so
+a reference to one cannot be carried out of the call it was passed to. There is
+one formulation, the fixed-leading BDF history of a first-order equation:
 
 ```text
 y' = cj*y + known
@@ -73,6 +77,10 @@ and writes the factors in. The lead coefficient is `H_k/h`, where
 `H_k = 1 + 1/2 + ... + 1/k`. Error estimates use the solved-state correction and
 the same factors.
 
+The first step's column is the derivative consistent initialization measured, at
+the size the first step proposes — IDA's `phi[2] = h yp_0`. It belongs to the
+accepted history, not to an attempt, so a refused first step changes nothing.
+
 The table is therefore never copied and never written speculatively: an attempt
 costs a few doubles, not one state. Dense output reads the accepted columns.
 
@@ -80,16 +88,22 @@ The table is the whole history: nothing behind the accepted level is kept, and
 an accepted step costs one state copy. Older levels are the columns' business,
 which is what lets a rejection leave the history untouched.
 
-A level pairs its state with its time in one object, so a copy that throws
-cannot leave the two out of step; a level is constructed before the accepted one
-is written, which is what leaves the accepted history alone when it throws.
+A step pairs its state, its derivative and its time in one object, and is copied
+before the accepted one is written: a copy that throws leaves the history alone.
+That copy is the only publication a step makes, and it comes before the in-place
+updates that follow it. An `axpy` that throws mid-step leaves the columns
+rescaled but unpublished, so the contract is that the run is restarted with
+`start`; surviving that would cost one state per order on every step.
 
-`start` resets the level, the table, the controller and the tolerance indexing.
+`start` resets the level, the derivative, the table, the controller and the
+tolerance indexing. Its two backward-Euler probes accept nothing until the
+second, so a run that cannot initialize leaves no half-initialized history.
 
-The stepper holds the ten buffers of a step, the seven columns and the accepted
-level as states: eighteen objects, whatever the order and whatever the equation.
-A state's storage is allocated when a step first writes it, so a run at order `k`
-allocates the columns `0..k+1` and the buffers the estimates read.
+The stepper holds the six buffers of an attempt, the two of the output, the seven
+columns, the accepted level and its derivative as states: seventeen objects,
+whatever the order and whatever the equation. A state's storage is allocated when
+a step first writes it, so a run at order `k` allocates the columns `0..k+1` and
+the buffers the estimates read.
 
 `StepController` consumes scalar estimates independently of state and equation
 types. It implements startup growth, settled-step order selection and retries.

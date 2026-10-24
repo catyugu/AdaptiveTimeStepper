@@ -200,11 +200,13 @@ Runge–Kutta methods. Matching recorded COMSOL trajectories also requires
 matching its algebraic solve strategy; the scalar references do not establish
 equivalence for arbitrary models.
 
-Version 1.1 is the public surface: `atstep/atstep.hpp`, with
-`atstep/stepper.hpp`, `atstep/second_order.hpp` and `atstep/settings.hpp`. It
-replaces the `derivative_orders` setting of 1.0 and the classical-stencil path it
-selected with the second-order adapter. Everything under `atstep/detail` is the
-implementation of those headers and carries no compatibility promise.
+Version 1.2 is the public surface: `atstep/atstep.hpp`, with
+`atstep/stepper.hpp`, `atstep/second_order.hpp` and `atstep/settings.hpp`. Version
+1.1 replaced the `derivative_orders` setting of 1.0 and the classical-stencil path
+it selected with the second-order adapter; 1.2 makes a step's request non-copyable
+and publishes the accepted level, its derivative and the difference table as one
+accepted history. Everything under `atstep/detail` is the implementation of those
+headers and carries no compatibility promise.
 
 - [Design](doc/design.md): ownership, history and numerical boundaries.
 - [COMSOL alignment](doc/comsol-alignment.md): measured configurations and reproduction.

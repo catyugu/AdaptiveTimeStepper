@@ -1,6 +1,7 @@
 // The stepper as a whole: the order a fixed-step run converges at, the accuracy
 // an adaptive run is held to, the placement and storage of steps, and the
 // genericity of the state and the norm.
+#include "atstep/second_order.hpp"
 #include "atstep/stepper.hpp"
 #include "support/check.hpp"
 
@@ -9,6 +10,7 @@
 #include <functional>
 #include <limits>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -561,6 +563,67 @@ TEST_CASE("stepper: a refused step leaves the accepted history and its dense out
   CHECK_NEAR(stepper.time(), record.time, 0.0);
   CHECK_NEAR(stepper.state().value, stepper.interpolate(record.time).value, 1e-14);
 }
+TEST_CASE("stepper: a refused first step leaves the run at its initialized level")
+{
+  // The first step has no accepted difference column behind it: the column the
+  // scheme reads is the derivative the initialization measured, and it belongs
+  // to the accepted history rather than to an attempt. A first step every retry
+  // of which is refused therefore leaves the level, its derivative and the
+  // dense output exactly as the initialization left them.
+  bool failing = false;
+  atstep::TimeStepper<Scalar> stepper(manual_settings(1, 0.25),
+    [&failing](const atstep::StepRequest<Scalar>& request, Scalar& y) {
+      if (failing)
+        return atstep::SolveOutcome {false, 40};
+      return solve_decay(request, y);
+    });
+  stepper.start(0.0, Scalar {1.0}, 10.0);
+  const double time = stepper.time();
+  const double value = stepper.state().value;
+  const double slope = stepper.interpolate(time, 1).value;
+  const double inside = time + 0.5 * stepper.step_size();
+  const double dense = stepper.interpolate(inside).value;
+  const double dense_slope = stepper.interpolate(inside, 1).value;
+
+  failing = true;
+  CHECK_THROWS(stepper.advance()); // every retry fails, down to the smallest step
+  CHECK_NEAR(stepper.time(), time, 0.0);
+  CHECK_NEAR(stepper.state().value, value, 0.0);
+  CHECK_NEAR(stepper.interpolate(time, 1).value, slope, 0.0);
+  CHECK_NEAR(stepper.interpolate(inside).value, dense, 0.0);
+  CHECK_NEAR(stepper.interpolate(inside, 1).value, dense_slope, 0.0);
+
+  // The dense output is still the initialized derivative's straight line: the
+  // first step's column was never written by a refused attempt.
+  CHECK_NEAR(dense_slope, slope, 1e-12);
+}
+
+TEST_CASE("stepper: the step and the order are only readable once the run started")
+{
+  // A run that has not been told its span has no step to propose, so the two
+  // accessors refuse rather than report a controller that does not exist yet.
+  atstep::TimeStepper<Scalar> stepper(atstep::Settings {}, solve_decay);
+  CHECK_THROWS(stepper.step_size());
+  CHECK_THROWS(stepper.order());
+  stepper.start(0.0, Scalar {1.0}, 1.0);
+  CHECK(stepper.step_size() > 0.0);
+  CHECK_EQ(stepper.order(), 1);
+}
+
+TEST_CASE("request: a step's request cannot be copied out of its call")
+{
+  // A request borrows the stepper's buffers, so a copy could outlive them: the
+  // type is neither copyable nor movable, and the only way to reach it is the
+  // callback's own argument.
+  static_assert(
+    not std::is_copy_constructible_v<atstep::StepRequest<Scalar>>);
+  static_assert(
+    not std::is_move_constructible_v<atstep::StepRequest<Scalar>>);
+  static_assert(
+    not std::is_copy_constructible_v<atstep::SecondOrderRequest<Scalar>>);
+  CHECK(true);
+}
+
 TEST_CASE("stepper: advance takes one acceptable step and moves the run")
 {
   atstep::Settings settings;
@@ -585,12 +648,14 @@ TEST_CASE("stepper: advance takes one acceptable step and moves the run")
   CHECK(std::abs(other.state().value - exact(other.time())) < 1e-2);
 }
 
-TEST_CASE("level: the accepted level, and a failed copy that leaves it alone")
+TEST_CASE("accepted step: the level, its derivative and its time, and a failed "
+          "copy that leaves them alone")
 {
-  // A level pairs its state with its time in one object, so a copy that throws
-  // cannot leave the two out of step. The new level is constructed before the
-  // accepted one is written, so a copy that throws leaves the run's level as it
-  // was, which is what a step the caller's solve refuses must not disturb.
+  // The three are one object, so a copy that throws cannot publish a level
+  // without the derivative it was solved with. The new step is constructed
+  // before the accepted one is written, so a copy that throws leaves the run's
+  // step as it was, which is what a step the caller's solve refuses must not
+  // disturb.
   struct State {
     double value = 0.0;
     bool fail = false;
@@ -609,15 +674,21 @@ TEST_CASE("level: the accepted level, and a failed copy that leaves it alone")
     }
     State& operator=(const State&) = default;
   };
-  atstep::detail::AcceptedLevel<State> level;
-  level.commit(1.0, State {2.0});
-  CHECK_THROWS(level.commit(2.0, State {3.0, true}));
-  CHECK_EQ(level.time(), 1.0);
-  CHECK_EQ(level.state().value, 2.0);
+  atstep::detail::AcceptedStep<State> step;
+  step.commit(1.0, State {2.0}, State {-2.0});
+  CHECK_EQ(step.time(), 1.0);
+  CHECK_EQ(step.state().value, 2.0);
+  CHECK_EQ(step.derivative().value, -2.0);
 
-  level.commit(2.0, State {3.0});
-  CHECK_EQ(level.time(), 2.0);
-  CHECK_EQ(level.state().value, 3.0);
+  CHECK_THROWS(step.commit(2.0, State {3.0, true}, State {-3.0}));
+  CHECK_EQ(step.time(), 1.0);
+  CHECK_EQ(step.state().value, 2.0);
+  CHECK_EQ(step.derivative().value, -2.0);
+
+  step.commit(2.0, State {3.0}, State {-3.0});
+  CHECK_EQ(step.time(), 2.0);
+  CHECK_EQ(step.state().value, 3.0);
+  CHECK_EQ(step.derivative().value, -3.0);
 }
 
 TEST_CASE("stepper: a start time the run cannot integrate from is refused")
