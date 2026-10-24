@@ -19,7 +19,8 @@ namespace atstep {
   /// `TimeStepper`; `size()` and `operator[]` expose the displacement, so the
   /// default error norm measures the displacement alone. A custom norm that
   /// reads `value` and `derivative` can include the velocity.
-  template <class State> struct SecondOrderState {
+  template <class State>
+  struct SecondOrderState {
     State value {};
     State derivative {};
 

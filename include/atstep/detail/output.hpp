@@ -40,7 +40,8 @@ namespace atstep::detail {
     Placement place(double step, double time) const;
 
     /// Call emit(time, interpolated) for each output of the completed step.
-    template <class Emit> void for_each_store(double time, Emit&& emit);
+    template <class Emit>
+    void for_each_store(double time, Emit&& emit);
 
   private:
     StepMode step_mode_;
