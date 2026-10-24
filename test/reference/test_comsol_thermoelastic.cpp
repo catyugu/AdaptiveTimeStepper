@@ -55,7 +55,9 @@ TEST_CASE("comsol: reciprocal thermoelastic trajectories, derivatives and dissip
   atstep::Settings settings;
   settings.relative_tolerance = 1e-7;
   settings.scale_absolute_tolerance = false;
-  settings.init_step_fraction = 1e-5;
+  settings.field_sizes = {1, 1, 1};
+  settings.backward_euler_fraction = 1e-5;
+  settings.max_step = 0.5;
   settings.interpolate_end_time = false;
   settings.store_mode = atstep::StoreMode::steps;
   State last_derivative;

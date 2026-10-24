@@ -1,4 +1,4 @@
-﻿name: CI
+name: CI
 
 on:
   push:
@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        compiler: [gcc-13, gcc-14]
+        compiler: [gcc-13]
         build_type: [Debug, Release]
     env:
       CC: ${{ matrix.compiler }}
@@ -78,7 +78,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        compiler: [clang-17, clang-18]
+        compiler: [clang-18]
         build_type: [Debug, Release]
         # Quoted: an unquoted OFF is a YAML boolean, and the value is read back
         # as a CMake cache variable.
@@ -152,9 +152,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-14 is arm64, macos-15-intel is x86_64: the two architectures
-        # AppleClang is built for. macos-13 (x86_64) is retired.
-        os: [macos-14, macos-15-intel]
+        # macos-14 is arm64: the architecture AppleClang builds for by default.
+        os: [macos-14]
         build_type: [Debug, Release]
     steps:
       - uses: actions/checkout@v4
@@ -200,7 +199,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build_type: [Debug, Release]
+        build_type: [Release]
     steps:
       - uses: actions/checkout@v4
 

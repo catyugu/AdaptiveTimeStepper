@@ -93,6 +93,7 @@ int main()
   settings.max_order = 2;
   settings.relative_tolerance = 1e-6;
   settings.scale_absolute_tolerance = false;
+  settings.field_sizes = {1, 1, 1};
   settings.interpolate_end_time = false;
   atstep::TimeStepper<State> stepper(settings, motor);
   stepper.start(0.0, State {0.0, 0.0, 0.0}, 60.0);

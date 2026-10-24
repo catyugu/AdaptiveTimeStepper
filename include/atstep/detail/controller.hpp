@@ -13,8 +13,7 @@
 namespace atstep::detail {
 
   /// IDA local error estimates: the acceptance test and estimates at the
-  /// current, lower and higher orders. `test` uses ck; order selection uses
-  /// sigma-scaled correction norms (see TimeStepper::estimate).
+  /// current, lower and higher orders.
   struct StepErrors {
     double test = 0.0;
     double at = 0.0;
@@ -28,85 +27,72 @@ namespace atstep::detail {
     }
   };
 
-  /// Scalar BDF step-size and order control, following IDA's startup,
-  /// error test and completion rules. It is independent of state and equations.
-  ///
-  /// Startup raises the order and doubles steps until a failure, order
-  /// reduction or maximum order ends it. Later, the growth estimate
-  /// (2*error + 1e-4)^(-1/(q+1)) selects a reduction in [0.5,0.9],
-  /// unchanged size, or doubling.
-  ///
-  /// Error-test failures reduce the step by [0.25,0.9] on the first failure,
-  /// then by 0.25; the third failure requests order 1, within configured bounds.
-  /// Convergence failures reduce the step by 0.25.
-  /// Order increases require enough steps at constant size and order.
+  /// Scalar BDF step-size and order control, following IDA's startup, error
+  /// test and completion rules. It is independent of state and equations.
   class StepController {
   public:
-    /// @param[in] settings the method's settings: its order range and its
-    /// step mode.
-    /// @param[in] span the span the run integrates, from which the first
-    /// step and the largest one are taken.
-    StepController(const Settings& settings, double span);
+    /// @param[in] settings the method's settings.
+    /// @param[in] span the span the run integrates.
+    /// @param[in] end_time the final time; the automatic initial step is a
+    /// fraction of its magnitude (or of the span, whichever is larger).
+    StepController(const Settings& settings, double span, double end_time);
 
-    /// The first step of the run, from the weighted norm `derivative_norm`
-    /// of the time derivative the initial state starts with: at most
-    /// `first_step_fraction` of the span, and at most `1/2 /
-    /// derivative_norm` — the rule COMSOL states as `DT yp_norm <= 1/2`.
+    /// The first step, from the weighted norm of the initial derivative.
     double first_step(double derivative_norm) const;
 
-    /// Begin the run at the step `h`, at the first order.
+    /// Begin the run at the step `h`, at order one.
     void begin(double h);
 
-    /// The step size of the next step.
     double step_size() const
     {
       return error_controlled() ? h_ : manual_;
     }
 
-    /// The order the next step is taken at.
+    /// The order the order selection proposes for the next step. The next
+    /// attempt is `min(order(), max(1, steps()))`: a run has one level per
+    /// accepted step, and an order-k step needs k levels.
     int order() const
     {
       return error_controlled() ? order_ : manual_order_;
     }
 
-    /// Whether the local error governs the step. It does not in
-    /// `StepMode::manual`, where the step is the model's own.
     bool error_controlled() const
     {
       return error_controlled_;
     }
 
-    /// The smallest step the controller will propose, below which the error
-    /// cannot be met on this interval at all.
     double smallest_step() const noexcept
     {
       return smallest_;
     }
 
-    /// The largest step the controller will propose.
     double largest_step() const noexcept
     {
       return largest_;
     }
 
-    /// Announce an attempt: the step of size `step` at `order`, which the
-    /// history may have forced below the proposed one. It is what counts
-    /// the steps taken at a constant size and order, on which the order
-    /// selection insists.
+    /// The base of the automatic initial step: the final time's magnitude, or
+    /// the manual step in a manual run.
+    double initial_step_base() const noexcept
+    {
+      return initial_step_base_;
+    }
+
+    /// Announce the attempt actually taken, whose order the available history
+    /// may have forced below the proposal.
     void begin_attempt(double step, int order);
 
-    /// Accept the step just taken, whose error estimates are `errors`:
-    /// select the size and the order of the next one.
+    /// Accept the step just taken.
     void accept(const StepErrors& errors, double step);
 
-    /// Drop the step just taken: it missed the tolerance.
+    /// Drop the step just taken: it missed the tolerance. Only an
+    /// error-controlled run calls this.
     void reject(const StepErrors& errors, double step);
 
-    /// Drop the step just taken: its solve did not converge. The step is
-    /// cut to a quarter, the reduction IDA takes for a convergence failure.
+    /// Drop the step just taken: its solve did not converge.
     void reject_convergence(double step);
 
-    // --- diagnostics, for tests and logs ---
+    // --- diagnostics ---
     int steps() const noexcept
     {
       return steps_;
@@ -115,95 +101,82 @@ namespace atstep::detail {
     {
       return rejections_;
     }
-    /// The failures of the step being attempted.
     int failures() const noexcept
     {
       return failures_;
     }
 
   private:
-    /// The order IDA's error test suggests the step be taken at next: the
-    /// one below, when its estimate is smaller.
     int suggested_order(const StepErrors& errors) const;
-
-    /// The factor a step of size `step` is multiplied by after an estimate
-    /// of `error` at `order` (see the deadbeat band above).
     double factor(double error, int order) const;
 
-    /// The configuration the control reads, taken from `Settings`. The
-    /// state-sized tolerances of one stay with the stepper and the norm.
     bool error_controlled_ = true;
     int min_order_ = 1;
     int max_order_ = 5;
     int manual_order_ = 2;
     double manual_step_ = 0.0;
-    double first_step_fraction_ = 1e-3;
+    double initial_step_fraction_ = 1e-3;
+    double initial_step_base_ = 1.0;
 
-    double span_ = 0.0;
     double largest_ = 0.0;
     double smallest_ = 0.0;
 
-    /// The step proposed for the next step, and the one the last accepted
-    /// step was taken at.
     double h_ = 0.0;
-    /// The step of a manual run. A manual step is not held to the
-    /// tolerance, so the only thing that changes it is a solve that did not
-    /// converge.
     double manual_ = 0.0;
     double used_ = 0.0;
-    /// The order of the next step, and of the last accepted one.
     int order_ = 1;
     int used_order_ = 0;
-    /// The steps taken at this size and order, and accepted over the run.
     int ns_ = 0;
     int steps_ = 0;
     int rejections_ = 0;
-    /// The failures of the step being attempted.
     int failures_ = 0;
-    /// Whether the startup phase is still running.
     int phase_ = 0;
   };
 
   namespace ida {
-
-    // The step-size control of IDA: the factor a step that met the
-    // tolerance is grown by is the clamp of the asymptotic estimate to
-    // [eta_min, eta_low] below one, one inside the band (eta_min_fx,
-    // eta_max_fx), and eta_max above it.
+    // IDA's step-size control: [eta_min, eta_low] below the deadbeat band,
+    // one inside it, [eta_max_fx, eta_max] above it.
     inline constexpr double eta_max_fx = 2.0;
     inline constexpr double eta_min_fx = 1.0;
     inline constexpr double eta_max = 2.0;
     inline constexpr double eta_low = 0.9;
     inline constexpr double eta_min = 0.5;
-    /// The largest reduction of a failed step.
     inline constexpr double eta_min_ef = 0.25;
-
   } // namespace ida
 
-  inline StepController::StepController(const Settings& settings, double span)
+  inline StepController::StepController(
+    const Settings& settings, double span, double end_time)
     : error_controlled_(settings.step_mode != StepMode::manual)
     , min_order_(settings.min_order)
     , max_order_(settings.max_order)
     , manual_order_(settings.manual_order)
     , manual_step_(settings.manual_step)
-    , first_step_fraction_(settings.first_step_fraction)
-    , span_(span)
-    , largest_(span * settings.max_step_fraction)
+    , initial_step_fraction_(settings.initial_step_fraction)
+    , initial_step_base_(settings.step_mode == StepMode::manual
+          ? settings.manual_step
+          : std::max(std::abs(end_time), span))
+    , largest_(settings.max_step > 0.0 ? settings.max_step
+                                       : std::numeric_limits<double>::max())
     , smallest_(span * settings.min_step_fraction)
   {
     validate(settings);
     if (not std::isfinite(span) or not(span > 0.0))
+      throw std::invalid_argument("atstep: the span of a run must be positive");
+    if (not std::isfinite(initial_step_base_) or not(initial_step_base_ > 0.0))
       throw std::invalid_argument(
-        "atstep: the span of a run must be positive");
-    if (not(settings.max_step_fraction > 0.0))
-      largest_ = std::numeric_limits<double>::max();
-    if (not std::isfinite(largest_) or not std::isfinite(smallest_) or not(smallest_ > 0.0))
-      throw std::invalid_argument("atstep: step bounds must be finite and positive");
+        "atstep: the initial-step base must be finite and positive");
+    if (not std::isfinite(largest_) or not std::isfinite(smallest_)
+      or not(smallest_ > 0.0))
+      throw std::invalid_argument(
+        "atstep: step bounds must be finite and positive");
+    if (largest_ < smallest_)
+      throw std::invalid_argument(
+        "atstep: max_step is below the minimum step");
   }
 
   inline double StepController::first_step(double derivative_norm) const
   {
-    double step = first_step_fraction_ * span_;
+    double step = initial_step_fraction_ * initial_step_base_;
     if (derivative_norm > 0.0)
       step = std::min(step, 0.5 / derivative_norm);
     return std::clamp(step, smallest_, largest_);
@@ -236,7 +209,9 @@ namespace atstep::detail {
     if (order_ <= 1)
       return order_;
     const double terr_k = static_cast<double>(order_ + 1) * errors.at;
-    const double terr_km1 = errors.below ? static_cast<double>(order_) * *errors.below : terr_k;
+    const double terr_km1 = errors.below
+      ? static_cast<double>(order_) * *errors.below
+      : terr_k;
     if (order_ > 2 and errors.below2) {
       const double terr_km2 = static_cast<double>(order_ - 1) * *errors.below2;
       return std::max(terr_km1, terr_km2) <= terr_k ? order_ - 1 : order_;
@@ -248,7 +223,8 @@ namespace atstep::detail {
 
   inline double StepController::factor(double error, int order) const
   {
-    const double estimate = std::pow(2.0 * error + 1e-4, -1.0 / static_cast<double>(order + 1));
+    const double estimate = std::pow(
+      2.0 * error + 1e-4, -1.0 / static_cast<double>(order + 1));
     if (estimate >= ida::eta_max_fx)
       return std::min(estimate, ida::eta_max);
     if (estimate <= ida::eta_min_fx)
@@ -266,16 +242,13 @@ namespace atstep::detail {
     used_ = step;
 
     if (not error_controlled())
-      return; // the step and the order are the model's
+      return;
 
     const int knew = suggested_order(errors);
     if (knew == order_ - 1 or order_ == max_order_)
       phase_ = 1;
 
     if (phase_ == 0) {
-      // Until the order reaches its maximum, every step is taken one
-      // order higher and at twice the size. The first step has no history
-      // behind it, so its size is left as it is.
       h_ = step;
       if (steps_ > 1) {
         ++order_;
@@ -295,8 +268,7 @@ namespace atstep::detail {
       action = Action::maintain;
     }
     else if (order_ + 1 >= ns_ or kdiff == 1) {
-      action = Action::maintain; // the step has not settled, or the
-      // order just changed
+      action = Action::maintain;
     }
     else if (order_ == 1) {
       const double terr_k = 2.0 * errors.at;
@@ -336,14 +308,10 @@ namespace atstep::detail {
   inline void StepController::reject(const StepErrors& errors, double step)
   {
     ++rejections_;
-    if (not error_controlled()) {
-      manual_ = std::max(0.5 * step, smallest_);
-      return;
-    }
 
     // A failed step ends the startup phase, and its retry is smaller: by
-    // the asymptotic factor at the first failure, by a quarter of the step
-    // from the second on, and at the order 1 from the third.
+    // the asymptotic factor at the first failure, by a quarter from the
+    // second, and at order one from the third.
     phase_ = 1;
     ++failures_;
     const bool lower = suggested_order(errors) == order_ - 1;
@@ -356,10 +324,10 @@ namespace atstep::detail {
     double eta = ida::eta_min_ef;
     if (failures_ == 1) {
       const double error = lower and errors.below ? *errors.below : errors.at;
-      eta = std::clamp(
-        0.9 * std::pow(2.0 * error + 1e-4, -1.0 / static_cast<double>(order_ + 1)),
-        ida::eta_min_ef,
-        ida::eta_low);
+      const double estimate = std::isfinite(error)
+        ? 0.9 * std::pow(2.0 * error + 1e-4, -1.0 / static_cast<double>(order_ + 1))
+        : ida::eta_min_ef;
+      eta = std::clamp(estimate, ida::eta_min_ef, ida::eta_low);
     }
     h_ = std::max(eta * step, smallest_);
   }

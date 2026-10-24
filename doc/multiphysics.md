@@ -41,7 +41,9 @@ The numerical settings match the C++ run:
 | Maximum BDF order                      | 5                                                      |
 | Relative tolerance                     | 1e-7                                                   |
 | Absolute tolerance                     | unscaled, factor 0.1                                   |
+| Fields                                 | three scalar fields, `{1,1,1}`                         |
 | Backward-Euler initialization fraction | 1e-5                                                   |
+| Maximum step (C++ test)                | 0.5 s; no recorded step reaches it                     |
 | Output                                 | every internal solver step; land at the final time     |
 | Algebraic solve                        | Jacobian updated each iteration; tolerance factor 1e-8 |
 
@@ -62,9 +64,9 @@ absolute comparison limit is `1e-7` for each quantity. Separate analytic and
 energy checks validate the model and the export's degree-of-freedom ordering.
 Reference values are only read after the C++ solve; they never enter its callback.
 
-The local MSVC Release comparison measured maximum differences of `3.79e-9`
-in time, `7.13e-10` in state and `1.28e-8` in derivative. COMSOL's own
-maximum analytic errors were `5.25e-7` in state and `1.18e-6` in derivative.
+The local Release comparison measured maximum differences of `6.8e-9` in time,
+`7.13e-10` in state and `1.28e-8` in derivative. COMSOL's own maximum analytic
+errors were `5.25e-7` in state and `1.18e-6` in derivative.
 
 This verifies a reduced coupled system implemented with Global Equations.
 It does not validate COMSOL's spatial Solid Mechanics/Heat Transfer interfaces
@@ -108,7 +110,8 @@ to the stepper for retry.
 The example uses `V=2 V`, `L=0.5 H`, `J=0.2 kg m^2`, `C=2 J/K`, `R0=1 ohm`,
 `alpha=0.1/K`, `k=0.5` in consistent SI torque/back-EMF units,
 `b=0.1 N m s` and `G=0.5 W/K`. It starts from rest at ambient temperature
-and integrates to 60 seconds, using maximum order 2 and relative tolerance 1e-6.
+and integrates to 60 seconds, using maximum order 2, relative tolerance 1e-6,
+three scalar fields `{1,1,1}`, and an unscaled absolute tolerance.
 
 It prints the trajectory and checks finite, nonnegative states, an independent
 stationary solution and the power balance

@@ -1,19 +1,18 @@
-﻿# AdaptiveTimeStepper
+# AdaptiveTimeStepper
 
 [![CI](https://github.com/catyugu/AdaptiveTimeStepper/actions/workflows/ci.yml/badge.svg)](https://github.com/catyugu/AdaptiveTimeStepper/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Header-only C++20 adaptive BDF integration, with variable order 1–5 and no
-external dependencies. The caller solves the equations; the library manages
-prediction, history, error estimates, step size, order and output.
-First-order-in-time systems go to the stepper directly; a second-order-in-time
-equation goes to the same kernel through an adapter that introduces the velocity
-and condenses the Newton system back to the displacement, as COMSOL's IDA path
-does. The first-order method is checked against recorded COMSOL 6.2 scalar runs.
+Header-only C++20 adaptive BDF integration, variable order 1–5, no external
+dependencies. The caller solves the equations; the library owns prediction,
+history, the error test, step size, order and output. The first-order kernel is
+checked against recorded COMSOL 6.2 scalar runs. A second-order-in-time equation
+is written as the first-order pair `(u, v = u')`; the library supplies the pair
+and the condensed coefficients, and the caller owns the solve.
 
 ## Example
 
-Integrate `y' + y = 0`, starting from `y(0) = 1`:
+Integrate `y' + y = 0` from `y(0) = 1`:
 
 ```cpp
 #include <atstep/atstep.hpp>
@@ -25,7 +24,6 @@ int main()
     using State = std::vector<double>;
     atstep::TimeStepper<State> stepper(atstep::Settings {},
         [](const atstep::StepRequest<State>& request, State& y) {
-            // y' = cj*y + known, hence (cj + 1)*y = -known.
             const State& known = request.derivative_history();
             y[0] = -known[0] / (request.derivative_weight() + 1.0);
             return atstep::SolveOutcome {true, 1};
@@ -42,148 +40,113 @@ int main()
 }
 ```
 
-The solve receives a predictor in `y` and replaces it with the solved state.
-For `M y' + K y = f`, assemble
-`(cj*M + K)*y = f(request.time) - M*known`.
-In a nonlinear residual, `request.derivative(y, dy)` writes the derivative into
-`dy` in correction form, to reduce cancellation. Return `{false, iterations}` when
-the solve fails; the stepper retries at a quarter of the step size.
-
-Runnable examples cover [heat conduction](examples/heat_equation.cpp),
-a [damped oscillator as a second-order equation](examples/second_order.cpp), a
-[nonlinear reaction system](examples/vector_state.cpp) and an
-[electrical–thermal–mechanical motor](examples/coupled_motor.cpp).
-The [coupled cases](doc/multiphysics.md) also include a thermoelastic
-COMSOL trajectory regression.
-
-## Second-order equations
-
-`M u'' + C u' + K u = f(t)` goes to `SecondOrderStepper`. It introduces the
-velocity the BDF kernel needs and condenses each step back to the displacement,
-so the solve is the size it was — the state augmentation and reduction COMSOL's
-IDA path performs. The error test measures the displacement, and `run` reports the
-velocity with every stored value. See
-[the oscillator example](examples/second_order.cpp) and the
-[design](doc/design.md#second-order-equations).
-
-A third or higher derivative in time is the caller's to write as a first-order
-system.
-
-## Use in a project
-
-```cmake
-add_subdirectory(third_party/AdaptiveTimeStepper)
-target_link_libraries(my_target PRIVATE AdaptiveTimeStepper::AdaptiveTimeStepper)
-```
-
-An installed package provides the same target through
-`find_package(AdaptiveTimeStepper CONFIG REQUIRED)`. Alternatively, add
-`include/` to your compiler's include path. The headers require C++20.
+The solve receives the predictor in `y` and replaces it with the solved state.
+For `M y' + K y = f`, assemble `(cj*M + K)*y = f - M*known`; for a nonlinear
+residual, `request.derivative(y, dy)` evaluates `y'` in correction form. Return
+`{false, iterations}` when the solve fails; the step is retried smaller.
 
 ## State and norm
 
-States are default-constructible, copyable values with
-`void axpy(double a, const State& x)`, meaning `*this += a*x`.
-`std::vector<double>` is supported directly. Wrap other containers in a type
-with this member. State dimensions must remain constant during a run.
-
-The default norm requires `size()` and `operator[]`. A distributed or blocked
-state can provide its own norm:
-
-```cpp
-auto norm = [](const State& error, const State& reference) {
-    return global_weighted_rms(error, reference);
-};
-atstep::TimeStepper<State, decltype(norm)> stepper(settings, solve, norm);
-```
-
-The default norm is `sqrt(mean((error_i / (A_i + R*abs(reference_i)))^2))`.
-`R` is `relative_tolerance`; unscaled `A_i` is `R*absolute_factor`.
-With scaled absolute tolerance:
+A state is a default-constructible, copyable value with
+`void axpy(double a, const State& x)` (`*this += a*x`). `std::vector<double>`
+is supported directly. The default error norm is COMSOL's field-and-DOF
+weighted RMS:
 
 ```text
-A_i = R * absolute_factor * ((2 - exp(-j/5))*abs(returned_i)
-                            + exp(-j/5)*sigma_i)
+sqrt( (1/M) * sum_j (1/N_j) * sum_i (E_i / (A_i + R*abs(Y_i)))^2 )
 ```
 
-Here `j` counts accepted steps, `reference` is the last accepted internal
-state, and `returned` is the most recently stored state, possibly interpolated.
-`absolute_scale` supplies `sigma_i`; missing entries default to one. A nonzero
-error with zero weight has infinite norm. Mismatched vector sizes are rejected.
+`R` is `relative_tolerance`; `field_sizes` gives `N_j` for each of the `M`
+fields (empty means one field holding the state). With
+`scale_absolute_tolerance`, a field of scale reference `S` has
 
-## Settings and output
+```text
+A_i = R*factor * (beta + norm2(S))
+beta = (1 - d)*norm_inf(S) + d   if 0 < norm_inf(S) < 1
+beta = 1                         otherwise
+d = exp(-j/5),  j = accepted steps
+```
 
-| Setting                       | Default       | Meaning                                              |
-| :---------------------------- | ------------- | ---------------------------------------------------- |
-| `min_order`, `max_order`      | 1, 5          | Adaptive order range; startup uses available history |
-| `relative_tolerance`          | 1e-2          | Relative error weight                                |
-| `absolute_factor`             | 0.1           | Absolute tolerance factor                            |
-| `scale_absolute_tolerance`    | true          | Enable scaled absolute weights                       |
-| `first_step_fraction`         | 1e-3          | Initial step as a fraction of the run span           |
-| `max_step_fraction`           | 0.1           | Maximum step fraction; ≤ 0 disables the constraint   |
-| `min_step_fraction`           | 1e-10         | Minimum step as a fraction of the span               |
-| `init_step_fraction`          | 1e-3          | Artificial initialization step factor                |
-| `step_mode`                   | `free`        | Step placement                                       |
-| `store_mode`                  | `interpolate` | Output selection                                     |
-| `interpolate_end_time`        | true          | Allow an internal step past the final time           |
-| `manual_step`, `manual_order` | 0, 2          | Fixed step and target order in manual mode           |
+and `A_i = R*factor` unscaled. A custom norm receives `(error, reference)` and
+may be passed to the three-argument constructor; it can, for example, scale a
+velocity field or a variable the documented COMSOL formula does not cover.
 
-### Why the default maximum order is 5
+## Settings
 
-The library's `max_order = 5` matches COMSOL's generic Time solver node and
-the automatically generated solver for Global Equations. Physics interfaces
-can override that default: Heat Transfer and Navier–Stokes use a maximum BDF
-order of 2 in their automatic solver configurations. To match those settings,
-set `settings.max_order = 2`; the adaptive method then uses orders 1–2 as
-history and error estimates allow, rather than fixing every step at order 2.
+| Setting | Default | Meaning |
+| :--- | :--- | :--- |
+| `min_order`, `max_order` | 1, 5 | Adaptive order range; the first attempts use the history they have |
+| `relative_tolerance` | 1e-2 | Relative error weight `R` |
+| `absolute_tolerance_factor` | 0.1 | Absolute tolerance as a factor of `R` |
+| `scale_absolute_tolerance` | true | COMSOL's scaled absolute tolerance |
+| `field_sizes` | empty | DOF count of each field; empty is one field |
+| `initial_step_fraction` | 1e-3 | Automatic first step, of the final time's magnitude (at least the span) |
+| `max_step` | 0 | Absolute maximum step in run time units; 0 is no limit |
+| `min_step_fraction` | 1e-10 | Smallest step the controller proposes, as a fraction of the span |
+| `step_mode` | `free` | Step placement |
+| `store_mode` | `interpolate` | Output selection |
+| `interpolate_end_time` | true | Allow a step past the final output time |
+| `manual_step`, `manual_order` | 0, 2 | Fixed step and order in manual mode |
+| `backward_euler_fraction` | 1e-3 | Artificial initialization steps, as a fraction of the initial step |
 
-This is separate from `manual_order = 2`, which selects the target BDF order
-in manual stepping mode. See the [default-setting verification](doc/comsol-alignment.md#default-order-depends-on-the-physics-interface)
-for local readbacks and official documentation.
+Step modes: `free`, `intermediate` (a step in every output subinterval),
+`strict` (end every step at an output time), `manual` (the time-step error test
+off; a failed algebraic solve still reduces the step).
 
-Step modes:
+Store modes: `interpolate`, `closest` (the first internal step reaching each
+output time), `steps` (the internal steps; a final step past the end is stored
+at the end when `interpolate_end_time` is on).
 
-- `free`: choose steps from error estimates.
-- `intermediate`: also place at least one step in every output interval.
-- `strict`: land on every output time, with smaller internal steps as needed.
-- `manual`: use a positive `manual_step` and disable the time-step error test;
-  failed algebraic solves still reduce the step.
+## Running
 
-Store modes:
+`start(t0, initial, end)` performs two artificial backward-Euler solves, the
+consistent initialization; the returned state is labelled `t0` and its
+derivative is what the first step is read from. `start(t0, initial, derivative,
+end)` uses consistent initial values supplied by the caller and takes no
+artificial step. The second overload is the way to restart from a solution
+without perturbing it.
 
-- `interpolate`: return values at requested times.
-- `closest`: return the first internal step reaching each requested time.
-- `steps`: return every accepted internal step.
+`run(times, hooks)` takes any strictly increasing set of times that are the
+start time or after the initialized time; the initial state is stored when the list
+starts at `t0`, and always in `steps` mode. `advance()` takes
+one accepted step for a caller-driven loop. `RunHooks::on_step` sees every
+accepted step; `on_store` sees every stored value and whether it was
+interpolated. `time()` and `state()` are the newest accepted level.
+`interpolate(t, out, derivative)` writes the dense value or first derivative
+into a buffer of the caller's; it is the BDF polynomial through the last
+`order + 1` levels, so times older than the last step are extrapolated.
 
-`start(t0, initial, end)` resets the run. Initialization performs two artificial
-backward-Euler solves, so the first returned state can differ slightly from
-`initial`; a second-order run gives `start(t0, u0, v0, end)` its velocity as the
-second initial value and advances the pair the same way. `run(times, hooks)`
-requires a fresh `start` and strictly increasing times starting at `t0` and ending
-at `end`. Use either `run` for the complete schedule or `advance` for a
-caller-driven loop; call `start` before switching to a new run.
+An integrator is neither copyable nor movable; `start` begins a run again. State
+operations must not throw: history is published in place.
 
-`on_step` receives each accepted step's record and the state it left; `on_store`
-receives output values. `RunReport` contains step, rejection, failed-solve and
-output counts. Callback state references are valid only during the callback:
-copy values you want to retain. `interpolate(t, out)` writes the dense value into
-`out` and `interpolate(t, out, 1)` its derivative; `out` is yours, so one buffer
-can serve every call.
+## Second-order equations
 
-`time()` and `state()` are the current solution: the newest accepted level.
+`M u'' + C u' + K u = f` is integrated as the pair `(u, v = u')`:
 
-For a caller-driven loop, `advance()` takes one step the error test accepts —
-it retries a step the solve failed or the error test refused — and reports it.
-An attempt is the library's own: a step the solve or the test refuses is
-retried inside the call, and the caller is never handed a candidate to commit.
-An integrator is neither copyable nor movable; `start` begins a run again.
+```text
+u' - v            = 0
+M v' + C v + K u  = f
+```
 
-Requests and their state references are borrowed only for the solve callback.
-The stepper constructs requests; callers do not construct or retain them.
-State assignments reuse existing buffers. A rejected attempt leaves accepted
-history intact. If a state operation throws while initialization or a history
-update is in progress, access and further stepping are refused until `start`
-rebuilds the run. The library does not catch exceptions from user code.
+`SecondOrderState<State>` is that pair. The solve is the condensed system of
+the displacement:
+
+```text
+u'  = cj u + known1
+u'' = cj^2 u + known2,   known2 = cj known1 + known(v)
+(K + cj C + cj^2 M) u = f - M known2 - C known1
+```
+
+`second_derivative_history(request, known2)` builds `known2`;
+`set_velocity(state, cj, known1)` enforces `v = cj u + known1` after a
+successful solve. The default error norm measures the displacement, because the
+pair exposes the displacement to the norm; a custom norm that reads `value` and
+`derivative` can include the velocity. The COMSOL rule that includes the
+auxiliary velocity when consistent initialization is on, and the derivative
+tolerance that weights it, are not implemented.
+
+A third or higher derivative in time is the caller's to write as a first-order
+system.
 
 ## Build and test
 
@@ -194,34 +157,34 @@ ctest --test-dir build --output-on-failure
 cmake --install build --prefix .cache/install
 ```
 
-Tests cover control rules, convergence, the second-order adapter, rejection,
-restart, output modes, invalid inputs and recorded COMSOL trajectories. The four
-examples also run under CTest. COMSOL is needed only to regenerate reference data.
+Tests cover the controller, the norm, convergence, the pair, rejection, restart,
+output modes, invalid input and the recorded COMSOL trajectories. Examples:
+[heat](examples/heat_equation.cpp), [oscillator](examples/second_order.cpp),
+[Brusselator](examples/vector_state.cpp), [motor](examples/coupled_motor.cpp).
 
-## Scope and documentation
+## COMSOL alignment and limits
 
-The kernel integrates first-order states; a second-order equation goes through
-`SecondOrderStepper`, and a third or higher derivative is the caller's to reduce
-to a first-order system. BDF orders 1–5 are the accuracy of the time
-discretization, not the derivatives an equation may carry.
+The 21 recorded scalar configurations agree on accepted steps, rejections,
+stored times, values, derivatives and logged orders to `1e-8`; the thermoelastic
+regression agrees on 161 samples. See [COMSOL alignment](doc/comsol-alignment.md)
+for the measured settings and the [research note](doc/research/comsol-time-dependent-solver.md)
+for the documentation quotes.
 
-The library does not provide algebraic solvers, events, generalized alpha or
-Runge–Kutta methods. Matching recorded COMSOL trajectories also requires
-matching its algebraic solve strategy; the scalar references do not establish
-equivalence for arbitrary models.
+The library does not provide algebraic solvers, events, generalized alpha,
+Runge–Kutta, COMSOL's algebraic-variable error-test options, per-variable
+tolerances, a derivative tolerance, COMSOL's `Safety factor for Backward Euler`
+or `Rescale after initialization`, store-every-Nth-step, a nonlinear controller,
+or an automatic maximum step of its own. The default maximum step is no limit;
+COMSOL's automatic value is not documented. The scaled absolute tolerance is
+validated on a one-field, one-dof scalar run with `abs(y) <= 1`; the field-aware
+formula is the documented one, but multi-field COMSOL runs were not recorded.
+The second-order pair is not validated against a COMSOL second-order model.
 
-Version 1.2 is the public surface: `atstep/atstep.hpp`, with
-`atstep/stepper.hpp`, `atstep/second_order.hpp` and `atstep/settings.hpp`. Version
-1.1 replaced the `derivative_orders` setting of 1.0 and the classical-stencil path
-it selected with the second-order adapter; 1.2 makes a step's request non-copyable
-and publishes the accepted level, its derivative and the difference table as one
-accepted history. Everything under `atstep/detail` is the implementation of those
-headers and carries no compatibility promise.
+## Documentation
 
-- [Design](doc/design.md): ownership, history and numerical boundaries.
-- [COMSOL alignment](doc/comsol-alignment.md): measured configurations and reproduction.
-- [Coupled multiphysics](doc/multiphysics.md): thermoelastic COMSOL comparison and motor example.
-- [Research notes](doc/research/comsol-time-dependent-solver.md): source quotations
-  and the original documentation investigation.
+- [Design](doc/design.md): ownership, history, error weights and output.
+- [COMSOL alignment](doc/comsol-alignment.md): measurements, assumptions, gaps.
+- [Coupled multiphysics](doc/multiphysics.md): thermoelastic and motor cases.
+- [Research notes](doc/research/comsol-time-dependent-solver.md): source quotes.
 
 Licensed under [MIT](LICENSE).

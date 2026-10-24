@@ -1,4 +1,4 @@
-﻿// Full-precision COMSOL trajectories: independently generated states,
+// Full-precision COMSOL trajectories: independently generated states,
 // derivatives and solver decisions, checked with matching algebraic solves.
 #include "atstep/stepper.hpp"
 #include "reference/comsol_trajectories.hpp"
@@ -58,9 +58,9 @@ namespace {
         jacobian_cj = cj;
         convergence_factor = 20.0;
       }
-      atstep::detail::WeightedRmsNorm norm;
+      atstep::WeightedRmsNorm norm;
       norm.relative = settings.relative_tolerance;
-      norm.absolute = norm.relative * settings.absolute_factor;
+      norm.absolute = norm.relative * settings.absolute_tolerance_factor;
       norm.scaled = settings.scale_absolute_tolerance;
       norm.step_index = request.step_index;
       double first_norm = 0.0;
@@ -110,7 +110,9 @@ TEST_CASE("comsol: full-precision trajectories, derivatives, orders and "
     settings.max_order = reference.max_order;
     settings.relative_tolerance = reference.tolerance;
     settings.step_mode = mode_of(reference.step_mode);
-    settings.max_step_fraction = reference.max_step_fraction;
+    // The recorded field is a fraction of the 10 s span; the library's
+    // maximum step is absolute.
+    settings.max_step = reference.max_step_fraction * 10.0;
     settings.interpolate_end_time = reference.interpolate_end_time;
     settings.store_mode = atstep::StoreMode::steps;
     settings.manual_step = reference.manual_step;

@@ -1,4 +1,4 @@
-﻿// A one-dimensional heat conduction problem, the way a finite element code
+// A one-dimensional heat conduction problem, the way a finite element code
 // would drive the stepper: the operator is assembled by the caller, and the
 // library only supplies the weights of the step.
 #include <atstep/atstep.hpp>
@@ -79,8 +79,11 @@ int main()
     initial[i] = std::sin(std::numbers::pi * x); // the first mode, held at zero at both ends
   }
 
-  atstep::Settings settings; // COMSOL's defaults: rtol 1e-2, orders 1 to 5
+  atstep::Settings settings; // one temperature field, 21 dofs
   settings.relative_tolerance = 1e-3;
+  // A fixed absolute tolerance is easier to reason about for a field whose
+  // magnitude the mode changes.
+  settings.scale_absolute_tolerance = false;
 
   atstep::TimeStepper<std::vector<double>> stepper(
     settings,

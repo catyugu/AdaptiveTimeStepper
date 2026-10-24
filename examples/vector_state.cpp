@@ -1,4 +1,4 @@
-﻿// A nonlinear system the caller iterates itself: the stepper asks for a step
+// A nonlinear system the caller iterates itself: the stepper asks for a step
 // and the example's Newton loop supplies it. The state is a plain
 // `std::vector<double>`, which the library takes without an adapter.
 #include <atstep/atstep.hpp>
@@ -68,7 +68,8 @@ int main()
   atstep::Settings settings;
   settings.max_order = 2; // the order COMSOL's transport physics default to
   settings.relative_tolerance = 1e-6;
-  settings.absolute_factor = 1.0; // a species that starts at zero has no scale
+  settings.absolute_tolerance_factor = 1.0; // a species that starts at zero has no scale
+  settings.field_sizes = {1, 1};
 
   atstep::TimeStepper<std::vector<double>> stepper(
     settings,
