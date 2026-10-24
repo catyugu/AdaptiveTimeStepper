@@ -159,7 +159,9 @@ Store modes:
 backward-Euler solves, so the first returned state can differ slightly from
 `initial`; a second-order run gives `start(t0, u0, v0, end)` its velocity as the
 second initial value and advances the pair the same way. `run(times, hooks)`
-requires strictly increasing times starting at `t0` and ending at `end`.
+requires a fresh `start` and strictly increasing times starting at `t0` and ending
+at `end`. Use either `run` for the complete schedule or `advance` for a
+caller-driven loop; call `start` before switching to a new run.
 
 `on_step` receives each accepted step's record and the state it left; `on_store`
 receives output values. `RunReport` contains step, rejection, failed-solve and
@@ -174,6 +176,13 @@ it retries a step the solve failed or the error test refused — and reports it.
 An attempt is the library's own: a step the solve or the test refuses is
 retried inside the call, and the caller is never handed a candidate to commit.
 An integrator is neither copyable nor movable; `start` begins a run again.
+
+Requests and their state references are borrowed only for the solve callback.
+The stepper constructs requests; callers do not construct or retain them.
+State assignments reuse existing buffers. A rejected attempt leaves accepted
+history intact. If a state operation throws while initialization or a history
+update is in progress, access and further stepping are refused until `start`
+rebuilds the run. The library does not catch exceptions from user code.
 
 ## Build and test
 

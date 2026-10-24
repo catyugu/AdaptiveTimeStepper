@@ -153,6 +153,41 @@ TEST_CASE("second order: the condensed step is the augmented system's own")
   CHECK(worst_slope < 1e-8);
 }
 
+TEST_CASE("second order: a failed solve discards its candidate before retrying")
+{
+  const Oscillator oscillator;
+  bool failed = false;
+  bool retried = false;
+  double failed_step = 0.0;
+  atstep::SecondOrderStepper<State> stepper(manual(2, 0.05),
+    [&](const atstep::SecondOrderRequest<State>& request, State& u) {
+      if (not request.initializing and not failed) {
+        failed = true;
+        failed_step = request.step;
+        // A failed solver need not leave a usable candidate. The next
+        // attempt must start from a fresh predictor.
+        u.clear();
+        return atstep::SolveOutcome {false, 3};
+      }
+      if (failed and not retried) {
+        retried = true;
+        CHECK_EQ(u.size(), 1U);
+        CHECK_NEAR(request.step, 0.25 * failed_step, 0.0);
+        CHECK_EQ(request.step_index, 0U);
+      }
+      return oscillator.solve(request, u);
+    });
+  stepper.start(0.0, State {oscillator.u0}, State {oscillator.v0}, 1.0);
+  const std::vector<double> times {0.0, 1.0};
+  const auto report = stepper.run(times);
+  CHECK(failed);
+  CHECK(retried);
+  CHECK_EQ(report.failed_solves, 1);
+  CHECK(report.steps > 0);
+  CHECK_NEAR(stepper.state()[0], oscillator.value(stepper.time()), 1e-3);
+  CHECK_NEAR(stepper.velocity()[0], oscillator.slope(stepper.time()), 1e-3);
+}
+
 TEST_CASE("second order: the derivative levels are the affine forms of the weights")
 {
   // `derivative` evaluates `u^(d)` in correction form, around the predictor, and
