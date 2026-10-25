@@ -11,7 +11,7 @@ per field:  E^2 = (1/M) * sum_j (1/N_j) * sum_{i in j} (e_i / W_i)^2
 flat:       E^2 = (1/N) * sum_i (e_i / W_i)^2,  N = sum_j N_j
 ```
 
-`include/atstep/norm.hpp` (`WeightedRms`) computes the flat one. The same norm is used twice in a
+`WeightedRmsNorm` in `include/atstep/detail/state.hpp` computes the flat one. The same norm is used twice in a
 run: the spring step `DT * yp_norm <= 1/2` (`include/atstep/detail/controller.hpp`, `first_step`) and
 the acceptance criterion. Sections 2 and 3 measure the two uses separately, so the claim does not
 rest on the assumption that they share one function.
@@ -299,7 +299,7 @@ contributing 1 dof and field B contributing 26 or 101, the measured norm behaves
 significant digits in the first step of the run and exactly (4.6e-16 and 1.5e-15) under a fourfold
 refinement of field B.
 
-`WeightedRms` in `include/atstep/norm.hpp` is the flat average, so it is the wrong rule for a model
+`WeightedRmsNorm` in `include/atstep/detail/state.hpp` is the flat average, so it is the wrong rule for a model
 with more than one field, and the discrepancy is not a rounding effect: for these models the two
 rules differ by a factor of 2.5 to 5 in the first step, by 24-34% in every step of a mesh comparison,
 and the accepted step count moves from 60 to 56 instead of to roughly 20. The repair is not a

@@ -55,9 +55,11 @@ TEST_CASE("comsol: reciprocal thermoelastic trajectories, derivatives and dissip
   atstep::Settings settings;
   settings.error.relative = 1e-7;
   settings.error.scaled = false;
-  settings.initialization.fraction = 1e-5;
-  std::get<atstep::AdaptiveSteps>(settings.steps).placement = atstep::Free {false};
-  settings.storage = atstep::Steps {};
+  std::get<atstep::BackwardEuler>(settings.initialization).fraction = 1e-5;
+  auto& adaptive = std::get<atstep::AdaptiveSteps>(settings.steps);
+  adaptive.placement = atstep::Placement::free;
+  adaptive.interpolate_end_time = false;
+  settings.storage = atstep::Storage::steps;
   State last_derivative;
   atstep::TimeStepper<State> stepper(settings,
     [&](const atstep::StepRequest<State>& request, State& y) {

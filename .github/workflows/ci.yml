@@ -1,4 +1,4 @@
-﻿name: CI
+name: CI
 
 on:
   push:
@@ -301,12 +301,13 @@ jobs:
 
           #include <cmath>
           #include <cstdio>
+          #include <variant>
           #include <vector>
 
           int main()
           {
               atstep::Settings settings;
-              settings.max_order = 2;
+              std::get<atstep::AdaptiveSteps>(settings.steps).max_order = 2;
               atstep::validate(settings);
 
               using State = std::vector<double>;

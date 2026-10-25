@@ -227,36 +227,40 @@ namespace atstep {
     /// second is the level the run starts at.
     void start(double time, const State& initial, double end_time)
     {
-      if (not std::isfinite(time) or not std::isfinite(end_time) or not(end_time > time))
-        throw std::invalid_argument(
-          "atstep: the end time must be past the start time");
-      // A failed restart must not expose a mixture of old history and new
-      // bounds. Only a completely initialized run becomes readable again.
+      require_bounds(time, end_time);
       started_ = false;
-      const double span = end_time - time;
-      controller_.emplace(settings_, span);
+      controller_.emplace(settings_, end_time - time);
       configure_norm();
+      const auto* backward = std::get_if<BackwardEuler>(&settings_.initialization);
+      if (not backward)
+        throw std::invalid_argument(
+          "atstep: this run takes its initial values as they are, so it needs the "
+          "initial derivative: call start(time, initial, derivative, end_time)");
+      const double span = end_time - time;
 
       // The probe is the initial step of the alternative the run steps in, times
       // the fraction of it the initialization takes. A manual run has no initial
-      // step fraction, and is scaled by the library default, as it always was
-      // (doc/evidence/stepping-sweep.md, the manual startup curve).
+      // step of its own, and is scaled by the library default, as it always was
+      // (doc/evidence/stepping-sweep.md, the manual startup curve). A named
+      // initial step is the one the caller gave, and the probe is a fraction of
+      // it.
       const auto [probe_step, probe_fraction] = std::visit(
         [span](const auto& steps) -> std::pair<double, double> {
           using Alternative = std::decay_t<decltype(steps)>;
           if constexpr (std::is_same_v<Alternative, ManualSteps>)
             return {steps.step, default_initial_step_fraction};
+          else if (steps.initial_step)
+            return {*steps.initial_step, 1.0};
           else
-            return {span, steps.initial_step_fraction};
+            return {span, default_initial_step_fraction};
         },
         settings_.steps);
-      const double probe = probe_step * probe_fraction * settings_.initialization.fraction;
+      const double probe = probe_step * probe_fraction * backward->fraction;
       const double cj = 1.0 / probe;
-      const double first_time = time + probe;
       const double initialized_time = time + 2.0 * probe;
       if (not std::isfinite(probe) or not(probe > 0.0)
         or not std::isfinite(cj) or not std::isfinite(initialized_time)
-        or not(first_time > time) or not(initialized_time > first_time)
+        or not(time + probe > time) or not(initialized_time > time + probe)
         or not(initialized_time < end_time))
         throw std::invalid_argument(
           "atstep: initialization steps must be finite and advance within the run");
@@ -284,16 +288,69 @@ namespace atstep {
 
       // The time derivative the first step is read from and predicted by:
       // the increment of the initialization step over its size.
-      const double derivative_norm = norm_(increment, level) / probe;
+      State derivative = increment;
+      detail::axpy(derivative, cj - 1.0, increment);
+      begin_run(time, level, derivative, norm_(increment, level) / probe,
+        initialized_time, end_time);
+    }
 
-      // Initialization supplies a level and a derivative, not a BDF interval.
+    /// Start from a state and a derivative the caller gives, without the
+    /// consistent initialization: COMSOL's "Consistent initialization: Off".
+    void start(double time, const State& initial, const State& derivative, double end_time)
+    {
+      require_bounds(time, end_time);
+      if (std::holds_alternative<BackwardEuler>(settings_.initialization))
+        throw std::invalid_argument(
+          "atstep: this run initializes consistently, so it takes no derivative: "
+          "call start(time, initial, end_time)");
+      started_ = false;
+      controller_.emplace(settings_, end_time - time);
+      configure_norm();
+      begin_run(time, initial, derivative, norm_(derivative, initial), time, end_time);
+    }
+
+    /// The time the run has reached: the newest accepted level's.
+    double time() const
+    {
+      require_started();
+      return accepted_.time;
+    }
+
+    /// The bounds of a run, and the fields of its error test.
+    void require_bounds(double time, double end_time) const
+    {
+      if (not std::isfinite(time) or not std::isfinite(end_time) or not(end_time > time))
+        throw std::invalid_argument(
+          "atstep: the end time must be past the start time");
+    }
+
+    /// The tail both starts share: the level and the derivative the run begins
+    /// at, the first step, and the difference table a level and a derivative
+    /// imply.
+    void begin_run(double time,
+      const State& level,
+      const State& derivative,
+      double derivative_norm,
+      double initialized_time,
+      double end_time)
+    {
+      if constexpr (std::is_same_v<Norm, detail::WeightedRmsNorm>) {
+        if (not norm_.fields.empty()) {
+          std::size_t dofs = 0;
+          for (const std::size_t field : norm_.fields)
+            dofs += field;
+          if (dofs != level.size())
+            throw std::invalid_argument(
+              "atstep: the fields of the error test do not add up to the size of the state");
+        }
+      }
       accepted_.state = level;
-      accepted_.derivative = increment;
-      detail::axpy(accepted_.derivative, cj - 1.0, increment);
+      accepted_.derivative = derivative;
       accepted_.time = initialized_time;
       accepted_.order = 1;
       output_.reference = level;
-      controller_->begin(controller_->first_step(derivative_norm));
+      const double step = controller_->first_step(derivative_norm, end_time - initialized_time);
+      controller_->begin(step, initialized_time);
       // Zero only the columns the configured order can reach: the scheme
       // reads `phi[0..max_order+1]`, and a state allocated here is a
       // state held for the whole run.
@@ -302,24 +359,16 @@ namespace atstep {
         column = level;
         detail::axpy(column, -1.0, level);
       }
-      // The first difference the scheme reads is the initialized derivative
-      // at the size the first step proposes — IDA's `phi[2] = h yp_0`. A step
+      // The first difference the scheme reads is the initial derivative at the
+      // size the first step proposes — IDA's `phi[2] = h yp_0`. A step
       // rescaled to another size reads it through its own factor.
       accepted_.phi[0] = level;
-      detail::axpy(
-        accepted_.phi[1], controller_->step_size() / probe, increment);
+      detail::axpy(accepted_.phi[1], controller_->step_size(), derivative);
       accepted_.psi.fill(0.0);
       accepted_.psi[0] = controller_->step_size();
       start_time_ = time;
       end_time_ = end_time;
       started_ = true;
-    }
-
-    /// The time the run has reached: the newest accepted level's.
-    double time() const
-    {
-      require_started();
-      return accepted_.time;
     }
 
     /// The current solution: the newest accepted level's state. It is the
@@ -390,14 +439,15 @@ namespace atstep {
         report.final_time = time;
         if (hooks.on_step)
           hooks.on_step(record, accepted_.state);
-        schedule.for_each_store(time, [&](double output_time, bool interpolated) {
-          if (not interpolated) {
-            store(output_time, accepted_.state, false, hooks, report);
-            return;
-          }
-          interpolate(output_time, work_.scratch);
-          store(output_time, work_.scratch, true, hooks, report);
-        });
+        schedule.for_each_store(time, static_cast<std::size_t>(report.steps),
+          [&](double output_time, bool interpolated) {
+            if (not interpolated) {
+              store(output_time, accepted_.state, false, hooks, report);
+              return;
+            }
+            interpolate(output_time, work_.scratch);
+            store(output_time, work_.scratch, true, hooks, report);
+          });
       }
       return report;
     }
@@ -522,7 +572,7 @@ namespace atstep {
         double step = controller.step_size();
         std::optional<double> boundary;
         if (schedule) {
-          const detail::StepSchedule::Placement placement
+          const detail::StepSchedule::Landing placement
             = schedule->place(step, from);
           step = placement.step;
           boundary = placement.boundary;
@@ -694,19 +744,18 @@ namespace atstep {
     void configure_norm()
     {
       if constexpr (std::is_same_v<Norm, detail::WeightedRmsNorm>) {
-        if (not controller_) {
-          norm_.relative = settings_.error.relative;
-          norm_.absolute = settings_.error.relative * settings_.error.absolute_factor;
-          norm_.scaled = settings_.error.scaled;
-          norm_.scale = settings_.error.scale;
-        }
+        if (not controller_)
+          norm_ = detail::WeightedRmsNorm::from(settings_.error);
         norm_.step_index = controller_ ? static_cast<std::size_t>(controller_->steps()) : 0;
       }
     }
 
+    /// The norm of the run's error, in the shape the run's norm has: COMSOL's
+    /// scaled absolute tolerance follows the solution returned to the caller,
+    /// and a norm of the caller's needs only the accepted state.
     double error_norm(const State& error)
     {
-      if constexpr (std::is_same_v<Norm, detail::WeightedRmsNorm>)
+      if constexpr (requires { norm_(error, accepted_.state, output_.reference); })
         return norm_(error, accepted_.state, output_.reference);
       else
         return norm_(error, accepted_.state);

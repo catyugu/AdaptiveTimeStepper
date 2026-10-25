@@ -50,10 +50,14 @@ namespace {
     }
   };
 
+  /// A run at a fixed step: the startup curve of a manual run is left out of
+  /// it, so that the step stays the one the test chose.
   atstep::Settings manual(int order, double step)
   {
     atstep::Settings settings;
-    settings.steps = atstep::ManualSteps {step, order};
+    atstep::ManualSteps manual_steps {step, order};
+    manual_steps.startup_fraction = 1.0;
+    settings.steps = manual_steps;
     return settings;
   }
 
@@ -146,7 +150,7 @@ TEST_CASE("second order: the condensed step is the augmented system's own")
     worst_value = std::max(
       worst_value, std::abs(condensed.state()[0] - blocks.state().u));
     worst_slope = std::max(
-      worst_slope, std::abs(condensed.velocity()[0] - blocks.state().v));
+      worst_slope, std::abs(condensed.derivative()[0] - blocks.state().v));
   }
   CHECK(worst_value < 1e-8);
   CHECK(worst_slope < 1e-8);
@@ -184,7 +188,7 @@ TEST_CASE("second order: a failed solve discards its candidate before retrying")
   CHECK_EQ(report.failed_solves, 1);
   CHECK(report.steps > 0);
   CHECK_NEAR(stepper.state()[0], oscillator.value(stepper.time()), 1e-3);
-  CHECK_NEAR(stepper.velocity()[0], oscillator.slope(stepper.time()), 1e-3);
+  CHECK_NEAR(stepper.derivative()[0], oscillator.slope(stepper.time()), 1e-3);
 }
 
 TEST_CASE("second order: the derivative levels are the affine forms of the weights")
@@ -239,9 +243,13 @@ TEST_CASE("second order: the error test measures the displacement alone")
   norm.relative = 1e-2;
   norm.absolute = 1e-3;
 
+  // The norm of a step of the pair is the norm of its state, wrapped
+  // explicitly: the derivative is not in the container's interface.
+  const atstep::detail::ValueNorm<State, atstep::detail::WeightedRmsNorm> pair_norm {
+    norm};
   const Pair error {State {1e-3}, State {1e9}};
   const Pair reference {State {1.0}, State {0.0}};
-  const double measured = norm(error, reference);
+  const double measured = pair_norm(error, reference);
   CHECK(measured < 1.0);
   CHECK_NEAR(measured, norm(State {1e-3}, State {1.0}), 0.0);
   CHECK(std::isfinite(measured));
@@ -275,7 +283,7 @@ TEST_CASE("second order: the hooks report the velocity of the level they see")
       return;
     ++levels;
     CHECK_NEAR(u[0], stepper.state()[0], 0.0);
-    CHECK_NEAR(v[0], stepper.velocity()[0], 0.0);
+    CHECK_NEAR(v[0], stepper.derivative()[0], 0.0);
   };
   const std::vector<double> times {0.0, 0.5, 1.0, 1.5, 2.0};
   const auto report = stepper.run(times, hooks);
@@ -286,7 +294,7 @@ TEST_CASE("second order: the hooks report the velocity of the level they see")
   CHECK(worst == 0.0);
   CHECK(stepper.state()[0] != 0.0);
   // The last hook saw the velocity of the level the run ended at.
-  CHECK_NEAR(velocity, stepper.velocity()[0], 0.0);
+  CHECK_NEAR(velocity, stepper.derivative()[0], 0.0);
 }
 
 TEST_CASE("second order: an adaptive run meets its tolerance")
@@ -320,12 +328,12 @@ TEST_CASE("second order: an adaptive run meets its tolerance")
   CHECK(worst_slope < 1e-3);
   // At the newest level the velocity is the one the solve left, and the dense
   // output agrees with it.
-  CHECK_NEAR(stepper.velocity()[0],
+  CHECK_NEAR(stepper.derivative()[0],
     oscillator.slope(stepper.time()),
     1e-4);
   State out;
   stepper.interpolate(stepper.time(), out, 1);
-  CHECK_NEAR(out[0], stepper.velocity()[0], 1e-9);
+  CHECK_NEAR(out[0], stepper.derivative()[0], 1e-9);
   stepper.interpolate(stepper.time(), out);
   CHECK_NEAR(out[0], stepper.state()[0], 1e-12);
 }
@@ -341,7 +349,7 @@ TEST_CASE("second order: the velocity the run starts from is an initial conditio
   atstep::SecondOrderStepper<State> stepper(
     settings, condensed_solve(oscillator));
   stepper.start(0.0, State {oscillator.u0}, State {oscillator.v0}, 2.0);
-  CHECK_NEAR(stepper.velocity()[0], oscillator.slope(stepper.time()), 1e-4);
+  CHECK_NEAR(stepper.derivative()[0], oscillator.slope(stepper.time()), 1e-4);
   CHECK_NEAR(stepper.state()[0], oscillator.value(stepper.time()), 1e-6);
 
   double worst = 0.0;

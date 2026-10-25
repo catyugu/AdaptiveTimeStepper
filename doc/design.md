@@ -139,19 +139,19 @@ u' - v            = 0
 M v' + C v + K u  = f
 ```
 
-The caller's state is the displacement, and the velocity is a companion the
+The caller's state is the state, and the first derivative is a companion the
 adapter keeps in a `detail::Augmented` state: prediction, levels, table, dense
 output and the error test of the kernel all run on the pair without knowing
 which half is which.
 
-The adapter owns only three additional displacement-sized buffers: the first
+The adapter owns only three additional state-sized buffers: the first
 and second derivative predictors and the second derivative's known term. Its
-request borrows the displacement predictor, first known term and derivative
+request borrows the state predictor, first known term and derivative
 scratch from the kernel request. These borrowed references live for the same
 solve callback; no separate reference bundle is stored. A failed solve returns
-immediately, without trying to reconstruct velocity from a failed candidate.
+immediately, without trying to reconstruct the derivative from a failed candidate.
 
-The step's solve is then the condensed system of the displacement alone. With
+The step's solve is then the condensed system of the state alone. With
 `cj` the step's first-derivative weight, the two derivative levels are the
 affine forms
 
@@ -160,7 +160,7 @@ u'  = cj    u + known(1)
 u'' = cj^2  u + known(2),   known(2) = cj known(1) + known(v),
 ```
 
-where `known(v)` is the known term of the velocity's own formula.
+where `known(v)` is the known term of the first derivative's own formula.
 
 and substituting them into the equation leaves
 
@@ -171,34 +171,34 @@ and substituting them into the equation leaves
 A nonlinear residual is condensed the same way, and its Jacobian is
 `dF/du + cj dF/du' + cj² dF/du''`. The linear system is the size it was before
 the augmentation, and the adapter is the only place that knows about it. The
-solve returns the displacement; the adapter derives the level's velocity from
+solve returns the state; the adapter derives the level's first derivative from
 the kinematic constraint, `v = cj u + known(1)`, which is what makes the pair at
 every accepted level a consistent one.
 
-`run` reports the velocity with every stored displacement, `velocity()` is the
-newest level's, and `interpolate(t, 1)` is the dense velocity: the kernel's dense
-derivative of the pair, whose velocity block is the displacement's derivative.
+`run` reports the first derivative with every stored state, `derivative()` is the
+newest level's, and `interpolate(t, 1)` is the dense first derivative: the kernel's dense
+derivative of the pair, whose derivative block is the state's derivative.
 
 Two consequences of the layering are deliberate:
 
-- The error test measures the displacement alone, because the norm of the kernel
+- The error test measures the state alone, because the norm of the kernel
   is applied to `Augmented`, whose `size()` and `operator[]` are the
-  displacement's. The velocity's error is the derivative of the displacement's,
+  state's. The first derivative's error is the derivative of the state's,
   so a norm over it would hold the step to the accuracy of a derivative — a
   factor `1/h` tighter — rather than to the accuracy of the solution. COMSOL's
-  error test excludes its auxiliary velocity for the same reason. State
+  error test excludes its auxiliary derivative for the same reason. State
   augmentation and error-norm selection are therefore separate decisions: the
   caller's norm describes its own variables, and the pairs never reach it.
 - No equation ever carries two derivatives into the kernel, so there is one
   integration path, one order selection and one error estimate. Differencing the
-  displacement levels twice — the classical stencil of version 1.0 — is a
+  state levels twice — the classical stencil of version 1.0 — is a
   different and worse discretization: the BDF polynomial through the levels has
   a parasitic root of multiplicity two, and the run is first order however high
   the scheme's order is.
 
 The initialization is the kernel's: two artificial backward-Euler steps of the
-pair. The initial velocity is a second initial value, and the increment of the
-displacement over the probe is what the first step is sized from, as the
+pair. The initial derivative is a second initial value, and the increment of the
+state over the probe is what the first step is sized from, as the
 measured derivative is for a first-order run.
 
 ## Output and error weights
@@ -241,7 +241,8 @@ rejection, restart, invalid input, aliased derivative output and failed history
 updates. CTest also runs
 four examples. The [scalar COMSOL regressions](comsol-alignment.md) compare 21 recorded
 scalar configurations, totaling 1,336 output samples, including times, states,
-derivatives, failure counts and logged orders. Reference data is never injected
+derivatives and failure counts; the orders in COMSOL's solver log are printed
+as a diagnostic. Reference data is never injected
 into the numerical solve.
 
 The [thermoelastic regression](multiphysics.md) additionally compares 161

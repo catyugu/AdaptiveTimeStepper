@@ -1,11 +1,8 @@
 // COMSOL's stepping-settings sweep, replayed against the library.
 //
 // Every case in test/reference/comsol_stepping.hpp is a setting COMSOL ran,
-// with the times and the solver's decisions it recorded.  This file is the
-// acceptance data for the configuration rewrite: a group of cases fails until
-// the setting it needs exists, and the failure says which one and what
-// COMSOL measured.  The interface the rewrite is to have is in
-// doc/target-api.md.
+// with the times and the solver's decisions it recorded. This file replays them
+// through the library, grouped by the setting each group exercises.
 //
 // The comparison is on the stored times and on the solver's decisions.  The
 // values are printed, not checked: they depend on the algebraic solve, which
@@ -35,58 +32,45 @@ namespace {
   /// The state of the COMSOL model: one degree of freedom, `u`.
   using State = comsol_decay::State;
 
-  /// The settings of one COMSOL case, in the interface the rewrite is to have
-  /// (doc/target-api.md).  A setting the library cannot express yet is
-  /// reported with a runtime error, which the framework turns into a failing
-  /// case.
+  /// The settings of one COMSOL case.
   void
   settings_of(const comsol_stepping::SteppingCase& reference, atstep::Settings& settings)
   {
     settings.error.relative = reference.tolerance;
-    settings.storage = atstep::Steps {};
+    settings.storage = atstep::Storage::steps;
 
     const std::string mode(reference.step_mode);
     if (mode == "manual") {
       // Every manual case of the sweep takes a step of 0.1 s; the recorded
       // header carries the order and the startup curve, not the step.
       atstep::ManualSteps manual {0.1, reference.manual_order, true};
-      const bool trivial_curve = reference.initial_fraction == 1.0;
-      if (not trivial_curve)
-        throw std::runtime_error(
-          "COMSOL's manual startup curve is not expressible yet: a manual run "
-          "needs a startup fraction and growth rate "
-          "(doc/target-api.md, ManualSteps)");
+      manual.startup_fraction = reference.initial_fraction;
+      manual.startup_growth = reference.growth_rate;
       settings.steps = manual;
       return;
     }
 
     atstep::AdaptiveSteps adaptive;
     adaptive.max_order = reference.max_order;
-    adaptive.placement = atstep::Free {};
+    adaptive.placement = atstep::Placement::free;
 
     const std::string max_step(reference.max_step_kind);
     if (max_step == "const") {
-      // COMSOL's "maxstepbdf" is an absolute time value.  The library's
-      // ConstantMaxStep holds a fraction of the span instead, so this case
-      // runs with the wrong unit until the rewrite changes it.
+      // COMSOL's "maxstepbdf" is an absolute time value.
       adaptive.max_step = atstep::ConstantMaxStep {std::stod(reference.max_step_value)};
     }
     else if (max_step == "expr") {
-      throw std::runtime_error(
-        "COMSOL's expression maximum step is not expressible yet: a run needs a "
-        "maximum step that is an expression, evaluated while solving "
-        "(doc/target-api.md, MaximumStep)");
+      // COMSOL's expression maximum step: 0.05*(1+0.5 sin t), evaluated while
+      // solving, and its absolute value is the cap.
+      adaptive.max_step = atstep::ExpressionMaxStep {
+        [](double time) { return 0.05 * (1.0 + 0.5 * std::sin(time)); }};
     }
 
     if (std::string(reference.initial_step_kind) == "specified")
-      throw std::runtime_error(
-        "COMSOL's specified initial step is not expressible yet: a run needs "
-        "an initial step of its own (doc/target-api.md, AdaptiveSteps)");
+      adaptive.initial_step = reference.initial_step_value;
 
     if (reference.store_every != 1)
-      throw std::runtime_error(
-        "COMSOL's store every Nth step is not expressible yet: a run needs a "
-        "store-every count (doc/target-api.md, Settings)");
+      settings.store_every = reference.store_every;
 
     settings.steps = adaptive;
   }

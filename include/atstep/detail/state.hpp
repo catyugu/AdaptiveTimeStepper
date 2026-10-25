@@ -6,9 +6,12 @@
 #include <concepts>
 #include <cstddef>
 #include <limits>
+#include <numeric>
 #include <stdexcept>
 #include <type_traits>
 #include <vector>
+
+#include "../settings.hpp"
 
 namespace atstep::detail {
 
@@ -80,7 +83,33 @@ namespace atstep::detail {
     bool scaled = false;
     /// `sigma_i`; an empty vector, and an index past its end, are one.
     std::vector<double> scale;
+    /// The partition of the state into fields, as their sizes: COMSOL averages
+    /// the squared ratios over the fields first and over the degrees of freedom
+    /// of a field second. An empty vector is one field over every degree of
+    /// freedom.
+    std::vector<std::size_t> fields;
     std::size_t step_index = 0;
+
+    /// The norm of COMSOL's settings: the tolerances, and the scales of the
+    /// fields laid over the degrees of freedom in order. An empty layout is one
+    /// field of scale one over every degree of freedom.
+    static WeightedRmsNorm from(const ErrorTest& error)
+    {
+      WeightedRmsNorm norm;
+      norm.relative = error.relative;
+      norm.absolute = error.absolute.kind == AbsoluteTolerance::Kind::factor
+        ? error.relative * error.absolute.value
+        : error.absolute.value;
+      norm.scaled = error.scaled;
+      for (const Field& field : error.layout.fields) {
+        if (field.dofs == 0)
+          throw std::invalid_argument(
+            "atstep: a field of the error test needs at least one degree of freedom");
+        norm.fields.push_back(field.dofs);
+        norm.scale.insert(norm.scale.end(), field.dofs, field.scale);
+      }
+      return norm;
+    }
 
     template <class State>
       requires requires(const State& s) {
@@ -106,7 +135,7 @@ namespace atstep::detail {
       if (n == 0)
         return 0.0;
       const double decay = std::exp(-0.2 * static_cast<double>(step_index));
-      double sum = 0.0;
+      std::vector<double> squares(n, 0.0);
       for (std::size_t i = 0; i < n; ++i) {
         double limit = absolute;
         if (scaled) {
@@ -120,13 +149,27 @@ namespace atstep::detail {
         if (weight == 0.0) {
           if (error[i] != 0.0)
             return std::numeric_limits<double>::infinity();
+          continue;
         }
-        else {
-          const double ratio = error[i] / weight;
-          sum += ratio * ratio;
-        }
+        const double ratio = error[i] / weight;
+        squares[i] = ratio * ratio;
       }
-      return std::sqrt(sum / static_cast<double>(n));
+      if (fields.empty())
+        return std::sqrt(std::accumulate(squares.begin(), squares.end(), 0.0)
+          / static_cast<double>(n));
+      // COMSOL averages over the fields first, so that a field of many degrees
+      // of freedom does not outvote a field of few.
+      double total = 0.0;
+      std::size_t first = 0;
+      for (const std::size_t dofs : fields) {
+        const std::size_t last = std::min(first + dofs, n);
+        total += std::accumulate(squares.begin() + static_cast<std::ptrdiff_t>(first),
+                   squares.begin() + static_cast<std::ptrdiff_t>(last),
+                   0.0)
+          / static_cast<double>(dofs);
+        first = last;
+      }
+      return std::sqrt(total / static_cast<double>(fields.size()));
     }
   };
 

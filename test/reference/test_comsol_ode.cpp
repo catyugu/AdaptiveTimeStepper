@@ -30,11 +30,11 @@ namespace {
     atstep::Settings settings;
     settings.error.relative = reference.tolerance;
     if (std::string(reference.store_mode) == "tlist")
-      settings.storage = atstep::Interpolate {};
+      settings.storage = atstep::Storage::interpolate;
     else if (std::string(reference.store_mode) == "tstepsclosest")
-      settings.storage = atstep::Closest {};
+      settings.storage = atstep::Storage::closest;
     else
-      settings.storage = atstep::Steps {};
+      settings.storage = atstep::Storage::steps;
     if (mode == "manual") {
       settings.steps = atstep::ManualSteps {
         reference.manual_step, 2, reference.interpolate_end_time};
@@ -42,13 +42,15 @@ namespace {
     }
     atstep::AdaptiveSteps adaptive;
     adaptive.max_order = reference.max_order;
-    adaptive.max_step = atstep::ConstantMaxStep {reference.max_step_fraction};
+    if (std::string(reference.max_step_kind) == "const")
+      adaptive.max_step = atstep::ConstantMaxStep {reference.max_step_seconds};
     if (mode == "strict")
-      adaptive.placement = atstep::Strict {};
+      adaptive.placement = atstep::Placement::strict;
     else if (mode == "intermediate")
-      adaptive.placement = atstep::Intermediate {reference.interpolate_end_time};
+      adaptive.placement = atstep::Placement::intermediate;
     else
-      adaptive.placement = atstep::Free {reference.interpolate_end_time};
+      adaptive.placement = atstep::Placement::free;
+    adaptive.interpolate_end_time = reference.interpolate_end_time;
     settings.steps = adaptive;
     return settings;
   }

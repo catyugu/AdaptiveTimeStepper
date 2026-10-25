@@ -7,8 +7,8 @@ Header-only C++20 adaptive BDF integration, with variable order 1–5 and no
 external dependencies. The caller solves the equations; the library manages
 prediction, history, error estimates, step size, order and output.
 First-order-in-time systems go to the stepper directly; a second-order-in-time
-equation goes to the same kernel through an adapter that introduces the velocity
-and condenses the Newton system back to the displacement, as COMSOL's IDA path
+equation goes to the same kernel through an adapter that introduces the first derivative
+and condenses the Newton system back to the state, as COMSOL's IDA path
 does. The first-order method is checked against recorded COMSOL 6.2 scalar runs.
 
 ## Example
@@ -50,19 +50,18 @@ In a nonlinear residual, `request.derivative(y, dy)` writes the derivative into
 the solve fails; the stepper retries at a quarter of the step size.
 
 Runnable examples cover [heat conduction](examples/heat_equation.cpp),
-a [damped oscillator as a second-order equation](examples/second_order.cpp), a
-[nonlinear reaction system](examples/vector_state.cpp) and an
-[electrical–thermal–mechanical motor](examples/coupled_motor.cpp).
+a [damped oscillator as a second-order equation](examples/second_order.cpp) and
+an [electrical–thermal–mechanical motor](examples/coupled_motor.cpp).
 The [coupled cases](doc/multiphysics.md) also include a thermoelastic
 COMSOL trajectory regression.
 
 ## Second-order equations
 
 `M u'' + C u' + K u = f(t)` goes to `SecondOrderStepper`. It introduces the
-velocity the BDF kernel needs and condenses each step back to the displacement,
+first derivative the BDF kernel needs and condenses each step back to the state,
 so the solve is the size it was — the state augmentation and reduction COMSOL's
-IDA path performs. The error test measures the displacement, and `run` reports the
-velocity with every stored value. See
+IDA path performs. The error test measures the state, and `run` reports the
+first derivative with every stored value. See
 [the oscillator example](examples/second_order.cpp) and the
 [design](doc/design.md#second-order-equations).
 
@@ -99,39 +98,43 @@ atstep::TimeStepper<State, decltype(norm)> stepper(settings, solve, norm);
 
 The default norm is `sqrt(mean((error_i / (A_i + R*abs(reference_i)))^2))`.
 `R` is `settings.error.relative`. When `settings.error.scaled` is false, `A_i` is
-the fixed `R * settings.error.absolute_factor`; under the default scaled form:
+the fixed `A_k`, which is `R * settings.error.absolute.value` under the
+"Factor" method and the value itself under the "Manual" one; under the default
+scaled form:
 
 ```text
-A_i = R * absolute_factor * ((2 - exp(-j/5))*abs(returned_i)
-                            + exp(-j/5)*sigma_i)
+A_i = A_k * ((2 - exp(-j/5))*abs(returned_i) + exp(-j/5)*sigma_i)
 ```
 
 Here `j` counts accepted steps, `reference` is the last accepted internal
 state, and `returned` is the most recently stored state, possibly interpolated.
-`settings.error.scale` supplies `sigma_i`; missing entries default to one. A
+The scale `sigma_i` of a degree of freedom is the scale of its field, which
+`settings.error.layout` names; a field's scale of one is the default. A
 nonzero error with zero weight has infinite norm. Mismatched vector sizes are
 rejected.
 
 ## Settings and output
 
 `Settings` is a tree: a run steps in one of two alternatives, and each
-alternative holds only the fields it reads.
+alternative holds only the fields it reads. The shape is COMSOL's own, and
+doc/design.md records how the kernel reads it.
 
-| Setting                           | Default            | Meaning                                              |
-| :-------------------------------- | :----------------- | :--------------------------------------------------- |
-| `steps`                           | `AdaptiveSteps`    | The solver's steps, or `ManualSteps`                 |
-| `AdaptiveSteps::placement`        | `Free {}`          | Where the solver's steps land                        |
-| `AdaptiveSteps::max_step`         | `AutomaticMaxStep` | `AutomaticMaxStep`, `ConstantMaxStep`, `UnlimitedMaxStep` |
-| `AdaptiveSteps::min_order`, `::max_order` | 1, 5        | Adaptive order range; startup uses available history |
-| `AdaptiveSteps::initial_step_fraction` | 1e-3          | Initial step as a fraction of the run span           |
-| `AdaptiveSteps::min_step_fraction` | 1e-10             | Minimum step as a fraction of the span               |
-| `ManualSteps::step`, `::order`    | 0.0, 2             | The fixed step of a manual run, and its BDF order    |
-| `error.relative`                  | 1e-2               | Relative error weight                                |
-| `error.absolute_factor`           | 0.1                | Absolute tolerance factor                            |
-| `error.scaled`                    | true               | Scale the absolute weight by each dof's magnitude    |
-| `error.scale`                     | empty              | Per-dof `sigma_i`; empty means one                   |
-| `initialization.fraction`         | 1e-3               | Artificial initialization step factor                |
-| `storage`                         | `Interpolate {}`   | Output selection                                     |
+| Setting                                   | Default                | Meaning                                                    |
+| :---------------------------------------- | :--------------------- | :--------------------------------------------------------- |
+| `steps`                                   | `AdaptiveSteps`        | The solver's steps, or `ManualSteps`                       |
+| `AdaptiveSteps::placement`                | `Placement::free`      | Where the solver's steps land                              |
+| `AdaptiveSteps::max_step`                 | `AutomaticMaxStep`     | `AutomaticMaxStep`, `ConstantMaxStep`, `ExpressionMaxStep` |
+| `AdaptiveSteps::min_order`, `::max_order` | 1, 5                   | Adaptive order range; startup uses available history       |
+| `AdaptiveSteps::initial_step`             | unset                  | The first step; unset means the automatic rule             |
+| `AdaptiveSteps::min_step_fraction`        | 1e-10                  | Minimum step as a fraction of the span                     |
+| `ManualSteps::step`, `::order`            | 0.0, 2                 | The fixed step of a manual run, and its BDF order          |
+| `error.relative`                          | 1e-2                   | Relative error weight                                      |
+| `error.absolute`                          | factor 0.1             | The absolute tolerance: a factor of `relative`, or a value |
+| `error.scaled`                            | true                   | Scale the absolute weight by each dof's magnitude          |
+| `error.layout`                            | empty                  | The fields of the state, and their scales                  |
+| `initialization`                          | `BackwardEuler`        | The artificial initialization, and its step factor         |
+| `storage`                                 | `Storage::interpolate` | Output selection                                           |
+| `store_every`                             | 1                      | Store every Nth step                                       |
 
 ### Why the default maximum order is 5
 
@@ -168,7 +171,7 @@ Store modes, `settings.storage`:
 
 `start(t0, initial, end)` resets the run. Initialization performs two artificial
 backward-Euler solves, so the first returned state can differ slightly from
-`initial`; a second-order run gives `start(t0, u0, v0, end)` its velocity as the
+`initial`; a second-order run gives `start(t0, u0, du0, end)` its first derivative as the
 second initial value and advances the pair the same way. `run(times, hooks)`
 requires a fresh `start` and strictly increasing times starting at `t0` and ending
 at `end`. Use either `run` for the complete schedule or `advance` for a
@@ -233,22 +236,27 @@ The configuration is a tree, and each alternative owns the fields its steps
 read. There is no compatibility layer: the old spellings below are gone, not
 aliased.
 
-| 1.3                                                                          | now                                                                                 |
-| :--------------------------------------------------------------------------- | :---------------------------------------------------------------------------------- |
-| `settings.max_order`, `settings.min_order`                                   | `std::get<atstep::AdaptiveSteps>(settings.steps).max_order` / `.min_order`           |
-| `settings.first_step_fraction`                                               | `AdaptiveSteps::initial_step_fraction`                                              |
-| `settings.min_step_fraction`                                                 | `AdaptiveSteps::min_step_fraction`                                                  |
-| `settings.max_step_fraction = f`                                             | `AdaptiveSteps::max_step = atstep::ConstantMaxStep {f}`                             |
-| `settings.max_step_fraction` not positive                                    | `AdaptiveSteps::max_step = atstep::UnlimitedMaxStep {}`                             |
-| `settings.stepping = atstep::ManualStep {s, o}`                              | `settings.steps = atstep::ManualSteps {s, o}`                                       |
-| `settings.stepping = atstep::AutomaticStep {placement}`                      | `AdaptiveSteps::placement = atstep::Free {}` / `Intermediate {}` / `Strict {}`      |
-| `settings.relative_tolerance`                                                | `settings.error.relative`                                                           |
-| `settings.absolute_factor`                                                   | `settings.error.absolute_factor`                                                    |
-| `settings.absolute_tolerance = atstep::ScaledAbsoluteTolerance {scale}`      | `settings.error.scaled = true` and `settings.error.scale = scale`                   |
-| `settings.absolute_tolerance = atstep::FixedAbsoluteTolerance {}`            | `settings.error.scaled = false`                                                     |
-| `settings.init_step_fraction`                                                | `settings.initialization.fraction`                                                  |
-| `settings.store_mode = atstep::StoreMode::x`                                 | `settings.storage = atstep::Interpolate {}` / `Closest {}` / `Steps {}`             |
-| `settings.interpolate_end_time = flag`                                       | `atstep::Free {flag}`, `atstep::Intermediate {flag}` or `ManualSteps::interpolate_end_time` |
+| 1.3                                                                     | now                                                                                  |
+| :---------------------------------------------------------------------- | :----------------------------------------------------------------------------------- |
+| `settings.max_order`, `settings.min_order`                              | `std::get<atstep::AdaptiveSteps>(settings.steps).max_order` / `.min_order`           |
+| `settings.first_step_fraction`                                          | `AdaptiveSteps::initial_step`; unset means the automatic rule                        |
+| `settings.min_step_fraction`                                            | `AdaptiveSteps::min_step_fraction`                                                   |
+| `settings.max_step_fraction = f`                                        | `AdaptiveSteps::max_step = atstep::ConstantMaxStep {seconds}`                        |
+| `settings.max_step_fraction` not positive                               | `AdaptiveSteps::max_step = atstep::AutomaticMaxStep {}`                              |
+| `settings.stepping = atstep::ManualStep {s, o}`                         | `settings.steps = atstep::ManualSteps {s, o}`                                        |
+| `settings.stepping = atstep::AutomaticStep {placement}`                 | `AdaptiveSteps::placement = atstep::Placement::free` / `::intermediate` / `::strict` |
+| `settings.relative_tolerance`                                           | `settings.error.relative`                                                            |
+| `settings.absolute_factor`                                              | `settings.error.absolute.value`                                                      |
+| `settings.absolute_tolerance = atstep::ScaledAbsoluteTolerance {scale}` | `settings.error.scaled = true`, and the scale per field in `settings.error.layout`   |
+| `settings.absolute_tolerance = atstep::FixedAbsoluteTolerance {}`       | `settings.error.scaled = false`                                                      |
+| `settings.init_step_fraction`                                           | `std::get<atstep::BackwardEuler>(settings.initialization).fraction`                  |
+| `settings.store_mode = atstep::StoreMode::x`                            | `settings.storage = atstep::Storage::interpolate` / `::closest` / `::steps`          |
+| `settings.interpolate_end_time = flag`                                  | `AdaptiveSteps::interpolate_end_time` or `ManualSteps::interpolate_end_time`         |
+
+Two of the changes are not a spelling: `ConstantMaxStep` takes an absolute time
+value, not a fraction of the span, and the automatic first step is a fraction
+of the interval that remains after the consistent initialization, not of the
+whole span.
 
 The headers are `atstep/atstep.hpp`, `atstep/stepper.hpp`,
 `atstep/second_order.hpp` and `atstep/settings.hpp`. Everything under

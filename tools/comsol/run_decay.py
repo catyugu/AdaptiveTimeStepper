@@ -53,7 +53,7 @@ def write_trajectories(directory: Path, force: bool = False) -> None:
         "struct LoggedStep { int step; int order; };",
         "struct Trajectory {",
         "    const char* name; int max_order; double tolerance;",
-        "    const char* step_mode; double max_step_fraction;",
+        "    const char* step_mode; const char* max_step_kind; double max_step_seconds;",
         "    bool interpolate_end_time; bool exact; int rejected; int failed_solves;",
         "    int accepted_steps; const char* store_mode; double manual_step;",
         "    std::vector<double> output_times;",
@@ -95,7 +95,7 @@ def write_trajectories(directory: Path, force: bool = False) -> None:
         rejected, failed = decisions[-1][2:]
         output.append(
             f'        {{"{name}", {case["max_order"]}, {case["tolerance"]}, '
-            f'"{case["mode"]}", {case["max_step_fraction"]}, '
+            f'"{case["mode"]}", "{case["max_step_kind"]}", {case["max_step_seconds"]}, '
             f"{case['end_interpolation']}, {case['exact']}, {rejected}, {failed}, "
             f'{decisions[-1][0]}, "{case["store"]}", {case["manual_step"]}, '
             "{" + ", ".join(repr(float(t)) for t in case["times"].split()) + "}, {"

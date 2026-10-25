@@ -93,7 +93,8 @@ int main()
   atstep::Settings settings;
   auto& adaptive = std::get<atstep::AdaptiveSteps>(settings.steps);
   adaptive.max_order = 2;
-  adaptive.placement = atstep::Free {false};
+  adaptive.placement = atstep::Placement::free;
+  adaptive.interpolate_end_time = false;
   settings.error.relative = 1e-6;
   settings.error.scaled = false;
   atstep::TimeStepper<State> stepper(settings, motor);

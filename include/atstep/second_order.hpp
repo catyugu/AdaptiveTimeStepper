@@ -17,9 +17,7 @@ namespace atstep {
 
   namespace detail {
 
-    /// Displacement and velocity, advanced by the same BDF formula. The
-    /// default error norm measures only displacement, as COMSOL's IDA path
-    /// does; the solve enforces the velocity's kinematic constraint.
+    /// The state and its first derivative, advanced by the same BDF formula.
     template <class State>
     struct Augmented {
       State value {};
@@ -30,19 +28,11 @@ namespace atstep {
         detail::axpy(value, a, x.value);
         detail::axpy(derivative, a, x.derivative);
       }
-
-      std::size_t size() const
-      {
-        return value.size();
-      }
-
-      double operator[](std::size_t i) const
-      {
-        return value[i];
-      }
     };
 
-    /// Apply a caller-supplied norm to displacement only.
+    /// The norm of a step of a second-order run, measured on the state:
+    /// COMSOL's IDA path excludes the auxiliary derivative from the error test,
+    /// and the solve enforces the constraint that ties the two levels together.
     template <class State, class Norm>
     struct ValueNorm {
       Norm norm;
@@ -52,9 +42,19 @@ namespace atstep {
       {
         return norm(error.value, reference.value);
       }
+
+      double operator()(const Augmented<State>& error,
+        const Augmented<State>& reference,
+        const Augmented<State>& scale_reference) const
+      {
+        if constexpr (requires { norm(error.value, reference.value, scale_reference.value); })
+          return norm(error.value, reference.value, scale_reference.value);
+        else
+          return norm(error.value, reference.value);
+      }
     };
 
-    /// Owned by the adapter and overwritten on each attempt. The displacement
+    /// Owned by the adapter and overwritten on each attempt. The state's
     /// predictor, first history and derivative scratch belong to the kernel.
     template <class State>
     struct SecondOrderWork {
@@ -69,7 +69,7 @@ namespace atstep {
     requires detail::StateVector<State>
   class SecondOrderStepper;
 
-  /// Coefficients for a solve in displacement alone.
+  /// Coefficients for a solve in the state alone.
   ///
   /// The equation is `M u'' + C u' + K u = f(t)`, or any residual in `u`, `u'`
   /// and `u''`, and the step holds its derivatives to the affine forms
@@ -126,7 +126,7 @@ namespace atstep {
                              : work_.second_history;
     }
 
-    /// `out = u^(derivative)` of the displacement `u`. `out` is a state of the
+    /// `out = u^(derivative)` of the state `u`. `out` is a state of the
     /// caller's and may not be one of this request's.
     void derivative(const State& u, State& out, int derivative = 1) const
     {
@@ -172,29 +172,27 @@ namespace atstep {
   /// What a second-order run reports as it goes.
   template <class State>
   struct SecondOrderHooks {
-    /// Every accepted step, with the displacement and the velocity it left.
+    /// Every accepted step, with the state and the derivative it left.
     /// The states are the stepper's own buffers and are only valid during the
     /// call.
     std::function<void(const StepRecord&, const State&, const State&)>
       on_step;
-    /// Every stored value: the time, the displacement, the velocity, and
+    /// Every stored value: the time, the state, its first derivative, and
     /// whether the value was interpolated from the steps around it. The states
     /// are the stepper's own buffers and are only valid during the call.
     std::function<void(double, const State&, const State&, bool)> on_store;
   };
 
-  /// Integrates `(displacement, velocity)` through TimeStepper, with each
-  /// solve condensed to displacement (see SecondOrderRequest). The error test
-  /// measures displacement only. `start(t0, u0, v0, end)` applies the kernel's
+  /// Integrates `(state, first derivative)` through TimeStepper, with each
+  /// solve condensed to the state (see SecondOrderRequest). The error test
+  /// measures the state only. `start(t0, u0, du0, end)` applies the kernel's
   /// two artificial backward-Euler steps to both initial conditions.
   ///
   /// An integrator is neither copyable nor movable.
   template <class State, class Norm = detail::WeightedRmsNorm>
     requires detail::StateVector<State>
   class SecondOrderStepper {
-    using InnerNorm = std::conditional_t<std::is_same_v<Norm, detail::WeightedRmsNorm>,
-      Norm,
-      detail::ValueNorm<State, Norm>>;
+    using InnerNorm = detail::ValueNorm<State, Norm>;
     using Inner = TimeStepper<detail::Augmented<State>, InnerNorm>;
 
   public:
@@ -205,27 +203,27 @@ namespace atstep {
     /// @param[in] solve the solve of one condensed step (see the class
     /// comment).
     /// @param[in] norm the norm the error of a step is measured in, over the
-    /// displacement. The default is COMSOL's weighted RMS, whose tolerances
+    /// state. The default is COMSOL's weighted RMS, whose tolerances
     /// are taken from `settings`.
     explicit SecondOrderStepper(const Settings& settings,
       Solve solve,
       Norm norm = Norm {})
       : solve_(std::move(solve))
-      , inner_(settings, [this](const StepRequest<detail::Augmented<State>>& request, detail::Augmented<State>& y) { return solve_step(request, y); }, inner_norm(std::move(norm)))
+      , inner_(settings, [this](const StepRequest<detail::Augmented<State>>& request, detail::Augmented<State>& y) { return solve_step(request, y); }, inner_norm(settings, std::move(norm)))
     {
       if (not solve_)
         throw std::invalid_argument("atstep: a run needs a solve");
     }
 
-    /// Prepare the run: the displacement and the velocity at `time`,
+    /// Prepare the run: the state and its first derivative at `time`,
     /// integrated to `end_time`.
     void start(double time,
       const State& initial,
-      const State& velocity,
+      const State& derivative,
       double end_time)
     {
       inner_.start(
-        time, detail::Augmented<State> {initial, velocity}, end_time);
+        time, detail::Augmented<State> {initial, derivative}, end_time);
     }
 
     /// The time the run has reached: the newest accepted level's.
@@ -234,13 +232,13 @@ namespace atstep {
       return inner_.time();
     }
 
-    /// The current displacement, and the velocity the level pairs it with.
+    /// The current state, and the first derivative the level pairs it with.
     /// They are the stepper's own buffers, overwritten by the next step.
     const State& state() const
     {
       return inner_.state().value;
     }
-    const State& velocity() const
+    const State& derivative() const
     {
       return inner_.state().derivative;
     }
@@ -263,7 +261,7 @@ namespace atstep {
     }
 
     /// Integrate from the start time to the end time, and report the values
-    /// the store mode asks for, with the velocity each of them pairs with.
+    /// the store mode asks for, with the derivative each of them pairs with.
     RunReport run(std::span<const double> output_times,
       SecondOrderHooks<State> hooks = {})
     {
@@ -282,12 +280,12 @@ namespace atstep {
       return inner_.run(output_times, std::move(inner_hooks));
     }
 
-    /// Write the dense-output displacement (derivative=0) or velocity
+    /// Write the dense-output state (derivative=0) or its first derivative
     /// (derivative=1) at `time` into `out`. The pair's dense output of order
-    /// `derivative` is `(u, v)^(derivative)`, so its first half is the
-    /// displacement's derivative of that order: the velocity at derivative=1,
-    /// not the velocity's own derivative. At the newest level the velocity is
-    /// the derivative the solve left, which agrees with `velocity()` to
+    /// `derivative` is `(u, u')^(derivative)`, so its first half is the
+    /// state's derivative of that order: the first derivative at derivative=1,
+    /// not its own derivative. At the newest level it is
+    /// the derivative the solve left, which agrees with `derivative()` to
     /// round-off; between the levels it is the derivative of the dense-output
     /// polynomial, which is not the pair's own `u'` there. `out` is the
     /// caller's, and may be the same state on every call.
@@ -298,17 +296,18 @@ namespace atstep {
     }
 
   private:
-    static InnerNorm inner_norm(Norm norm)
+    /// The norm of the pair, configured as the kernel configures its own: a
+    /// norm of the caller's brings its own tolerances and is passed through.
+    static InnerNorm inner_norm(const Settings& settings, Norm norm)
     {
       if constexpr (std::is_same_v<Norm, detail::WeightedRmsNorm>)
-        return norm;
-      else
-        return InnerNorm {std::move(norm)};
+        norm = detail::WeightedRmsNorm::from(settings.error);
+      return InnerNorm {std::move(norm)};
     }
 
     /// Turn the kernel's step of the pair into the condensed step of the
-    /// displacement: name the three affine forms, hand the solve the
-    /// displacement alone, and derive the velocity the level pairs with it.
+    /// state: name the three affine forms, hand the solve the
+    /// state alone, and derive the derivative the level pairs with it.
     SolveOutcome solve_step(
       const StepRequest<detail::Augmented<State>>& request,
       detail::Augmented<State>& y)

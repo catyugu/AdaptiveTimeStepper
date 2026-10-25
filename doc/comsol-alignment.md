@@ -1,10 +1,13 @@
-﻿# COMSOL BDF alignment
+# COMSOL BDF alignment
 
 The first-order BDF implementation is checked against COMSOL 6.2.0.290 on
 `u' + u = 0`, `u(0) = 1`, over `[0,10]`. All 21 recorded configurations agree
-on accepted-step counts, rejection counts, stored times, values, derivatives,
-and every order printed in COMSOL's solver log. The tests compare actual
-trajectories, rather than accepting a band around the step count.
+on accepted-step counts, rejection counts, stored times, values and
+derivatives. The tests compare actual trajectories, rather than accepting a
+band around the step count. The orders in COMSOL's solver log are printed as
+a diagnostic: the log is sampled on the wall clock, so its rows are not
+reproducible (doc/evidence/stepping-sweep.md, "Why every case forces
+logsampling = 0").
 
 ## Evidence and acceptance
 
@@ -98,7 +101,7 @@ Use `request.derivative_weight()`, `request.derivative_history()` and
 `request.derivative(y, dy)` when assembling first-order systems. A second time
 derivative is not a weight of this formula: `SecondOrderStepper` gives the same
 first-derivative weight to the pair `(u, u')` and condenses the step back to the
-displacement, which is what COMSOL's IDA path does. The classical stencil
+state, which is what COMSOL's IDA path does. The classical stencil
 version 1.0 offered for a second derivative is gone: it is a different
 discretization, first order whatever the scheme's order.
 
@@ -126,8 +129,8 @@ An earlier form substituted the state's 2-norm for `|y_i|` and the constant one
 for `sigma_i`. It agrees with the measured form only when `sigma_i = 1`, which is
 every configuration of the reference — the 21 recorded runs are one scalar
 equation, so the difference was invisible to them. Replaying the two models whose
-scale is not one, with the scale passed in, reproduces COMSOL's accepted steps,
-every logged order and its error-test-failure count exactly.
+scale is not one, with the scale passed in, reproduces COMSOL's accepted steps
+and its error-test-failure count exactly.
 
 COMSOL also updates the *magnitude inside* `A_i` from the solution returned to
 the caller, including an interpolated solution. Its relative reference remains
@@ -177,10 +180,12 @@ strategy changes the trajectory, and both strategies are reproduced.
 IDA source supplied hypotheses and a control-law reference; COMSOL experiments
 decided whether those hypotheses held. The validation does not establish
 bitwise equality for arbitrary models or undocumented COMSOL configurations.
-Coupled-field weighting, nonlinear physics, events and other COMSOL versions
-need their own reference runs. A second-order equation keeps the validated BDF
-path, through the state augmentation COMSOL documents, rather than a separate
-discretization.
+Coupled-field weighting has its own reference run now (the two-field sweep,
+doc/evidence/field-norm.md), but the library still averages over the degrees
+of freedom alike, so that rule is measured and not yet implemented; nonlinear
+physics, events and other COMSOL versions need their own reference runs. A
+second-order equation keeps the validated BDF path, through the state
+augmentation COMSOL documents, rather than a separate discretization.
 
 ## Reproduce
 

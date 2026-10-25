@@ -3,6 +3,9 @@
 #pragma once
 
 #include <cmath>
+#include <cstddef>
+#include <functional>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <variant>
@@ -16,72 +19,63 @@ namespace atstep {
   inline constexpr int max_order = 5;
   inline constexpr int max_levels = max_order + 2;
 
-  /// The automatic initial step of a run, as a fraction of the span integrated:
-  /// COMSOL's "Initial step fraction", measured as 0.1% of the span and not of
-  /// the end time (doc/evidence/stepping-sweep.md, Q05). A manual run has no such
-  /// field, and its two backward-Euler steps advance the clock by
-  /// `manual_step * this * initialization.fraction`, 2e-7 s at a manual step of
-  /// 0.1 in every measured manual case (Q03).
+  /// The automatic initial step, as a fraction of the interval that remains
+  /// after the consistent initialization. Measured: 0.1% of what is left, not
+  /// of the span and not of the end time (doc/evidence/stepping-sweep.md, Q05
+  /// and Q02).
   inline constexpr double default_initial_step_fraction = 1e-3;
 
-  /// The largest step of a run whose maximum step constraint is automatic, as a
-  /// fraction of the span: COMSOL's Automatic constraint, measured as exactly 0.1
-  /// of the span (doc/evidence/stepping-sweep.md, Q04) — 10.0 s over six
-  /// consecutive steps at a span of 100, and 1.0 s rather than 1.2 s for
-  /// t0 = 2, end = 12.
+  /// The automatic maximum step, as a fraction of the span: COMSOL's Automatic
+  /// constraint, measured as exactly 0.1 of the span
+  /// (doc/evidence/stepping-sweep.md, Q04).
   inline constexpr double automatic_max_step_fraction = 0.1;
 
   /// The smallest step a run may be reduced to before it gives up, as a fraction
   /// of the span: the library's own guard, with no COMSOL counterpart.
   inline constexpr double default_min_step_fraction = 1e-10;
 
-  /// The solver's own steps. An output time a step stepped over is reported by
-  /// interpolating the scheme's polynomial there.
-  struct Free {
-    /// Whether a step may pass the last output time, whose value is then
-    /// interpolated from the steps around it.
-    bool interpolate_end_time = true;
-  };
+  /// Where the solver's own steps land: COMSOL's "Steps taken by solver".
+  /// `free` lets the stepping choose, `intermediate` puts at least one step in
+  /// every interval between two output times, `strict` ends every step at an
+  /// output time.
+  enum class Placement { free, intermediate, strict };
 
-  /// The solver's own steps, with at least one in every subinterval between two
-  /// output times.
-  struct Intermediate {
-    bool interpolate_end_time = true;
-  };
+  /// What the run reports: COMSOL's "Times to store". `interpolate` stores the
+  /// values at the output times, `closest` the first solver step reaching each
+  /// of them, `steps` the solver's own steps.
+  enum class Storage { interpolate, closest, steps };
 
-  /// Land on every output time, taking smaller internal steps as needed. COMSOL
-  /// offers no end interpolation here, and none is needed: a step of this
-  /// placement ends at the end time.
-  struct Strict { };
-
-  /// Where a step the solver chose lands relative to the output times of the
-  /// study: COMSOL's "Steps taken by solver", less the manual step, which is a
-  /// step of the model's own (see `ManualSteps`).
-  using Placement = std::variant<Free, Intermediate, Strict>;
-
-  /// The largest step is a fraction of the span the library chooses.
+  /// The largest step: COMSOL's "Maximum step constraint".
   struct AutomaticMaxStep { };
 
-  /// The largest step is `fraction` of the span.
   struct ConstantMaxStep {
-    double fraction = automatic_max_step_fraction;
+    /// The maximum step, in the run's time unit. COMSOL's "maxstepbdf" is an
+    /// absolute time value, not a fraction of the span.
+    double seconds = 0.0;
   };
 
-  /// No largest step beyond the arithmetic of the run.
-  struct UnlimitedMaxStep { };
+  struct ExpressionMaxStep {
+    /// The maximum step as a function of the time, evaluated while solving;
+    /// its absolute value is used.
+    std::function<double(double)> value {};
+  };
 
-  /// The largest step of a run: COMSOL's "Maximum step constraint", less the
-  /// expression, which the model layer evaluates.
-  using MaximumStep = std::variant<AutomaticMaxStep, ConstantMaxStep, UnlimitedMaxStep>;
+  using MaximumStep =
+    std::variant<AutomaticMaxStep, ConstantMaxStep, ExpressionMaxStep>;
 
   /// A step the run chooses: its size from the local error, its order from the
   /// order selection.
   struct AdaptiveSteps {
     /// Where a step may land.
-    Placement placement {};
+    Placement placement = Placement::free;
+
+    /// Whether a step may pass the last output time, whose value is then
+    /// interpolated from the steps around it. COMSOL offers this for every
+    /// placement but Strict.
+    bool interpolate_end_time = true;
 
     /// The largest step it may take.
-    MaximumStep max_step {};
+    MaximumStep max_step = AutomaticMaxStep {};
 
     /// Lowest order the order selection may take: COMSOL's "Minimum BDF order",
     /// which keeps a solver off the first order, so 1 or 2.
@@ -90,70 +84,83 @@ namespace atstep {
     /// Highest order the order selection may take: 1 to 5.
     int max_order = 5;
 
-    /// The first step, as a fraction of the span integrated. COMSOL's
-    /// "Initial step: Automatic" is 0.1% of the span, not of the end time: at
-    /// t0 = 2, end = 12 the initialization advances the clock by 2.0e-5 s rather
-    /// than 2.4e-5, and with the error test out of the way the first step is
-    /// 0.00999998 s at a span of 10 and 0.0999998 s at a span of 100
-    /// (doc/evidence/stepping-sweep.md, Q05). The initial derivative may take the
-    /// first step below it, COMSOL's `DT * yp_norm <= 1/2` (see
-    /// `StepController::first_step()`).
-    double initial_step_fraction = default_initial_step_fraction;
+    /// COMSOL's "Initial step": unset means automatic, a fraction of what
+    /// remains of the interval after the consistent initialization.
+    std::optional<double> initial_step {};
 
-    /// The smallest step, as a fraction of the span integrated: below it the
-    /// estimated error cannot be met by shrinking the step any further.
+    /// The smallest step, as a fraction of the span integrated.
     double min_step_fraction = default_min_step_fraction;
   };
 
   /// A step of the model's own: the time-step error test is off, so neither the
   /// size nor the order follows from the tolerance.
   struct ManualSteps {
-    /// The step, in the time unit of the run: positive, which `validate`
-    /// enforces.
+    /// The step, in the time unit of the run.
     double step = 0.0;
 
     /// The order the step is taken at: COMSOL's "BDF order" of a manual step,
     /// 1 to 5.
     int order = 2;
 
-    /// Whether the run may pass the last output time, whose value is then
-    /// interpolated from the steps around it.
+    /// COMSOL's per-order "Initial step fraction" and "Initial step growth
+    /// rate": unset means the default for `order`.
+    std::optional<double> startup_fraction {};
+    std::optional<double> startup_growth {};
+
+    /// Whether a step may pass the last output time.
     bool interpolate_end_time = true;
+  };
+
+  /// One dependent variable: the degrees of freedom it holds, COMSOL's scale
+  /// of it, and whether it is algebraic.
+  struct Field {
+    /// The number of degrees of freedom of the field.
+    std::size_t dofs = 0;
+
+    /// COMSOL's "scale for dependent variable", which its solver log prints.
+    double scale = 1.0;
+
+    /// Whether the field is algebraic, for COMSOL's "Exclude algebraic".
+    bool algebraic = false;
+  };
+
+  /// The partition of the state into dependent variables. An empty list means
+  /// one field over every degree of freedom.
+  struct Layout {
+    std::vector<Field> fields;
+  };
+
+  /// The absolute tolerance: COMSOL's "Tolerance method". `factor` makes it a
+  /// factor of the relative tolerance, `manual` a value of its own.
+  struct AbsoluteTolerance {
+    enum class Kind { factor, manual };
+    Kind kind = Kind::factor;
+    /// The factor of the relative tolerance, or the manual value.
+    double value = 0.1;
   };
 
   /// The local error test, and the tolerance it holds a degree of freedom to.
   struct ErrorTest {
-    /// The relative tolerance `R`: a dof is held to the local error
-    /// `A + R |y_i|`, with `A` the absolute tolerance below. It bounds the error
-    /// of a step, so it is the accuracy of the time discretization.
+    /// The relative tolerance `R`.
     double relative = 1e-2;
 
-    /// Whether the absolute tolerance is scaled by the magnitude of each degree
-    /// of freedom, COMSOL's "Scaled" method, or the same for every dof, its
-    /// "Unscaled" one.
+    /// The absolute tolerance.
+    AbsoluteTolerance absolute {};
+
+    /// Whether the tolerance is applied to scaled variables, COMSOL's "Scaled"
+    /// method, or to the variables as they are, its "Unscaled" one.
     bool scaled = true;
 
-    /// The factor of the absolute tolerance `A = R * absolute_factor`: what keeps
-    /// a dof whose value is near zero from being held to a relative accuracy on
-    /// a value that carries nothing. COMSOL's "Factor" method of the absolute
-    /// tolerance, 0.1 by default.
-    double absolute_factor = 0.1;
+    /// COMSOL's "Update scaled absolute tolerance": whether the absolute
+    /// tolerance follows the magnitude of the solution.
+    bool update_scaled = true;
 
-    /// The scale `sigma_i` of each degree of freedom, which the scaled form
-    /// blends the magnitude of the solution with:
-    ///
-    ///     A_i = R * absolute_factor * ((2 - e^(-j/5)) |returned_i|
-    ///                                  + e^(-j/5) sigma_i),
-    ///
-    /// with `j` the number of accepted steps. It is COMSOL's "scale for
-    /// dependent variable", which its solver log prints: one for a variable
-    /// whose equation moves at a moderate rate, and below one for a fast one — a
-    /// variable obeying `v' = -100 v` carries 0.32. COMSOL derives it from the
-    /// model, and the library cannot, so a run of a model COMSOL would scale
-    /// differently passes it here. An empty vector is `sigma_i = 1`, and so is
-    /// an index past the end of it; one is the value of every configuration of
-    /// the recorded reference.
-    std::vector<double> scale;
+    /// Whether the algebraic degrees of freedom are held to the tolerance:
+    /// COMSOL's "Error estimation".
+    bool include_algebraic = true;
+
+    /// The partition of the state into dependent variables.
+    Layout layout {};
   };
 
   /// The artificial backward-Euler steps of consistent initialization, which
@@ -166,26 +173,18 @@ namespace atstep {
     double fraction = 1e-3;
   };
 
-  /// The output times, interpolated from the steps that stepped over them: the
-  /// values at the requested times.
-  struct Interpolate { };
-
-  /// The first solver step reaching each output time.
-  struct Closest { };
-
-  /// The solver's own steps: the initial state and every accepted one.
-  struct Steps { };
-
-  /// Which times the result is stored at: COMSOL's "Times to store".
-  using Storage = std::variant<Interpolate, Closest, Steps>;
+  /// No consistent initialization: the initial values are taken as they are,
+  /// and the caller supplies the initial derivative.
+  struct AssumeConsistent { };
 
   /// The time stepping of a run.
   ///
   /// The defaults are COMSOL's, read back from a COMSOL 6.2 Time-Dependent
   /// Solver node (see doc/comsol-alignment.md): the relative tolerance 0.01, the
-  /// absolute tolerance `0.1` times it, scaled by the magnitude of each degree of
-  /// freedom, the first step `1e-3` of the span, the largest step `0.1` of the
-  /// span, the orders 1 to 5, and the interpolation of the end time.
+  /// absolute tolerance `0.1` times it, scaled by the magnitude of each degree
+  /// of freedom, the first step `1e-3` of what remains of the interval, the
+  /// largest step `0.1` of the span, the orders 1 to 5, and the interpolation
+  /// of the end time.
   struct Settings {
     /// How the run takes its steps: the solver's, from the local error, or the
     /// model's own at a fixed step and order.
@@ -195,10 +194,14 @@ namespace atstep {
     ErrorTest error {};
 
     /// The consistent initialization every run starts with.
-    BackwardEuler initialization {};
+    std::variant<BackwardEuler, AssumeConsistent> initialization = BackwardEuler {};
 
     /// Which times the run reports.
-    Storage storage = Interpolate {};
+    Storage storage = Storage::interpolate;
+
+    /// COMSOL's "Store every Nth step"; the initial state is step 0 and the
+    /// modulus is anchored on it (doc/evidence/stepping-sweep.md, Q07).
+    int store_every = 1;
   };
 
   /// Reject a setting a run cannot be built from. Each message names the field.
@@ -206,71 +209,44 @@ namespace atstep {
 
   inline void validate(const Settings& settings)
   {
-    const auto reject = [](const char* field, const char* why, double value) {
-      throw std::invalid_argument(
-        std::string("atstep: ") + field + " is " + why + " (" + std::to_string(value) + ")");
+    const auto require = [](const char* name, bool ok) {
+      if (not ok)
+        throw std::invalid_argument(std::string("atstep: ") + name + " is out of range");
     };
-    const auto finite = [&reject](const char* field, double value) {
-      if (not std::isfinite(value))
-        reject(field, "not finite", value);
-    };
-    const auto positive = [&reject](const char* field, double value) {
-      if (not(value > 0.0))
-        reject(field, "not positive", value);
-    };
-    const auto non_negative = [&reject](const char* field, double value) {
-      if (not(value >= 0.0))
-        reject(field, "negative", value);
+    const auto finite_positive = [](double value) {
+      return std::isfinite(value) and value > 0.0;
     };
 
-    finite("error.relative", settings.error.relative);
-    positive("error.relative", settings.error.relative);
-    finite("error.absolute_factor", settings.error.absolute_factor);
-    non_negative("error.absolute_factor", settings.error.absolute_factor);
-    finite("error.relative * error.absolute_factor",
-      settings.error.relative * settings.error.absolute_factor);
-    for (double scale : settings.error.scale) {
-      finite("error.scale", scale);
-      non_negative("error.scale", scale);
-    }
-    finite("initialization.fraction", settings.initialization.fraction);
-    positive("initialization.fraction", settings.initialization.fraction);
+    require("error.relative", finite_positive(settings.error.relative));
+    require("error.absolute.value", std::isfinite(settings.error.absolute.value));
+    require("error.absolute.value",
+      settings.error.absolute.kind == AbsoluteTolerance::Kind::factor
+        ? settings.error.absolute.value >= 0.0
+        : finite_positive(settings.error.absolute.value));
+    require("error.relative * error.absolute.value",
+      std::isfinite(settings.error.relative * settings.error.absolute.value));
+    for (const Field& field : settings.error.layout.fields)
+      require("error.layout.fields[].scale", finite_positive(field.scale));
 
-    if (const auto* adaptive = std::get_if<AdaptiveSteps>(&settings.steps)) {
-      if (adaptive->min_order < 1 or adaptive->min_order > 2)
-        reject("steps.adaptive.min_order",
-          "outside 1..2",
-          static_cast<double>(adaptive->min_order));
-      if (adaptive->max_order < adaptive->min_order or adaptive->max_order > max_order)
-        reject("steps.adaptive.max_order",
-          "outside steps.adaptive.min_order..5",
-          static_cast<double>(adaptive->max_order));
-      finite("steps.adaptive.initial_step_fraction",
-        adaptive->initial_step_fraction);
-      positive("steps.adaptive.initial_step_fraction",
-        adaptive->initial_step_fraction);
-      finite("steps.adaptive.min_step_fraction",
-        adaptive->min_step_fraction);
-      positive("steps.adaptive.min_step_fraction",
-        adaptive->min_step_fraction);
-      if (const auto* constant = std::get_if<ConstantMaxStep>(&adaptive->max_step)) {
-        finite("steps.adaptive.max_step.fraction", constant->fraction);
-        positive("steps.adaptive.max_step.fraction", constant->fraction);
-        if (adaptive->min_step_fraction > constant->fraction)
-          reject("steps.adaptive.min_step_fraction",
-            "greater than steps.adaptive.max_step.fraction",
-            adaptive->min_step_fraction);
-      }
+    if (const auto* manual = std::get_if<ManualSteps>(&settings.steps)) {
+      require("steps.manual.step", finite_positive(manual->step));
+      require("steps.manual.order", manual->order >= 1 and manual->order <= max_order);
     }
     else {
-      const auto& manual = std::get<ManualSteps>(settings.steps);
-      finite("steps.manual.step", manual.step);
-      positive("steps.manual.step", manual.step);
-      if (manual.order < 1 or manual.order > max_order)
-        reject("steps.manual.order",
-          "outside 1..5",
-          static_cast<double>(manual.order));
+      const auto& adaptive = std::get<AdaptiveSteps>(settings.steps);
+      require("steps.adaptive.min_order",
+        adaptive.min_order >= 1 and adaptive.min_order <= 2);
+      require("steps.adaptive.max_order",
+        adaptive.max_order >= adaptive.min_order and adaptive.max_order <= max_order);
+      require("steps.adaptive.min_step_fraction", finite_positive(adaptive.min_step_fraction));
+      if (adaptive.initial_step)
+        require("steps.adaptive.initial_step", finite_positive(*adaptive.initial_step));
+      if (const auto* constant = std::get_if<ConstantMaxStep>(&adaptive.max_step))
+        require("steps.adaptive.max_step.seconds", finite_positive(constant->seconds));
     }
+    if (const auto* backward = std::get_if<BackwardEuler>(&settings.initialization))
+      require("initialization.fraction", finite_positive(backward->fraction));
+    require("store_every", settings.store_every >= 1);
   }
 
 } // namespace atstep

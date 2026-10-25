@@ -107,8 +107,8 @@ The two explicitly requested kinds are honoured exactly as well: `maxstep_const_
 exceeds 0.075 s (largest step 0.07499956215180514, reached near `t = pi/2`), so the expression is
 evaluated while solving, as the manual states.
 
-The library's `automatic_max_step_fraction = 0.1` (`settings.hpp`, whose comment records that COMSOL
-documents no value for the automatic setting) now has a measurement behind it: for this model the
+The library's `automatic_max_step_fraction = 0.1` (settings.hpp, whose comment records that COMSOL
+documents no value for the automatic setting) has this measurement behind it: for this model the
 factor is exactly 0.1 of the span, at three spans and two start times.
 
 Confidence: **measured** for these three spans and two tolerances; the equality is exact, not
@@ -145,11 +145,20 @@ A second, independent measurement agrees: with `rtol = 1` the derivative conditi
 0.006000100005 s (span 100), which is why the default-tolerance rows are read through the
 backward-Euler advance rather than through `h_first`.
 
-Confidence: **measured**, decisive for `t0 != 0`. It also settles a wording conflict inside the current
-tree: `settings.hpp` defines `default_initial_step_fraction = 1e-3` as a fraction of the span, while
-the comment on `AdaptiveSteps::initial_step_fraction` still repeats the manual's "0.1% of the end
-time". The measurement supports the span, exactly, and only the span is consistent with the `t0 = 2`
-case.
+Confidence: **measured**, decisive for `t0 != 0`. The raw numbers also settle the fraction the initial
+step is taken of, at a level the table above rounds away: the implied initial step is
+0.009999980000000 s at the span 10, and the backward-Euler advance is 1.9999999999999185e-05 s, so
+
+```text
+initial step = 1e-3 * (span - advance) = 1e-3 * (10 - 2e-5) = 0.00999998 s
+```
+
+which is the measured value to the last digit, while `1e-3 * span = 0.01` is 2e-8 s late and
+`1e-3 * end = 0.012` is 2e-3 s late. The fraction is therefore of the interval that **remains** after
+the consistent initialization, and of neither the span nor the end time. The wording conflict inside
+the tree that this measurement settled: the automatic initial step was a fraction of the whole span,
+and the comment on it repeated the manual's "0.1% of the end time". Both were wrong, and the library
+states the remaining interval now (`AdaptiveSteps::initial_step`, applied in `StepController`).
 
 ## Q03 - manual BDF startup: order sequence, and the default fraction and growth rate
 
@@ -229,7 +238,7 @@ What the settings change:
 Confidence: **measured** for the step sizes and the order ramp of all ten manual cases; the growth
 formula is an exact fit, not a trend. `ManualSteps` in `settings.hpp` carries the step, the order and
 end-time interpolation only, so these two settings and their per-order defaults are the concrete gap
-for F05.
+for a second-order comparison (doc/refactor-plan.md, item 3).
 
 ## Q07 - with "store every Nth step", is the initial state step 0?
 

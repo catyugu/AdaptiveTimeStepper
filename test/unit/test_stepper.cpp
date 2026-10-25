@@ -289,11 +289,15 @@ TEST_CASE(
   stepper.interpolate(stepper.time(), initialized_derivative, 1);
   CHECK_NEAR(initialized_derivative.value, -stepper.state().value, 2e-10);
   // The first step of the run is the one the derivative justifies: the
-  // weight of a dof of value one is `0.01 * (1 + 0.1)`, so the derivative is
-  // 90.9 and the step is 0.5 / 90.9, well below the 0.01 of the span rule.
-  // \\texttt0A = R * 0.1 * (1 + 1) = 0.002 at a state of one, so the weight
-  // is 0.012 and the step 0.5 / 83.3.
-  CHECK_NEAR(stepper.step_size(), 0.5 / (1.0 / 0.012), 1e-6);
+  // spring step 0.5 * weight / |y'|. The weight of a dof is its scaled
+  // absolute tolerance, A_k (|y| + sigma) at the first step with the default
+  // scale of one, plus the relative tolerance of the dof.
+  const double magnitude = std::abs(stepper.state().value);
+  const double weight = 1e-3 * (magnitude + 1.0) + 1e-2 * magnitude;
+  CHECK_NEAR(
+    stepper.step_size(),
+    0.5 * weight / std::abs(initialized_derivative.value),
+    1e-9);
 }
 
 TEST_CASE("stepper: the interpolation reproduces the polynomial through the "
@@ -329,7 +333,7 @@ TEST_CASE("stepper: the interpolation reproduces the polynomial through the "
 TEST_CASE("stepper: the strict mode ends every step at an output time")
 {
   atstep::Settings settings;
-  adaptive_of(settings).placement = atstep::Strict {};
+  adaptive_of(settings).placement = atstep::Placement::strict;
   adaptive_of(settings).max_order = 2;
   atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
   stepper.start(0.0, Scalar {1.0}, 1.0);
@@ -357,7 +361,7 @@ TEST_CASE("stepper: the intermediate mode puts a step in every subinterval")
   // COMSOL's "Intermediate": at least one step in each interval between two
   // output times, whatever the tolerance would let the solver skip.
   atstep::Settings settings;
-  adaptive_of(settings).placement = atstep::Intermediate {};
+  adaptive_of(settings).placement = atstep::Placement::intermediate;
   adaptive_of(settings).max_order = 2;
   settings.error.relative = 1e-1; // steps large enough to jump an interval
   atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
@@ -413,9 +417,9 @@ TEST_CASE("stepper: the store modes choose what is reported")
     const auto report = stepper.run(times);
     return std::pair<int, int> {report.stored, report.steps};
   };
-  const auto interpolated = count(atstep::Interpolate {});
-  const auto closest = count(atstep::Closest {});
-  const auto steps = count(atstep::Steps {});
+  const auto interpolated = count(atstep::Storage::interpolate);
+  const auto closest = count(atstep::Storage::closest);
+  const auto steps = count(atstep::Storage::steps);
   CHECK_EQ(interpolated.first, 11);
   CHECK_EQ(closest.first, 11);
   // Stored as steps: the initial state and every accepted step.
@@ -787,7 +791,7 @@ TEST_CASE("stepper: a start time the run cannot integrate from is refused")
   CHECK(stepper.advance().time > 0.0);
 
   atstep::Settings settings;
-  settings.initialization.fraction = 1e3;
+  std::get<atstep::BackwardEuler>(settings.initialization).fraction = 1e3;
   int probe_calls = 0;
   atstep::TimeStepper<Scalar> oversized(settings,
     [&](const atstep::StepRequest<Scalar>& request, Scalar& y) {

@@ -30,8 +30,8 @@ public class GeDecayTransient {
     }
 
     static void run(String name, int order, double tolerance, String mode,
-                    double maxStep, boolean endInterpolation, boolean exact,
-                    String times, String mph) throws Exception {
+                    String maxStepKind, double maxStep, boolean endInterpolation,
+                    boolean exact, String times, String mph) throws Exception {
         Model m = build(times);
         SolverFeature f = m.sol("sol1").feature("t1");
         f.set("tout", "tsteps");
@@ -46,9 +46,9 @@ public class GeDecayTransient {
         if (mode.equals("manual"))
             f.set("timestepbdf", manualStep);
         f.set("endtimeinterpolation", endInterpolation ? "on" : "off");
-        if (maxStep != 0.1) {
-            f.set("maxstepconstraintbdf", "const");
-            f.set("maxstepbdf", 10.0 * maxStep);
+        if (!maxStepKind.equals("auto")) {
+            f.set("maxstepconstraintbdf", maxStepKind);
+            f.set("maxstepbdf", maxStep);
         }
         if (exact) {
             f.feature("fc1").set("jtech", "onevery");
@@ -68,7 +68,7 @@ public class GeDecayTransient {
         log.print(f.getString("message"));
         log.close();
         manifest.println(name + "," + order + "," + tolerance + "," + mode
-            + "," + maxStep + "," + endInterpolation + "," + exact
+            + "," + maxStepKind + "," + maxStep + "," + endInterpolation + "," + exact
             + "," + store + "," + (mode.equals("manual") ? manualStep : "0")
             + ",\"" + times + "\"");
         manifest.flush();
@@ -81,30 +81,30 @@ public class GeDecayTransient {
         directory = args != null && args.length > 1 ? args[1] : "trajectories";
         new File(directory).mkdirs();
         manifest = new PrintWriter(new File(directory, "manifest.csv"));
-        manifest.println("name,max_order,tolerance,mode,max_step_fraction,end_interpolation,exact,store,manual_step,times");
+        manifest.println("name,max_order,tolerance,mode,max_step_kind,max_step_seconds,end_interpolation,exact,store,manual_step,times");
         String times = "0 1 2 3 4 5 6 7 8 9 10";
-        run("default", 5, 0.01, "free", 0.1, true, false, times, null);
-        run("max_order_1", 1, 0.01, "free", 0.1, true, false, times, null);
-        run("max_order_2", 2, 0.01, "free", 0.1, true, false, times, null);
-        run("max_order_3", 3, 0.01, "free", 0.1, true, false, times, null);
-        run("max_order_4", 4, 0.01, "free", 0.1, true, false, times, null);
-        run("rtol_1e3", 5, 0.001, "free", 0.1, true, false, times, null);
-        run("rtol_1e5", 5, 0.00001, "free", 0.1, true, false, times, null);
-        run("strict", 5, 0.01, "strict", 0.1, true, false, times, null);
-        run("intermediate", 5, 0.01, "intermediate", 0.1, true, false, times, null);
-        run("max_step_5e3", 5, 0.01, "free", 0.005, true, false, times, null);
-        run("end_landing", 5, 0.01, "free", 0.1, false, false, times, null);
-        run("exact_default", 5, 0.01, "free", 0.1, true, true, times, null);
-        run("exact_tight", 5, 0.00001, "free", 0.1, true, true, times, null);
-        run("exact_strict", 5, 0.01, "strict", 0.1, false, true, times, null);
+        run("default", 5, 0.01, "free", "auto", 0.0, true, false, times, null);
+        run("max_order_1", 1, 0.01, "free", "auto", 0.0, true, false, times, null);
+        run("max_order_2", 2, 0.01, "free", "auto", 0.0, true, false, times, null);
+        run("max_order_3", 3, 0.01, "free", "auto", 0.0, true, false, times, null);
+        run("max_order_4", 4, 0.01, "free", "auto", 0.0, true, false, times, null);
+        run("rtol_1e3", 5, 0.001, "free", "auto", 0.0, true, false, times, null);
+        run("rtol_1e5", 5, 0.00001, "free", "auto", 0.0, true, false, times, null);
+        run("strict", 5, 0.01, "strict", "auto", 0.0, true, false, times, null);
+        run("intermediate", 5, 0.01, "intermediate", "auto", 0.0, true, false, times, null);
+        run("max_step_5e3", 5, 0.01, "free", "const", 0.05, true, false, times, null);
+        run("end_landing", 5, 0.01, "free", "auto", 0.0, false, false, times, null);
+        run("exact_default", 5, 0.01, "free", "auto", 0.0, true, true, times, null);
+        run("exact_tight", 5, 0.00001, "free", "auto", 0.0, true, true, times, null);
+        run("exact_strict", 5, 0.01, "strict", "auto", 0.0, false, true, times, null);
         String irregular = "0 0.001 0.01 0.05 0.2 0.3 0.7 1 1.1 1.4 2 3 5 8 10";
-        run("irregular_strict", 5, 0.01, "strict", 0.1, true, false, irregular, null);
-        run("irregular_intermediate", 5, 0.01, "intermediate", 0.1, true, false, irregular, null);
-        run("manual_default", 5, 0.01, "manual", 0.1, true, false, times, null);
-        run("manual_exact", 5, 0.01, "manual", 0.1, true, true, times, null);
-        run("manual_large", 5, 0.01, "manual", 0.1, true, false, times, null);
-        run("store_closest", 5, 0.01, "free", 0.1, true, false, times, null);
-        run("store_interpolate", 5, 0.01, "free", 0.1, true, false, times,
+        run("irregular_strict", 5, 0.01, "strict", "auto", 0.0, true, false, irregular, null);
+        run("irregular_intermediate", 5, 0.01, "intermediate", "auto", 0.0, true, false, irregular, null);
+        run("manual_default", 5, 0.01, "manual", "auto", 0.0, true, false, times, null);
+        run("manual_exact", 5, 0.01, "manual", "auto", 0.0, true, true, times, null);
+        run("manual_large", 5, 0.01, "manual", "auto", 0.0, true, false, times, null);
+        run("store_closest", 5, 0.01, "free", "auto", 0.0, true, false, times, null);
+        run("store_interpolate", 5, 0.01, "free", "auto", 0.0, true, false, times,
             args != null && args.length > 0 ? args[0] : "GeDecayTransient.mph");
         manifest.close();
         System.out.println("ALL_CASES_OK");

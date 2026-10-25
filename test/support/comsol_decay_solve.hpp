@@ -65,9 +65,8 @@ namespace comsol_decay {
       }
       atstep::detail::WeightedRmsNorm norm;
       norm.relative = settings.error.relative;
-      norm.absolute = settings.error.relative * settings.error.absolute_factor;
+      norm.absolute = settings.error.relative * settings.error.absolute.value;
       norm.scaled = settings.error.scaled;
-      norm.scale = settings.error.scale;
       norm.step_index = request.step_index;
       double first_norm = 0.0;
       last_cj = cj;

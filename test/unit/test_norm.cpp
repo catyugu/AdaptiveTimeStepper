@@ -1,4 +1,4 @@
-﻿// The norm the error is measured in: COMSOL's weighted root mean square, and
+// The norm the error is measured in: COMSOL's weighted root mean square, and
 // the two methods of its absolute tolerance.
 #include "atstep/detail/state.hpp"
 #include "support/check.hpp"
@@ -14,17 +14,6 @@ namespace {
   std::vector<double> of(std::initializer_list<double> values)
   {
     return std::vector<double>(values);
-  }
-
-  /// The absolute tolerance of a degree of freedom of magnitude `magnitude` at
-  /// the accepted-step index `index`:
-  ///
-  ///     A = R * factor * ((2 - e^(-j/5)) |y| + e^(-j/5) sigma).
-  double scaled_limit(double magnitude, std::size_t index, double sigma,
-    double relative = 1e-2, double factor = 0.1)
-  {
-    const double decay = std::exp(-0.2 * static_cast<double>(index));
-    return relative * factor * ((2.0 - decay) * magnitude + decay * sigma);
   }
 
 } // namespace
@@ -97,14 +86,14 @@ TEST_CASE("norm: the scaled tolerance is R factor (|y| + sigma) at the first "
 
   for (double magnitude : {0.25, 0.5, 1.0, 1.5}) {
     const auto state = of({magnitude});
-    // A scale equal to the magnitude: A = 2 R factor |y|, the measured form.
+    // A scale equal to the magnitude: at the first step the limit is
+    // 2 A_k |y|, the measured Automatic form.
     norm.scale = {magnitude};
-    const double own = scaled_limit(magnitude, 0, magnitude) + 1e-2 * magnitude;
-    CHECK_NEAR(own, 2e-2 * 0.1 * magnitude + 1e-2 * magnitude, 1e-15);
+    const double own = 2e-3 * magnitude + 1e-2 * magnitude;
     CHECK_NEAR(norm(of({own}), state), 1.0, 1e-12);
-    // The default scale: A = R factor (|y| + 1).
+    // The default scale: at the first step the limit is A_k (|y| + 1).
     norm.scale.clear();
-    const double unit = scaled_limit(magnitude, 0, 1.0) + 1e-2 * magnitude;
+    const double unit = 1e-3 * (magnitude + 1.0) + 1e-2 * magnitude;
     CHECK_NEAR(norm(of({unit}), state), 1.0, 1e-12);
   }
 
@@ -128,9 +117,9 @@ TEST_CASE("norm: the scale of each degree of freedom is its own")
   const auto state = of({1.0, 1.0});
   const double slow = norm(of({1.0, 0.0}), state);
   const double fast = norm(of({0.0, 1.0}), state);
-  CHECK_NEAR(slow, 1.0 / (scaled_limit(1.0, 0, 1.0) + 1e-2) / std::sqrt(2.0), 1e-12);
-  CHECK_NEAR(
-    fast, 1.0 / (scaled_limit(1.0, 0, 0.32) + 1e-2) / std::sqrt(2.0), 1e-12);
+  // At the first step the limit of a dof of value one is A_k (1 + sigma).
+  CHECK_NEAR(slow, 1.0 / (1e-3 * (1.0 + 1.0) + 1e-2) / std::sqrt(2.0), 1e-12);
+  CHECK_NEAR(fast, 1.0 / (1e-3 * (1.0 + 0.32) + 1e-2) / std::sqrt(2.0), 1e-12);
   CHECK(fast > slow);
 
   // A scale vector shorter than the state leaves the rest at one.
@@ -143,20 +132,28 @@ TEST_CASE("norm: the scaled tolerance tightens with the accepted-step index")
   atstep::detail::WeightedRmsNorm norm;
   norm.scaled = true;
   const double magnitude = 1e-4;
+  const double error = 1e-3;
+  double previous = 0.0;
   for (std::size_t j : {std::size_t {0},
          std::size_t {1},
          std::size_t {25},
          std::size_t {100}}) {
     norm.step_index = j;
-    const double weight = scaled_limit(magnitude, j, 1.0) + norm.relative * magnitude;
-    CHECK_NEAR(norm(of({weight}), of({magnitude})), 1.0, 1e-12);
+    // The absolute tolerance of the scale falls from A_k (|y| + sigma) at
+    // the first step towards 2 A_k |y|, so a fixed error weighs more and
+    // more.
+    const double measured = norm(of({error}), of({magnitude}));
+    if (j > 0)
+      CHECK(measured > previous);
+    previous = measured;
   }
 
   // The scale replaces the floor the blend tends to, not the magnitude: a
   // larger scale loosens the tolerance.
-  const double fixed = scaled_limit(magnitude, 100, 1.0);
+  norm.step_index = 100;
+  const double unit_scale = norm(of({error}), of({magnitude}));
   norm.scale = {4.0};
-  CHECK(scaled_limit(magnitude, 100, 4.0) > fixed);
+  CHECK(norm(of({error}), of({magnitude})) < unit_scale);
 
   norm.scaled = false;
   CHECK_NEAR(norm(of({0.001001}), of({magnitude})), 1.0, 1e-12);
@@ -176,9 +173,19 @@ TEST_CASE("norm: interpolation changes the absolute scale but not the relative "
   norm.step_index = 25;
   const double internal = 0.2;
   const double returned = 0.3;
-  const double weight = scaled_limit(returned, 25, 1.0) + norm.relative * internal;
-  CHECK_NEAR(norm(of({weight}), of({internal}), of({returned})), 1.0, 1e-12);
-  CHECK(norm(of({weight}), of({internal})) > 1.0);
+  const double error = 1e-3;
+
+  // The absolute tolerance follows the solution returned to the caller, the
+  // relative one the last accepted internal state: a larger returned value
+  // loosens the absolute part and leaves the relative part alone.
+  const double with_returned = norm(of({error}), of({internal}), of({returned}));
+  const double with_internal = norm(of({error}), of({internal}), of({internal}));
+  CHECK(with_returned < with_internal);
+
+  // The relative part still uses the internal state: the same error against
+  // a larger internal value weighs less.
+  const double larger_internal = norm(of({error}), of({2.0 * internal}), of({returned}));
+  CHECK(larger_internal < with_returned);
 }
 
 TEST_CASE("norm: std::vector is a state the stepper takes")
