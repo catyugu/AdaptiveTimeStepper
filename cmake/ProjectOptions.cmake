@@ -82,11 +82,14 @@ function(atstep_apply_project_options target)
             -Wold-style-cast)
         if(ATSTEP_WARNINGS_AS_ERRORS)
             target_compile_options(${target} PRIVATE -Werror)
-            # GCC 13 and 14 report libstdc++'s own std::function and std::variant
-            # internals as possibly uninitialized at -O2 and above: the
-            # diagnostic points into <bits/std_function.h>, at a manager the
-            # standard library sets in its constructor. Kept visible and taken
-            # out of -Werror, in place of turning the warning off.
+        endif()
+        # GCC 13 and 14 report libstdc++'s own std::function and std::variant
+        # internals as possibly uninitialized at -O2 and above: the diagnostic
+        # points into <bits/std_function.h>, at a manager the standard library
+        # sets in its constructor. Kept visible and taken out of -Werror, in
+        # place of turning the warning off. Clang does not know the option, and
+        # under -Werror an unknown -W option is itself an error.
+        if(ATSTEP_WARNINGS_AS_ERRORS AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
             target_compile_options(${target}
                 PRIVATE -Wno-error=maybe-uninitialized)
         endif()
