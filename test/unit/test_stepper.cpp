@@ -42,11 +42,11 @@ namespace {
 
   /// The solve of a BDF step of y' = -y: `sum_j a[j] y_{n+1-j} + y_{n+1} =
   /// 0`.
-  atstep::SolveOutcome solve_decay(const atstep::StepRequest<Scalar>& request,
+  bool solve_decay(const atstep::StepRequest<Scalar>& request,
     Scalar& y)
   {
     y.value = -request.derivative_history().value / (request.derivative_weight() + 1.0);
-    return atstep::SolveOutcome {true, 1};
+    return true;
   }
 
   /// The same solve, but the first `prime` steps are set to the exact
@@ -59,7 +59,7 @@ namespace {
       if (prime > 0) {
         --prime;
         y.value = exact(request.time);
-        return atstep::SolveOutcome {true, 1};
+        return true;
       }
       return solve_decay(request, y);
     };
@@ -142,7 +142,7 @@ TEST_CASE("request: the derivative is the affine form its weights define")
       request.derivative(y, y); // the output may be the state itself
       CHECK_NEAR(y.value, derivative.value, 0.0);
       y = solved;
-      return atstep::SolveOutcome {true, 1};
+      return true;
     });
   stepper.start(0.0, Scalar {1.0}, 1.0);
   const std::vector<double> times {0.0, 0.5, 1.0};
@@ -180,8 +180,8 @@ TEST_CASE("stepper: the inertia of a second-order equation, as a first-order "
   // The same equation, written the way COMSOL writes it and the way IDA wants
   // it: a first-order system in `(u, v = u')`, whose state the caller owns.
   // The BDF weights are then the first derivative's, and the order is the
-  // scheme's own. `SecondOrderStepper` is this formulation with the pair and the
-  // condensation built in.
+  // scheme's own. `SecondOrderStepper` is this formulation with the pair named
+  // and the two halves reported as the state and its velocity.
   struct Block {
     double u = 0.0;
     double v = 0.0;
@@ -209,7 +209,7 @@ TEST_CASE("stepper: the inertia of a second-order equation, as a first-order "
     const double det = a0 * (a0 + 0.1) + 1.0;
     y.u = (ru * (a0 + 0.1) + rv) / det;
     y.v = (a0 * rv - ru) / det;
-    return atstep::SolveOutcome {true, 1};
+    return true;
   };
 
   const auto error = [&solve](double step) {
@@ -311,7 +311,7 @@ TEST_CASE("stepper: the interpolation reproduces the polynomial through the "
     settings,
     [cubic](const atstep::StepRequest<Scalar>& request, Scalar& y) {
       y.value = cubic(request.time);
-      return atstep::SolveOutcome {true, 1};
+      return true;
     });
   stepper.start(0.0, Scalar {cubic(0.0)}, 1.0);
   while (stepper.time() < 1.0)
@@ -326,6 +326,30 @@ TEST_CASE("stepper: the interpolation reproduces the polynomial through the "
     stepper.interpolate(t, dense);
     CHECK_NEAR(dense.value, cubic(t), 1e-10);
   }
+}
+
+TEST_CASE("stepper: advance lands on the end only when the end is not interpolated")
+{
+  // A caller driving the run itself gets the same end as a scheduled run: with
+  // the end-time interpolation on, a step may pass the end and the caller
+  // interpolates the value; with it off, every step is cut so that one lands on
+  // the end exactly. Nothing else in the suite reads that flag through advance,
+  // because run derives it from the schedule.
+  const auto reach = [](bool interpolate_end_time) {
+    atstep::Settings settings;
+    adaptive_of(settings).interpolate_end_time = interpolate_end_time;
+    adaptive_of(settings).max_order = 2;
+    settings.error.relative = 1e-1;  // steps large enough to pass the end
+    atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
+    stepper.start(0.0, Scalar {1.0}, 10.0);
+    while (not stepper.finished())
+      stepper.advance();
+    return stepper.time();
+  };
+
+  CHECK_EQ(reach(false), 10.0);
+  CHECK(reach(true) != 10.0);
+  CHECK(reach(true) > 10.0);
 }
 
 TEST_CASE("stepper: the strict mode ends every step at an output time")
@@ -435,7 +459,7 @@ TEST_CASE("stepper: a solve that does not converge is retried at a quarter")
       // iteration exhausted would.
       static int calls = 0;
       if (++calls == 3)
-        return atstep::SolveOutcome {false, 40};
+        return false;
       return solve_decay(request, y);
     });
   stepper.start(0.0, Scalar {1.0}, 1.0);
@@ -484,7 +508,7 @@ TEST_CASE("stepper: a state and a norm of the caller's own")
     settings,
     [](const atstep::StepRequest<Own>& request, Own& y) {
       y.v = -request.derivative_history().v / (request.derivative_weight() + 1.0);
-      return atstep::SolveOutcome {true, 1};
+      return true;
     },
     norm);
   stepper.start(0.0, Own {1.0}, 1.0);
@@ -546,7 +570,7 @@ TEST_CASE("stepper: a refused step leaves the accepted history and its dense out
   atstep::TimeStepper<Scalar> stepper(manual_settings(3, 0.25),
     [&failing](const atstep::StepRequest<Scalar>& request, Scalar& y) {
       if (failing)
-        return atstep::SolveOutcome {false, 40};
+        return false;
       return solve_decay(request, y);
     });
   stepper.start(0.0, Scalar {1.0}, 10.0);
@@ -596,7 +620,7 @@ TEST_CASE("stepper: a refused first step leaves the run at its initialized level
   atstep::TimeStepper<Scalar> stepper(manual_settings(1, 0.25),
     [&failing](const atstep::StepRequest<Scalar>& request, Scalar& y) {
       if (failing)
-        return atstep::SolveOutcome {false, 40};
+        return false;
       return solve_decay(request, y);
     });
   stepper.start(0.0, Scalar {1.0}, 10.0);
@@ -647,8 +671,8 @@ TEST_CASE("request: a step's request cannot be retained by value")
     not std::is_copy_constructible_v<atstep::StepRequest<Scalar>>);
   static_assert(
     not std::is_move_constructible_v<atstep::StepRequest<Scalar>>);
-  static_assert(
-    not std::is_copy_constructible_v<atstep::SecondOrderRequest<Scalar>>);
+  static_assert(not std::is_copy_constructible_v<
+    atstep::StepRequest<atstep::SecondOrderState<Scalar>>>);
   CHECK(true);
 }
 

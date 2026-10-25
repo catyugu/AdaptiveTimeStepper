@@ -20,7 +20,11 @@ rest on the assumption that they share one function.
   i.e. `COMSOL Multiphysics 6.2 (Build: 290)`. No documentation is installed with this build
   (`doc/pdf` holds only the license component), so the two formulas above are the candidates as
   stated for this experiment; the manual page was not re-read here.
-- 11 cases, 682 stored samples. Driver wall time about 3 min including the Java compilation; the
+- 11 cases, 682 stored samples. **Three survive in the tree** (`single_a`,
+  `single_b100`, `two_r100`): the controls and the discriminating pair. The other
+  eight varied the dof count, the global rate, the order and the tolerance around
+  the same rule, and the rule is one.
+ Driver wall time about 3 min including the Java compilation; the
   eleven solves report `Total time` of 0-2 s each, so the whole evidence set is cheap to regenerate:
   `python tools/comsol/run_twofield.py --directory .cache/comsol-twofield`, or rewrite the header
   from an existing run with `--header-only`. Raw logs and exports stay in

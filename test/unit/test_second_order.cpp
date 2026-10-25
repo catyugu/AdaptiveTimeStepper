@@ -1,6 +1,6 @@
-// The second-order adapter: the pair it carries, the condensed coefficients it
-// gives the solve, the order a fixed-step run converges at, and the tolerance an
-// adaptive one is held to.
+// The second-order adapter: the pair it carries, the two rows it gives the
+// solve, the order a fixed-step run converges at, and the tolerance an adaptive
+// one is held to.
 #include "atstep/atstep.hpp"
 #include "support/check.hpp"
 
@@ -40,13 +40,21 @@ namespace {
         * (v0 * std::cos(omega * t) - (decay * amplitude + omega * u0) * std::sin(omega * t));
     }
 
-    /// The condensed step: `(1 + cj c + cj^2) u = -(known(2) + c known(1))`.
-    atstep::SolveOutcome
-    solve(const atstep::SecondOrderRequest<State>& request, State& u) const
+    /// The pair's step, as the two rows of `(u' - v, v' + c v + u)`:
+    ///
+    ///     cj u - v = -known.value
+    ///     u + (cj + c) v = -known.derivative
+    bool solve(const atstep::StepRequest<atstep::SecondOrderState<State>>& request,
+      atstep::SecondOrderState<State>& y) const
     {
       const double cj = request.derivative_weight();
-      u[0] = -(request.derivative_history(2)[0] + damping * request.derivative_history()[0]) / (request.derivative_weight(2) + damping * cj + 1.0);
-      return atstep::SolveOutcome {true, 1};
+      const auto& known = request.derivative_history();
+      const double first = known.value[0];
+      const double second = known.derivative[0];
+      const double determinant = cj * (cj + damping) + 1.0;
+      y.value[0] = -(first * (cj + damping) + second) / determinant;
+      y.derivative[0] = -(second + y.value[0]) / (cj + damping);
+      return true;
     }
   };
 
@@ -61,10 +69,11 @@ namespace {
     return settings;
   }
 
-  atstep::SecondOrderStepper<State>::Solve condensed_solve(Oscillator oscillator)
+  atstep::SecondOrderStepper<State>::Solve pair_solve(Oscillator oscillator)
   {
-    return [oscillator](const atstep::SecondOrderRequest<State>& request,
-             State& u) { return oscillator.solve(request, u); };
+    return [oscillator](
+             const atstep::StepRequest<atstep::SecondOrderState<State>>& request,
+             atstep::SecondOrderState<State>& y) { return oscillator.solve(request, y); };
   }
 
   /// The error of a fixed-step run at the time it reached.
@@ -72,8 +81,9 @@ namespace {
   {
     const Oscillator oscillator;
     atstep::SecondOrderStepper<State> stepper(
-      manual(order, step), condensed_solve(oscillator));
-    stepper.start(0.0, State {oscillator.u0}, State {oscillator.v0}, end);
+      manual(order, step), pair_solve(oscillator));
+    stepper.start(0.0, atstep::SecondOrderState<State> {{oscillator.u0}, {oscillator.v0}},
+      end);
     while (stepper.time() < end)
       stepper.advance();
     return std::abs(stepper.state()[0] - oscillator.value(stepper.time()));
@@ -99,14 +109,14 @@ namespace {
     }
   };
 
-  atstep::SolveOutcome solve_block(const atstep::StepRequest<Block>& request,
+  bool solve_block(const atstep::StepRequest<Block>& request,
     Block& y)
   {
     const double cj = request.derivative_weight();
     const Block& known = request.derivative_history();
     y.u = -(known.v + (cj + damping) * known.u) / (cj * cj + damping * cj + 1.0);
     y.v = cj * y.u + known.u;
-    return atstep::SolveOutcome {true, 1};
+    return true;
   }
 
 } // namespace
@@ -128,29 +138,30 @@ TEST_CASE("second order: a fixed-step run converges at the order of the scheme")
   }
 }
 
-TEST_CASE("second order: the condensed step is the augmented system's own")
+TEST_CASE("second order: the pair the adapter carries is the two-block system's own")
 {
-  // The step the adapter hands the solve is the step of the two-block system
-  // with the velocity eliminated, not a second discretization: the two agree to
-  // the round-off of the elimination, in the displacement and in the velocity.
+  // The adapter integrates the pair as the kernel's state, so the step is the
+  // step of a caller's own two-block system, not a second discretization: the
+  // two agree to the round-off of the arithmetic, in both halves.
   const Oscillator oscillator;
   atstep::Settings settings = manual(2, 0.05);
-  atstep::SecondOrderStepper<State> condensed(
-    settings, condensed_solve(oscillator));
+  atstep::SecondOrderStepper<State> adapter(
+    settings, pair_solve(oscillator));
   atstep::TimeStepper<Block> blocks(settings, solve_block);
-  condensed.start(0.0, State {oscillator.u0}, State {oscillator.v0}, 1.0);
+  adapter.start(0.0, atstep::SecondOrderState<State> {{oscillator.u0}, {oscillator.v0}},
+    1.0);
   blocks.start(0.0, Block {oscillator.u0, oscillator.v0}, 1.0);
 
   double worst_value = 0.0;
   double worst_slope = 0.0;
-  while (condensed.time() < 1.0) {
-    const atstep::StepRecord step = condensed.advance();
+  while (adapter.time() < 1.0) {
+    const atstep::StepRecord step = adapter.advance();
     const atstep::StepRecord other = blocks.advance();
     CHECK_NEAR(step.time, other.time, 0.0);
     worst_value = std::max(
-      worst_value, std::abs(condensed.state()[0] - blocks.state().u));
+      worst_value, std::abs(adapter.state()[0] - blocks.state().u));
     worst_slope = std::max(
-      worst_slope, std::abs(condensed.derivative()[0] - blocks.state().v));
+      worst_slope, std::abs(adapter.derivative()[0] - blocks.state().v));
   }
   CHECK(worst_value < 1e-8);
   CHECK(worst_slope < 1e-8);
@@ -163,24 +174,28 @@ TEST_CASE("second order: a failed solve discards its candidate before retrying")
   bool retried = false;
   double failed_step = 0.0;
   atstep::SecondOrderStepper<State> stepper(manual(2, 0.05),
-    [&](const atstep::SecondOrderRequest<State>& request, State& u) {
+    [&](const atstep::StepRequest<atstep::SecondOrderState<State>>& request,
+      atstep::SecondOrderState<State>& y) {
       if (not request.initializing and not failed) {
         failed = true;
         failed_step = request.step;
         // A failed solver need not leave a usable candidate. The next
         // attempt must start from a fresh predictor.
-        u.clear();
-        return atstep::SolveOutcome {false, 3};
+        y.value.clear();
+        y.derivative.clear();
+        return false;
       }
       if (failed and not retried) {
         retried = true;
-        CHECK_EQ(u.size(), 1U);
+        CHECK_EQ(y.value.size(), 1U);
+        CHECK_EQ(y.derivative.size(), 1U);
         CHECK_NEAR(request.step, 0.25 * failed_step, 0.0);
         CHECK_EQ(request.accepted_steps, 0U);
       }
-      return oscillator.solve(request, u);
+      return oscillator.solve(request, y);
     });
-  stepper.start(0.0, State {oscillator.u0}, State {oscillator.v0}, 1.0);
+  stepper.start(0.0, atstep::SecondOrderState<State> {{oscillator.u0}, {oscillator.v0}},
+    1.0);
   const std::vector<double> times {0.0, 1.0};
   const auto report = stepper.run(times);
   CHECK(failed);
@@ -197,8 +212,9 @@ TEST_CASE("second order: the hooks report the velocity of the level they see")
   atstep::Settings settings;
   std::get<atstep::AdaptiveSteps>(settings.steps).max_order = 3;
   atstep::SecondOrderStepper<State> stepper(
-    settings, condensed_solve(oscillator));
-  stepper.start(0.0, State {oscillator.u0}, State {oscillator.v0}, 2.0);
+    settings, pair_solve(oscillator));
+  stepper.start(0.0, atstep::SecondOrderState<State> {{oscillator.u0}, {oscillator.v0}},
+    2.0);
 
   int steps = 0;
   int stores = 0;
@@ -238,17 +254,31 @@ TEST_CASE("second order: an adaptive run meets its tolerance")
   // The tolerance bounds the error of a step, so the error of the run is a small
   // multiple of it — in the displacement, and in the velocity the pair's
   // derivative reports.
+  //
+  // The velocity starts at zero on purpose, so its weight is its absolute
+  // tolerance alone: `1e-9` against an acceleration of `1`. That is the setting
+  // an error test on a *derived* velocity cannot meet, because the derivation is
+  // a divided difference and its round-off grows as the step shrinks. Solved as
+  // the pair it is an ordinary tight tolerance, which is why this case is here
+  // and not in the adapter's limits.
   const Oscillator oscillator;
   atstep::Settings settings;
   settings.error.relative = 1e-8;
   atstep::SecondOrderStepper<State> stepper(
-    settings, condensed_solve(oscillator));
-  stepper.start(0.0, State {oscillator.u0}, State {oscillator.v0}, 10.0);
+    settings, pair_solve(oscillator));
+  stepper.start(0.0, atstep::SecondOrderState<State> {{oscillator.u0}, {oscillator.v0}},
+    10.0);
 
   double worst_value = 0.0;
   double worst_slope = 0.0;
   atstep::SecondOrderHooks<State> hooks;
   hooks.on_store = [&](double time, const State& u, const State& v, bool) {
+    // The value stored at the start time is the level the consistent
+    // initialization left, `2 * probe` past the start, labelled with the start
+    // time by COMSOL's convention. It is not a step's result and its difference
+    // from the exact start is the probe's, so it is not what a tolerance bounds.
+    if (time == 0.0)
+      return;
     worst_value = std::max(
       worst_value, std::abs(u[0] - oscillator.value(time)));
     worst_slope = std::max(
@@ -258,6 +288,8 @@ TEST_CASE("second order: an adaptive run meets its tolerance")
   for (int i = 0; i <= 100; ++i)
     times.push_back(10.0 * static_cast<double>(i) / 100.0);
   const auto report = stepper.run(times, hooks);
+  std::printf("  adaptive: %d steps, worst |du| = %.3e, worst |dv| = %.3e\n",
+    report.steps, worst_value, worst_slope);
   CHECK(report.steps > 10);
   CHECK_EQ(report.stored, 101);
   CHECK(worst_value < 1e-5);
@@ -283,8 +315,9 @@ TEST_CASE("second order: the velocity the run starts from is an initial conditio
   atstep::Settings settings;
   settings.error.relative = 1e-8;
   atstep::SecondOrderStepper<State> stepper(
-    settings, condensed_solve(oscillator));
-  stepper.start(0.0, State {oscillator.u0}, State {oscillator.v0}, 2.0);
+    settings, pair_solve(oscillator));
+  stepper.start(0.0, atstep::SecondOrderState<State> {{oscillator.u0}, {oscillator.v0}},
+    2.0);
   CHECK_NEAR(stepper.derivative()[0], oscillator.slope(stepper.time()), 1e-4);
   CHECK_NEAR(stepper.state()[0], oscillator.value(stepper.time()), 1e-6);
 
@@ -299,15 +332,14 @@ TEST_CASE("second order: the velocity the run starts from is an initial conditio
 }
 
 TEST_CASE("second order: a run of no solve is refused, and a norm of the caller's "
-          "own measures the displacement")
+          "own measures the pair")
 {
   const Oscillator oscillator;
   CHECK_THROWS(atstep::SecondOrderStepper<State>(atstep::Settings {},
     atstep::SecondOrderStepper<State>::Solve {}));
 
-  // A state with no `size()` and no `operator[]`, and a norm over it: the
-  // adapter applies the norm to the displacement, so the pairs the kernel
-  // carries never reach it.
+  // A state with no `size()` and no `operator[]`, and a norm over the pair it
+  // travels in: the displacement alone is what this caller measures.
   struct Own {
     double v = 0.0;
     void axpy(double a, const Own& x)
@@ -316,21 +348,30 @@ TEST_CASE("second order: a run of no solve is refused, and a norm of the caller'
     }
   };
   int calls = 0;
-  const auto norm = [&calls](const Own& error, const Own& accepted, const Own&, std::size_t) {
+  const auto norm = [&calls](const atstep::SecondOrderState<Own>& error,
+                       const atstep::SecondOrderState<Own>& accepted,
+                       const atstep::SecondOrderState<Own>&,
+                       std::size_t) {
     ++calls;
-    return std::abs(error.v) / (1e-3 + 0.01 * std::abs(accepted.v));
+    return std::abs(error.value.v) / (1e-3 + 0.01 * std::abs(accepted.value.v));
   };
   atstep::Settings settings;
   std::get<atstep::AdaptiveSteps>(settings.steps).max_order = 2;
   atstep::SecondOrderStepper<Own> stepper(
     settings,
-    [](const atstep::SecondOrderRequest<Own>& request, Own& u) {
+    [](const atstep::StepRequest<atstep::SecondOrderState<Own>>& request,
+      atstep::SecondOrderState<Own>& y) {
       const double cj = request.derivative_weight();
-      u.v = -(request.derivative_history(2).v + damping * request.derivative_history().v) / (request.derivative_weight(2) + damping * cj + 1.0);
-      return atstep::SolveOutcome {true, 1};
+      const auto& known = request.derivative_history();
+      const double first = known.value.v;
+      const double second = known.derivative.v;
+      const double determinant = cj * (cj + damping) + 1.0;
+      y.value.v = -(first * (cj + damping) + second) / determinant;
+      y.derivative.v = -(second + y.value.v) / (cj + damping);
+      return true;
     },
     norm);
-  stepper.start(0.0, Own {oscillator.u0}, Own {oscillator.v0}, 1.0);
+  stepper.start(0.0, atstep::SecondOrderState<Own> {{oscillator.u0}, {oscillator.v0}}, 1.0);
   const std::vector<double> times {0.0, 1.0};
   const auto report = stepper.run(times);
   CHECK(report.steps > 0);

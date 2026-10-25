@@ -28,41 +28,43 @@ import java.util.*;
 // and all case state lives in static fields.
 public class GeSteppingSweep {
     static final String[] SPECS = {
-        // Maximum step constraint: automatic on two spans, constant, expression.
+        // The controller: the automatic maximum step on two spans, the start
+        // time that separates 0.1% of the end from 0.1% of the span, the
+        // constant maximum step, and the expression one.
         "auto_span10",
         "auto_span100 end=100",
+        "t0_2_span10 t0=2 end=12",
         "maxstep_const_005 maxstep=const:0.05",
         "maxstep_expr_sin maxstep=expr:0.05*(1+0.5*sin(t))",
-        // Initial step: auto_span10 is the automatic reference of this group.
+        // The initial step: the automatic rule is auto_span10's, this is the
+        // one the run names.
         "initstep_002 initstep=specified:0.02",
-        "initstep_01 initstep=specified:0.1",
-        // Start time: separates 0.1% of the end time from 0.1% of the span.
-        "t0_2_span10 t0=2 end=12",
-        // Store every Nth step. store_every1 repeats auto_span10 on purpose:
-        // two independent solves of one configuration are a determinism control.
-        "store_every1",
-        "store_every3 every=3",
-        // Manual BDF startup at the default fraction and growth rate.
-        "manual_order1 manual=1",
-        "manual_order2 manual=2",
-        "manual_order3 manual=3",
-        "manual_order5 manual=5",
-        "manual_order2_frac1e-4 manual=2 fraction=1e-4",
-        "manual_order2_frac1e-2 manual=2 fraction=1e-2",
-        // Growth rate 1.5 is the order-2 default, so that row is a control;
-        // order 3 (default fraction 0.1) is where the growth rate is observable.
-        "manual_order2_growth1.5 manual=2 growth=1.5",
-        "manual_order2_growth3 manual=2 growth=3",
-        "manual_order3_growth1.5 manual=3 growth=1.5",
-        "manual_order3_growth3 manual=3 growth=3",
-        // Loose tolerance: the error test stops binding, so the automatic
-        // maximum step and the automatic initial step become observable.
+        // The tolerance: loose enough that the automatic maximum step and the
+        // automatic initial step are what the steps show, and tight enough that
+        // the order selection runs to five.
         "rtol1_span10 rtol=1",
-        "rtol1_span100 rtol=1 end=100",
-        "rtol1_t0_2 rtol=1 t0=2 end=12",
-        // Control: identical to auto_span10 but with COMSOL's default log
-        // sampling, which prints only a subset of the accepted steps.
-        "log_default_sampling log=default",
+        "rtol_1e5 rtol=1e-5",
+        "max_order_3 order=3",
+        // "Store every Nth step", whose modulus is anchored on the initial
+        // state; the run rejects a step, so the phase is measured too.
+        "store_every3 every=3",
+        // The manual step: the per-order startup curve, and the fraction a run
+        // may override.
+        "manual_order3 manual=3",
+        "manual_order2_frac1e-2 manual=2 fraction=1e-2",
+        // The placement: a step at every output time, and a step inside every
+        // output interval, on a uniform and on an uneven schedule.
+        "strict mode=strict",
+        "intermediate mode=intermediate",
+        "irregular_strict mode=strict tlist=0 0.001 0.01 0.05 0.2 0.3 0.7 1 1.1 1.4 2 3 5 8 10",
+        // The storage: the closest step, the values at the output times, and
+        // the run that lands on the end instead of interpolating it.
+        "store_closest tout=closest",
+        "store_interpolate tout=tlist",
+        "end_landing endinterp=off",
+        // The solver's own Newton made exact, which the replay reaches with an
+        // exactly solved step.
+        "exact_default exact=on",
     };
 
     static String directory;
@@ -79,10 +81,13 @@ public class GeSteppingSweep {
     static String initialStepKind;
     static double initialStepValue;
     static String storeMode;
+    static String tlist;
     static int storeEvery;
     static int manualOrder;
     static double fraction;
     static double growth;
+    static boolean endInterpolation;
+    static boolean exact;
     static boolean fullLog;
 
     static void reset() {
@@ -97,10 +102,13 @@ public class GeSteppingSweep {
         initialStepKind = "auto";
         initialStepValue = 0.0;
         storeMode = "tsteps";
+        tlist = "";
         storeEvery = 1;
         manualOrder = 0;
         fraction = 0.0;
         growth = 0.0;
+        endInterpolation = true;
+        exact = false;
         fullLog = true;
     }
 
@@ -146,6 +154,26 @@ public class GeSteppingSweep {
                 fraction = Double.parseDouble(value);
             } else if (key.equals("growth")) {
                 growth = Double.parseDouble(value);
+            } else if (key.equals("tout")) {
+                if (value.equals("closest")) {
+                    storeMode = "tstepsclosest";
+                } else if (value.equals("tlist")) {
+                    storeMode = "tlist";
+                } else {
+                    throw new IllegalArgumentException("unknown tout: " + name);
+                }
+            } else if (key.equals("tlist")) {
+                // A schedule is a list, so this key takes the rest of the line.
+                StringBuilder schedule = new StringBuilder(value);
+                for (int j = i + 1; j < tokens.length; ++j) {
+                    schedule.append(' ').append(tokens[j]);
+                }
+                tlist = schedule.toString();
+                i = tokens.length;
+            } else if (key.equals("endinterp")) {
+                endInterpolation = !value.equals("off");
+            } else if (key.equals("exact")) {
+                exact = value.equals("on");
             } else if (key.equals("log")) {
                 fullLog = value.equals("full");
             } else {
@@ -174,7 +202,11 @@ public class GeSteppingSweep {
 
     static Model build() {
         double step = (end - t0) / 10.0;
-        String times = "range(" + num(t0) + "," + num(step) + "," + num(end) + ")";
+        // The study's schedule: ten equal intervals of the span, unless the case
+        // names its own.
+        String times = tlist.isEmpty()
+            ? "range(" + num(t0) + "," + num(step) + "," + num(end) + ")"
+            : tlist;
         Model m = ModelUtil.create("Model");
         m.component().create("comp1", true);
         m.component("comp1").geom().create("geom1", 2);
@@ -203,6 +235,7 @@ public class GeSteppingSweep {
         f.set("maxorder", Integer.toString(maxOrder));
         f.set("rtol", Double.toString(rtol));
         f.set("tstepsbdf", mode);
+        f.set("endtimeinterpolation", endInterpolation ? "on" : "off");
         if (t0 != 0.0) f.set("starttime", num(t0));
         if (!maxStepKind.equals("auto")) {
             f.set("maxstepconstraintbdf", maxStepKind);
@@ -230,6 +263,10 @@ public class GeSteppingSweep {
             }
             usedFraction = Double.parseDouble(f.getString("initialstepfractionbdf-" + order));
             usedGrowth = Double.parseDouble(f.getString("initialstepgrowthratebdf-" + order));
+        }
+        if (exact) {
+            f.feature("fc1").set("jtech", "onevery");
+            f.feature("fc1").set("ntolfact", "1e-8");
         }
         if (fullLog) f.feature("aDef").set("logsampling", "0");
         m.sol("sol1").runAll();
@@ -264,11 +301,15 @@ public class GeSteppingSweep {
             Double.toString(usedFraction),
             Double.toString(usedGrowth),
             fullLog ? "full" : "default",
+            endInterpolation ? "on" : "off",
+            exact ? "on" : "off",
+            csv(tlist),
             f.getString("maxstepconstraintbdf"),
             f.getString("tout"),
             f.getString("initialstepbdfactive"),
             f.getString("tstepsbdf"),
             f.getString("starttime"),
+            f.getString("endtimeinterpolation"),
         };
         manifest.println(String.join(",", row));
         manifest.flush();
@@ -301,13 +342,15 @@ public class GeSteppingSweep {
     public static void main(String[] args) throws Exception {
         directory = args != null && args.length > 1 ? args[1] : "stepping";
         new File(directory).mkdirs();
+        reset();
         reportProperties();
         manifest = new PrintWriter(new File(directory, "manifest.csv"));
         manifest.println("name,t0,end,mode,max_order,rtol,max_step_kind,"
             + "max_step_value,initial_step_kind,initial_step_value,store_mode,"
             + "store_every,manual_order,initial_fraction,growth_rate,log_sampling,"
+            + "end_interpolation,exact,tlist,"
             + "max_step_kind_readback,store_mode_readback,initial_step_active_readback,"
-            + "step_mode_readback,start_time_readback");
+            + "step_mode_readback,start_time_readback,end_interpolation_readback");
         for (String spec : SPECS) {
             apply(spec);
             run();

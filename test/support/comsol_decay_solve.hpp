@@ -9,10 +9,8 @@
 // the solve, not just the equation.
 //
 // This adapter is specific to the recorded models and is not part of the
-// library.  It reaches into two accessors of the request
-// (`request.previous()` and `request.absolute_tolerance_reference()`) that
-// belong to the request boundary of doc/refactor-plan.md stage 2, so it
-// changes with that stage.
+// library. It repeats the error weight with the two states the request exposes
+// for it, which is what a model's own nonlinear convergence test does.
 #pragma once
 
 #include "atstep/stepper.hpp"
@@ -49,14 +47,13 @@ namespace comsol_decay {
     /// writes besides `y`.
     State derivative;
 
-    atstep::SolveOutcome
-    operator()(const atstep::StepRequest<State>& request, State& y)
+    bool operator()(const atstep::StepRequest<State>& request, State& y)
     {
       const double cj = request.derivative_weight();
       if (request.initializing) {
         y.u = -request.derivative_history().u / (cj + 1.0);
         jacobian_cj = 0.0;
-        return {true, 1};
+        return true;
       }
       if (cj != last_cj)
         convergence_factor = 100.0;
@@ -84,13 +81,13 @@ namespace comsol_decay {
         else {
           const double rate = std::pow(size / first_norm, 1.0 / static_cast<double>(iteration));
           if (rate > 0.9)
-            return {false, iteration + 1};
+            return false;
           convergence_factor = rate / (1.0 - rate);
         }
         if (size <= 3.3e-9 or convergence_factor * size <= 0.33)
-          return {true, iteration + 1};
+          return true;
       }
-      return {false, 4};
+      return false;
     }
   };
 

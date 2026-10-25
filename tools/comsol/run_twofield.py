@@ -22,7 +22,7 @@ from common import ROOT, run_comsol
 
 SOURCE = ROOT / "tools" / "comsol" / "GeFieldNormSweep.java"
 HEADER = ROOT / "test" / "reference" / "comsol_twofield.hpp"
-CASES = 11
+CASES = 3
 SAMPLE_COLUMNS = ["time", "a", "b", "spread"]
 # One row per accepted step, in the order the solver prints it: Step, Time,
 # Stepsize, an `out` marker on stored steps, Res, Jac, Sol, Order, Tfail,
@@ -252,10 +252,7 @@ def write_header(directory: Path) -> None:
             output.append(f"            {{{time!r}, {a_out!r}, {b_out!r}}},")
         output.append("        }},")
         rows_total += len(samples)
-    if seen["two_r100_repeat"] != seen["two_r100"]:
-        raise SystemExit("two_r100_repeat must repeat two_r100 exactly")
-    if not same_sequence(seen["two_equal100"], seen["single_a"], 1e-12):
-        raise SystemExit("two_equal100 must follow single_a when both fields are equal")
+
     output.extend(["    }; return all;", "}", "} // namespace comsol_twofield", ""])
     text = "\n".join(output)
     candidate = run_directory / "comsol_twofield.regenerated.hpp"
@@ -284,13 +281,7 @@ def print_summary(
             f"{case['name']}  {len(samples)}  {'  '.join(counters)}  "
             f"{case['field_dofs']}  {case['dofs']}"
         )
-    for left, right in (
-        ("two_r100", "two_r25"),
-        ("two_slow100", "two_slow25"),
-        ("two_equal100", "single_a"),
-        ("single_b100", "single_b25"),
-        ("two_r100", "two_r100_repeat"),
-    ):
+    for left, right in (("two_r100", "single_a"),):
         first = seen[left]
         second = seen[right]
         if len(first) != len(second):

@@ -3,7 +3,9 @@
 What the local COMSOL 6.2.0.290 solver does with the absolute-tolerance
 settings, recorded by `tools/comsol/GeToleranceSweep.java` and
 `tools/comsol/run_tolerance.py`, and stored as raw doubles in
-`test/reference/comsol_tolerance.hpp`. 17 cases, 714 stored samples, one
+`test/reference/comsol_tolerance.hpp`. 17 cases, 714 stored samples recorded and 377 kept in the tree — the first two
+times of every multi-variable case and the whole series of the single-variable
+ones, which is exactly what the test compares — one
 `manifest.csv` row and one solver log per case, one CSV with every dof and its
 derivative.
 
@@ -145,9 +147,9 @@ that moves from 60 to 108 on the decay model.
 
 The repair is not a constant: the criterion needs the partition of the state
 into variables, their scales, and the two switches `scaled` and
-`scaled_tolerance`. `doc/refactor-plan.md` (stage 1) carries the interface and
+`scaled_tolerance`. `settings.hpp` carries the interface and
 `test/acceptance/test_tolerance.cpp` the cases.
 
-The repair landed as stage 1: every recorded first step above now reproduces,
+The repair landed: every recorded first step above now reproduces,
 the six single-variable series to 9e-16, and the 69 regression cases of the old
 kernel are unchanged, which is the check that they were the special case.

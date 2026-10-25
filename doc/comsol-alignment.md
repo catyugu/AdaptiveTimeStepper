@@ -11,12 +11,14 @@ logsampling = 0").
 
 ## Evidence and acceptance
 
-`tools/comsol/GeDecayTransient.java` builds and solves the COMSOL models.
+`tools/comsol/GeSteppingSweep.java` builds and solves the COMSOL models.
 It reads time, state and derivative directly through `getPVals`, `getU` and
 `getUDot`. Data-export time labels were unsuitable: they round the time, and
 the final label `10` may be an interpolated value from a step ending past 10.
-`tools/comsol/run_decay.py` validates the exports against `exp(-t)`
-and the solver log, then writes `test/reference/comsol_trajectories.hpp`.
+`tools/comsol/run_stepping.py` validates the exports against `exp(-t)` and the
+solver log, then writes `test/reference/comsol_stepping.hpp`; `run_tolerance.py`,
+`run_twofield.py`, `run_thermoelastic.py` and `run_second_order.py` do the same
+for the other four models.
 The 1,336 samples in that file come from COMSOL, not from this library.
 
 The regression checks each stored time, value and derivative, the accepted,
@@ -73,7 +75,7 @@ match the automatic Heat Transfer or Navier–Stokes configuration. This limits
 adaptive orders to 1–2; it does not force every step to use order 2.
 
 The recorded case named `default` uses Global Equations and explicitly sets
-`maxorder = 5` in `GeDecayTransient.java`. It is a configured regression
+`maxorder = 5` in `GeSteppingSweep.java`. It is a configured regression
 baseline, not evidence that all COMSOL physics interfaces default to 5.
 
 ## What caused the mismatch
@@ -99,9 +101,9 @@ constant fitted to the reference step counts.
 
 Use `request.derivative_weight()`, `request.derivative_history()` and
 `request.derivative(y, dy)` when assembling first-order systems. A second time
-derivative is not a weight of this formula: `SecondOrderStepper` gives the same
-first-derivative weight to the pair `(u, u')` and condenses the step back to the
-state, which is what COMSOL's IDA path does. The classical stencil
+derivative is not a weight of this formula: `SecondOrderStepper` hands the same
+first-derivative weight to the pair `(u, u')` and lets the solve fill both halves,
+which is what COMSOL's IDA path does. The classical stencil
 version 1.0 offered for a second derivative is gone: it is a different
 discretization, first order whatever the scheme's order.
 
@@ -141,7 +143,7 @@ and the two recorded switches ("Update scaled absolute tolerance" off, and a
 scale the model gives) are in [evidence/tolerance-axes.md](evidence/tolerance-axes.md).
 The kernel implements the special case only: for a state of more than one
 variable, or for a scale the model gives, its first step misses the record by up
-to 9% (doc/evidence/tolerance-axes.md). Stage 1 of doc/refactor-plan.md repaired it: every recorded first step now reproduces.
+to 9% before the repair; every recorded first step now reproduces (doc/evidence/tolerance-axes.md).
 
 COMSOL also updates the *magnitude inside* `A_i` from the solution returned to
 the caller, including an interpolated solution. Its relative reference remains
@@ -193,19 +195,21 @@ decided whether those hypotheses held. The validation does not establish
 bitwise equality for arbitrary models or undocumented COMSOL configurations.
 Coupled-field weighting has its own reference run (the two-field sweep) and the
 kernel implements it; the scaled tolerance's branch structure is measured in
-doc/evidence/tolerance-axes.md and implemented (doc/refactor-plan.md, stage 1).
+doc/evidence/tolerance-axes.md and implemented.
 The recorded references still cover one scalar equation, so a state of several
 variables is validated by the acceptance cases of the tolerance sweep rather
 than by a long trajectory. Nonlinear physics, events and other COMSOL versions
 need their own reference runs. A second-order equation keeps the validated BDF path, through
-the state augmentation COMSOL documents, rather than a separate
-discretization; whether its auxiliary velocity belongs in the error test is
-still an open measurement (E05).
+the state augmentation COMSOL documents, rather than a separate discretization:
+the pair `(u, u')` is the solve's unknown and the velocity **is** part of the
+error test, measured by a recording that separates the two readings by `sqrt(2)`
+(doc/evidence/second-order.md).
 
 ## Reproduce
 
 ```text
-python tools/comsol/run_decay.py --directory .cache/comsol-reference
+python tools/comsol/run_stepping.py --directory .cache/comsol-reference
+python tools/comsol/run_second_order.py --directory .cache/comsol-reference
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DATSTEP_WARNINGS_AS_ERRORS=ON
 cmake --build build
 ctest --test-dir build --output-on-failure

@@ -6,6 +6,7 @@
 #include "settings.hpp"
 #include "stepper.hpp"
 
+#include <cmath>
 #include <cstddef>
 #include <functional>
 #include <span>
@@ -14,99 +15,28 @@
 
 namespace atstep {
 
-  namespace detail {
-
-    /// The state and its first derivative, advanced by the same BDF formula: the
-    /// pair the kernel integrates for an equation that is second order in time.
-    template <class State>
-    struct Augmented {
-      State value {};
-      State derivative {};
-
-      void axpy(double a, const Augmented& x)
-      {
-        detail::axpy(value, a, x.value);
-        detail::axpy(derivative, a, x.derivative);
-      }
-    };
-
-  } // namespace detail
-
-  /// Coefficients for a solve in the state alone, of an equation that is second
-  /// order in time: `M u'' + C u' + K u = f(t)`, or any residual in `u`, `u'`
-  /// and `u''`.
-  ///
-  /// The step holds the two derivatives to the affine forms
-  ///
-  ///     u'  = derivative_weight(1) u + derivative_history(1),
-  ///     u'' = derivative_weight(2) u + derivative_history(2),
-  ///
-  /// with `derivative_weight(2) == derivative_weight(1)^2`, which leaves the
-  /// condensed system `(K + cj C + cj^2 M) u = f - M known(2) - C known(1)` and
-  /// the nonlinear Jacobian `dF/du + cj dF/du' + cj^2 dF/du''`.
-  ///
-  /// The stepper builds the request for one solve callback and its state
-  /// references are borrowed for that call; it cannot be copied or retained.
+  /// The pair a second-order equation is integrated as: the state and its first
+  /// derivative. It is public because it is the solve's unknown and the error
+  /// test's argument, not an implementation detail.
   template <class State>
-  class SecondOrderRequest {
-  public:
-    SecondOrderRequest(const SecondOrderRequest&) = delete;
-    SecondOrderRequest& operator=(const SecondOrderRequest&) = delete;
-    SecondOrderRequest(SecondOrderRequest&&) = delete;
-    SecondOrderRequest& operator=(SecondOrderRequest&&) = delete;
+  struct SecondOrderState {
+    State value {};
+    State derivative {};
 
-    const double time;
-    const double step;
-    const int order;
-    /// The accepted steps behind the run.
-    const std::size_t accepted_steps;
-    const bool initializing;
-
-    /// The weight `u^(derivative)` carries on the state being solved for.
-    double derivative_weight(int derivative = 1) const
+    void axpy(double a, const SecondOrderState& x)
     {
-      require_supported(derivative);
-      return derivative == 1 ? weight_ : weight_ * weight_;
+      detail::axpy(value, a, x.value);
+      detail::axpy(derivative, a, x.derivative);
     }
-
-    /// The known term of the derivative's affine form.
-    const State& derivative_history(int derivative = 1) const
-    {
-      require_supported(derivative);
-      return derivative == 1 ? known1_ : known2_;
-    }
-
-    SecondOrderRequest(double new_time,
-      double step_size,
-      int step_order,
-      std::size_t steps,
-      bool initialization,
-      double weight,
-      const State& known1,
-      const State& known2)
-      : time(new_time)
-      , step(step_size)
-      , order(step_order)
-      , accepted_steps(steps)
-      , initializing(initialization)
-      , weight_(weight)
-      , known1_(known1)
-      , known2_(known2)
-    {
-    }
-
-  private:
-    static void require_supported(int derivative)
-    {
-      if (derivative < 1 or derivative > 2)
-        throw std::invalid_argument(
-          "atstep: a second-order request supports the first and second derivatives");
-    }
-
-    double weight_ = 0.0;
-    const State& known1_;
-    const State& known2_;
   };
+
+  /// The error norm of a second-order run: COMSOL's weighted RMS over both
+  /// halves of the pair, averaged over the two.
+  template <class State>
+  using SecondOrderNorm = std::function<double(const SecondOrderState<State>& error,
+    const SecondOrderState<State>& accepted,
+    const SecondOrderState<State>& returned,
+    std::size_t accepted_steps)>;
 
   /// What a second-order run reports as it goes.
   template <class State>
@@ -121,54 +51,105 @@ namespace atstep {
     std::function<void(double, const State&, const State&, bool)> on_store;
   };
 
-  /// `M u'' + C u' + K u = f` integrated by the first-order kernel over the pair
-  /// `(u, v = u')`, with every solve condensed back to the state: COMSOL's IDA
-  /// path. The error test measures the state alone — COMSOL excludes the
-  /// auxiliary velocity except that its documentation includes it while the
-  /// consistent initialization is on, which is still an open measurement
-  /// (doc/refactor-plan.md, E05).
+  /// `M u'' + C u' + K u = f(t)` as the first-order system COMSOL's IDA path
+  /// integrates,
+  ///
+  ///     u' = v,     M v' + C v + K u = f,
+  ///
+  /// over the pair `(u, v)`: the kernel's state is `SecondOrderState`, and the
+  /// caller's solve receives the pair's two affine forms
+  ///
+  ///     u' = cj u + known.value,
+  ///     v' = cj v + known.derivative,
+  ///
+  /// to assemble the step for both halves. The velocity is a solved unknown
+  /// here, not something this class reconstructs from the displacement: a
+  /// reconstruction is a divided difference, and its round-off is the state's
+  /// divided by the step, so it doubles as the step shrinks until a tight
+  /// absolute tolerance on the velocity cannot be met at all. With the pair
+  /// solved, each unknown comes from the equation that determines it best, and
+  /// what accuracy is left over belongs to the caller's solver.
+  ///
+  /// The error test covers both halves, each with its own weight, which is what
+  /// makes the steps of a problem whose velocity dwarfs its state the steps
+  /// COMSOL takes (doc/evidence/second-order.md).
   ///
   /// The integrator is neither copyable nor movable.
   template <class State>
     requires detail::StateVector<State>
   class SecondOrderStepper {
-    using Pair = detail::Augmented<State>;
+    using Pair = SecondOrderState<State>;
     using Inner = TimeStepper<Pair>;
 
   public:
-    using Solve
-      = std::function<SolveOutcome(const SecondOrderRequest<State>&, State&)>;
-    using Norm = ErrorNorm<State>;
+    /// The solve of one step of the pair: the caller fills both halves, and
+    /// reports whether its nonlinear iteration converged. For a linear
+    /// `M u'' + C u' + K u = f` the step is
+    ///
+    ///     cj u - v = -known.value
+    ///     u + (cj M + C) v = f - M known.derivative
+    ///
+    /// and `v` is read from the second row, whose right-hand side is `O(cj |v|)`
+    /// rather than `O(|u|)`; reading it back from `cj u + known.value` instead
+    /// throws away the digits the velocity has.
+    using Solve = std::function<bool(const StepRequest<Pair>&, Pair&)>;
+    using Norm = SecondOrderNorm<State>;
 
     SecondOrderStepper(const SecondOrderStepper&) = delete;
     SecondOrderStepper& operator=(const SecondOrderStepper&) = delete;
     SecondOrderStepper(SecondOrderStepper&&) = delete;
     SecondOrderStepper& operator=(SecondOrderStepper&&) = delete;
 
+    /// The norm COMSOL's settings describe: the weighted RMS of each half of the
+    /// pair, averaged over the two. A state must expose its dofs to accept it.
+    static Norm default_norm(const ErrorTest& error)
+    {
+      if constexpr (detail::Indexable<State>) {
+        detail::WeightedRmsNorm weights = detail::WeightedRmsNorm::from(error);
+        return [weights](const Pair& estimate,
+                 const Pair& accepted,
+                 const Pair& returned,
+                 std::size_t accepted_steps) mutable {
+          weights.accepted_steps = accepted_steps;
+          const double value
+            = weights(estimate.value, accepted.value, returned.value);
+          const double derivative = weights(
+            estimate.derivative, accepted.derivative, returned.derivative);
+          return std::sqrt(0.5 * (value * value + derivative * derivative));
+        };
+      }
+      else {
+        throw std::invalid_argument(
+          "atstep: this state has no size() and operator[], so the run needs a norm");
+      }
+    }
+
     /// @param[in] settings the method's settings.
-    /// @param[in] solve the solve of one condensed step (see the class comment).
+    /// @param[in] solve the solve of one step of the pair (see `Solve`).
     /// @param[in] norm the norm the error of a step is measured in, over the
-    /// state. Empty means COMSOL's, over the state alone.
+    /// pair. Empty means `default_norm(settings.error)`.
     explicit SecondOrderStepper(const Settings& settings,
       Solve solve,
       Norm norm = {})
-      : solve_(std::move(solve))
-      , inner_(settings,
-          [this](const StepRequest<Pair>& request, Pair& y) {
-            return solve_step(request, y);
-          },
-          pair_norm(settings.error, std::move(norm)))
+      : inner_(settings, std::move(solve), resolve_norm(std::move(norm), settings.error))
     {
-      if (not solve_)
-        throw std::invalid_argument("atstep: a run needs a solve");
     }
 
-    /// Prepare the run: the state and its first derivative at `time`, integrated
-    /// to `end_time`. The two artificial backward-Euler steps apply to both
-    /// initial values.
-    void start(double time, const State& initial, const State& derivative, double end_time)
+    /// Prepare the run from the pair at `time`, integrated to `end_time`, with
+    /// COMSOL's consistent initialization: two artificial backward-Euler steps
+    /// that reconcile both initial values with the equations.
+    void start(double time, const Pair& initial, double end_time)
     {
-      inner_.start(time, Pair {initial, derivative}, end_time);
+      inner_.start(time, initial, end_time);
+    }
+
+    /// Prepare the run from a pair and its time derivative, `(u', u'')`, without
+    /// the consistent initialization: COMSOL's "Consistent initialization: Off".
+    /// The derivative completes the affine form, so the probes have nothing to
+    /// derive.
+    void start(double time, const Pair& initial, const Pair& derivative, double end_time)
+    {
+      inner_.start(time, initial, derivative, end_time);
     }
 
     /// The time the run has reached: the newest accepted level's.
@@ -248,50 +229,14 @@ namespace atstep {
     }
 
   private:
-    /// The norm the kernel applies to the pair: the caller's over the state, or
-    /// COMSOL's, which measures the state and not the velocity the library added.
-    static ErrorNorm<Pair> pair_norm(const ErrorTest& error, Norm norm)
+    /// The norm a run uses: the caller's, or COMSOL's over the pair.
+    static Norm resolve_norm(Norm norm, const ErrorTest& error)
     {
-      if (not norm) {
-        if constexpr (detail::Indexable<State>)
-          norm = TimeStepper<State>::default_norm(error);
-        else
-          throw std::invalid_argument(
-            "atstep: this state has no size() and operator[], so the run needs a norm");
-      }
-      return [norm](const Pair& estimate,
-               const Pair& accepted,
-               const Pair& returned,
-               std::size_t accepted_steps) {
-        return norm(estimate.value, accepted.value, returned.value, accepted_steps);
-      };
+      if (norm)
+        return norm;
+      return default_norm(error);
     }
 
-    /// Turn the kernel's step of the pair into the condensed step of the state:
-    /// name the two affine forms, hand the solve the state alone, and derive the
-    /// derivative the level pairs with from the kinematic constraint.
-    SolveOutcome solve_step(const StepRequest<Pair>& request, Pair& y)
-    {
-      const double cj = request.derivative_weight();
-      const State& known1 = request.derivative_history().value;
-      // `known(2) = cj known(1) + known(v)`: the velocity's own known term,
-      // shifted to the second derivative's level.
-      known2_ = request.derivative_history().derivative;
-      detail::axpy(known2_, cj, known1);
-      const SecondOrderRequest<State> condensed {request.time, request.step,
-        request.order, request.accepted_steps, request.initializing, cj, known1,
-        known2_};
-      const SolveOutcome outcome = solve_(condensed, y.value);
-      if (outcome.converged) {
-        // Restore the kinematic constraint only for a solved candidate.
-        y.derivative = known1;
-        detail::axpy(y.derivative, cj, y.value);
-      }
-      return outcome;
-    }
-
-    Solve solve_;
-    State known2_ {};
     Inner inner_;
     /// The pair the dense output is written into before one half of it is handed
     /// to the caller: the kernel interpolates both halves together.

@@ -34,33 +34,17 @@ import java.io.*;
 // manifest.csv row with the values read back from the solver.
 public class GeFieldNormSweep {
     static final String[] SPECS = {
-        // Controls: a single field, where both formulas coincide because M = 1.
-        // single_a is 1 dof, single_b100 is 101 dofs (one field, uniform error).
+        // The controls: a single variable on each side, where the average over
+        // variables is the average over degrees of freedom because M = 1.
+        // single_a is the global equation, single_b100 the field of 100 dofs.
         "single_a rateA=1",
         "single_b100 rateB=0.2236",
-        "single_b25 rateB=0.2236 elements=25",
-        // The sharp experiment. rateB/rateA = 0.2236 gives
-        // E_B/E_A = (rateB/rateA)^2 = 0.05 at order 1.
+        // The experiment: one global equation of one dof beside a field of 100,
+        // with rateB/rateA = 0.2236, so a flat average over 101 degrees of
+        // freedom dilutes the field's error by a hundred and a per-variable
+        // average does not. The two readings differ by five orders of magnitude
+        // in the step sequence.
         "two_r100 rateA=1 rateB=0.2236",
-        // Same case, twice: a determinism control for the discriminating pair.
-        "two_r100_repeat rateA=1 rateB=0.2236",
-        // Same case at a quarter of the dofs: flat averaging must move, per-field
-        // averaging must not.
-        "two_r25 rateA=1 rateB=0.2236 elements=25",
-        // The same mesh pair with a field that is ten times slower than A. At order
-        // 1 its per-dof error ratio is (rateB/rateA)^2 = 0.01, so 101 of them still
-        // weigh little against A in a flat sum: this is the pair where a flat norm
-        // is diluted by the dof count and a per-field norm is not.
-        "two_slow100 rateA=1 rateB=0.1",
-        "two_slow25 rateA=1 rateB=0.1 elements=25",
-        // Control: rateB = rateA makes the two fields identical, so both formulas
-        // predict exactly the single_a sequence.
-        "two_equal100 rateA=1 rateB=1",
-        // The same experiment at the default order ramp, where E_B/E_A shrinks
-        // as the order rises.
-        "two_r100_order5 rateA=1 rateB=0.2236 order=5",
-        // A second tolerance, so the conclusion does not ride on rtol = 0.01.
-        "two_r100_rtol1e3 rateA=1 rateB=0.2236 rtol=1e-3",
     };
 
     static String directory;

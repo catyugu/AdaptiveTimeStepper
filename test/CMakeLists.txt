@@ -6,10 +6,10 @@
 # `test/support/`, so `#include "check.hpp"` and `#include "support/check.hpp"`
 # name the same file.
 #
-# `atstep_acceptance` is the COMSOL conformance target of the rewrite: it is
-# expected to fail against the kernel of this commit (doc/refactor-plan.md,
-# stage 0). It is a separate executable so that the regression suite above
-# reports the state of the code that exists, not of the code that is planned.
+# `atstep_acceptance` is the COMSOL conformance target: a case lands here with
+# the measurement behind it, before the code that satisfies it, so a commit that
+# only records a measurement leaves this executable red and the regression suite
+# above reports the state of the code that exists.
 
 set(ATSTEP_TEST_SOURCES
     unit/test_controller.cpp
@@ -17,8 +17,7 @@ set(ATSTEP_TEST_SOURCES
     unit/test_second_order.cpp
     unit/test_norm.cpp
     reference/test_comsol_thermoelastic.cpp
-    reference/test_comsol_ode.cpp
-    reference/test_comsol_stepping.cpp
+    reference/test_comsol_decay.cpp
     reference/test_comsol_twofield.cpp
     support/main.cpp)
 
@@ -39,6 +38,7 @@ set_tests_properties(atstep_tests PROPERTIES
 set(ATSTEP_ACCEPTANCE_SOURCES
     acceptance/test_tolerance.cpp
     acceptance/test_session.cpp
+    reference/test_comsol_second_order.cpp
     support/main.cpp)
 
 add_executable(atstep_acceptance ${ATSTEP_ACCEPTANCE_SOURCES})

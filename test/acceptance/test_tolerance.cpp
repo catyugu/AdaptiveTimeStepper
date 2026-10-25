@@ -108,7 +108,7 @@ namespace {
         const State& known = request.derivative_history();
         for (std::size_t i = 0; i < y.u.size(); ++i)
           y.u[i] = -known.u[i] / (cj - rates[i]);
-        return atstep::SolveOutcome {true, 1};
+        return true;
       });
     stepper.start(data.start_time, State {data.state0}, State {data.rate0}, data.end_time);
 
@@ -129,19 +129,24 @@ namespace {
       = stored.size() > 1 ? stored[1] - stored[0] : 0.0;
     const double recorded
       = data.times.size() > 1 ? data.times[1] - data.times[0] - data.probe : 0.0;
+    // The record carries the whole series of a single-variable model and the
+    // first two times of a multi-variable one, whose later decisions are
+    // COMSOL's inexact Newton and are not replayed (Q06).
+    const bool whole_series = stored.size() == data.times.size();
     double worst = 0.0;
-    for (std::size_t i = 0; i < std::min(stored.size(), data.times.size()); ++i) {
-      // The replay starts where the probes left the clock, the record starts at
-      // the start time; the end is stored exactly by both.
-      const double shift = i == 0 or i + 1 == stored.size() ? 0.0 : data.probe;
-      worst = std::max(worst, std::abs(stored[i] + shift - data.times[i]));
+    if (whole_series) {
+      for (std::size_t i = 0; i < stored.size(); ++i) {
+        // The replay starts where the probes left the clock, the record starts
+        // at the start time; the end is stored exactly by both.
+        const double shift = i == 0 or i + 1 == stored.size() ? 0.0 : data.probe;
+        worst = std::max(worst, std::abs(stored[i] + shift - data.times[i]));
+      }
     }
 
     std::printf("COMSOL %-30s steps %3d/%3d rejects %d/%d samples %3zu/%3zu "
-                "h1 %.10f/%.10f |dt| %.2e\n",
+                "h1 %.10f/%.10f\n",
       data.name, report.steps, data.accepted_steps, report.rejected,
-      data.rejected_steps, stored.size(), data.times.size(), first_step, recorded,
-      worst);
+      data.rejected_steps, stored.size(), data.times.size(), first_step, recorded);
 
     // A scale the model gave is exact; a scale COMSOL chose is only printed to
     // two digits, so a replay cannot match it more closely than that.
@@ -153,9 +158,9 @@ namespace {
       CHECK_EQ(report.steps, data.accepted_steps);
       CHECK_EQ(report.rejected, data.rejected_steps);
       CHECK_EQ(report.failed_solves, data.failed_solves);
-      CHECK_EQ(stored.size(), data.times.size());
+      CHECK(whole_series);
       CHECK(stored.size() >= 2 and stored.back() == data.end_time);
-      if (stored.size() == data.times.size())
+      if (whole_series)
         CHECK(worst < 1e-6);
     }
   }

@@ -29,8 +29,7 @@ namespace {
     }
 
     /// The BDF step: `(a0 M + K) u_{n+1} = -sum_{j>0} a_j M u_{n+1-j}`.
-    atstep::SolveOutcome
-    solve(const atstep::StepRequest<std::vector<double>>& request,
+    bool solve(const atstep::StepRequest<std::vector<double>>& request,
       std::vector<double>& u) const
     {
       const double a0 = request.derivative_weight();
@@ -61,7 +60,7 @@ namespace {
       u[m] = b[m - 1] / diagonal[m - 1];
       for (std::size_t i = m - 1; i-- > 0;)
         u[i + 1] = (b[i] - upper[i] * u[i + 2]) / diagonal[i];
-      return atstep::SolveOutcome {true, 1};
+      return true;
     }
   };
 

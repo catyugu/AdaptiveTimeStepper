@@ -30,10 +30,10 @@ namespace {
     }
   };
 
-  atstep::SolveOutcome solve_decay(const atstep::StepRequest<Scalar>& request, Scalar& y)
+  bool solve_decay(const atstep::StepRequest<Scalar>& request, Scalar& y)
   {
     y.value = -request.derivative_history().value / (request.derivative_weight() + 1.0);
-    return atstep::SolveOutcome {true, 1};
+    return true;
   }
 
 } // namespace

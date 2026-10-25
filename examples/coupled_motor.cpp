@@ -30,8 +30,7 @@ namespace {
     // L*i' + R(theta)*i + k*omega = V
     // J*omega' + b*omega = k*i
     // C*theta' + G*theta = R(theta)*i^2
-    atstep::SolveOutcome operator()(const atstep::StepRequest<State>& request,
-      State& y) const
+    bool operator()(const atstep::StepRequest<State>& request, State& y) const
     {
       const double cj = request.derivative_weight();
       const double rprime = resistance * temperature_coefficient;
@@ -49,13 +48,13 @@ namespace {
         const double thermal = heat_capacity * dy[2] + conductance * y[2] - r * y[0] * y[0];
         const double residual = std::max({std::abs(electrical), std::abs(mechanical), std::abs(thermal)});
         if (residual < 1e-10)
-          return {true, iteration};
+          return true;
 
         const double a = inductance * cj + r;
         const double d = inertia * cj + damping;
         const double e = heat_capacity * cj + conductance - rprime * y[0] * y[0];
         if (not(e > 0.0))
-          return {false, iteration};
+          return false;
         // Eliminate speed and temperature increments from the Newton block.
         const double di = (-electrical + coupling * mechanical / d + rprime * y[0] * thermal / e)
           / (a + coupling * coupling / d + 2.0 * rprime * r * y[0] * y[0] / e);
@@ -65,7 +64,7 @@ namespace {
         y[1] += dw;
         y[2] += dt;
       }
-      return {false, 20};
+      return false;
     }
 
     // Independent stationary reference: reduce to the scalar thermal balance.

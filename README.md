@@ -7,9 +7,10 @@ Header-only C++20 adaptive BDF integration, with variable order 1–5 and no
 external dependencies. The caller solves the equations; the library manages
 prediction, history, error estimates, step size, order and output.
 First-order-in-time systems go to the stepper directly; a second-order-in-time
-equation goes to the same kernel through an adapter that introduces the first derivative
-and condenses the Newton system back to the state, as COMSOL's IDA path
-does. The first-order method is checked against recorded COMSOL 6.2 scalar runs.
+equation goes to the same kernel through an adapter that expands it into the
+first-order pair `(u, u')` and makes that pair the solve's unknown, as COMSOL's
+IDA path does. The first-order method is checked against recorded COMSOL 6.2
+scalar runs.
 
 ## Example
 
@@ -28,7 +29,7 @@ int main()
             // y' = cj*y + known, hence (cj + 1)*y = -known.
             const State& known = request.derivative_history();
             y[0] = -known[0] / (request.derivative_weight() + 1.0);
-            return atstep::SolveOutcome {true, 1};
+            return true;
         });
 
     atstep::RunHooks<State> hooks;
@@ -46,8 +47,8 @@ The solve receives a predictor in `y` and replaces it with the solved state.
 For `M y' + K y = f`, assemble
 `(cj*M + K)*y = f(request.time) - M*known`.
 In a nonlinear residual, `request.derivative(y, dy)` writes the derivative into
-`dy` in correction form, to reduce cancellation. Return `{false, iterations}` when
-the solve fails; the stepper retries at a quarter of the step size.
+`dy` in correction form, to reduce cancellation. Return `false` when the solve
+fails; the stepper retries at a quarter of the step size.
 
 Runnable examples cover [heat conduction](examples/heat_equation.cpp),
 a [damped oscillator as a second-order equation](examples/second_order.cpp) and
@@ -57,11 +58,17 @@ COMSOL trajectory regression.
 
 ## Second-order equations
 
-`M u'' + C u' + K u = f(t)` goes to `SecondOrderStepper`. It introduces the
-first derivative the BDF kernel needs and condenses each step back to the state,
-so the solve is the size it was — the state augmentation and reduction COMSOL's
-IDA path performs. The error test measures the state, and `run` reports the
-first derivative with every stored value. See
+`M u'' + C u' + K u = f(t)` goes to `SecondOrderStepper`, which expands it into the
+first-order system COMSOL's IDA path integrates and makes the pair `(u, u')` the
+solve's unknown: the caller solves both rows, `cj u - v = -known.value` and
+`K u + (cj M + C) v = -M known.derivative`. The velocity is therefore solved, not
+reconstructed from the displacement — a reconstruction loses its digits as the
+step shrinks, and a tight absolute tolerance on the velocity becomes
+unattainable. The error test measures the pair, each half with its own weight,
+which is what COMSOL does; a norm of the caller's is typed over
+`SecondOrderState`. `run` reports the first derivative with every stored value,
+and `start` runs the two initialization probes for a pair and skips them when the
+caller also gives the pair's derivative. See
 [the oscillator example](examples/second_order.cpp) and the
 [design](doc/design.md#second-order-equations).
 
@@ -145,8 +152,8 @@ doc/design.md records how the kernel reads it.
 | `ManualSteps::step`, `::order`            | 0.0, 2                 | The fixed step of a manual run, and its BDF order          |
 | `error.relative`                          | 1e-2                   | Relative error weight                                      |
 | `error.absolute`                          | factor 0.1             | The absolute tolerance: a factor of `relative`, or a value |
-| `error.scaled`                            | true                   | Scale the solution by each variable's scale               |
-| `error.variables`                         | empty                  | The dependent variables, their scales, their `A_s` branch   |
+| `error.scaled`                            | true                   | Scale the solution by each variable's scale                |
+| `error.variables`                         | empty                  | The dependent variables, their scales, their `A_s` branch  |
 | `initialization_fraction`                 | 1e-3                   | COMSOL's "Fraction of initial step for Backward Euler"     |
 | `storage`                                 | `Storage::interpolate` | Output selection                                           |
 | `store_every`                             | 1                      | Store every Nth step                                       |
@@ -246,7 +253,7 @@ matching its algebraic solve strategy; the scalar references do not establish
 equivalence for arbitrary models.
 
 - [Design](doc/design.md): ownership, history and numerical boundaries.
-- [The rewrite](doc/refactor-plan.md): the interface, what has landed, what is left, and the open questions.
+- [Open questions](doc/open-questions.md): what the library does not know yet about COMSOL, and the measurement that would settle each.
 - [COMSOL alignment](doc/comsol-alignment.md): measured configurations and reproduction.
 - [Coupled multiphysics](doc/multiphysics.md): thermoelastic COMSOL comparison and motor example.
 - [Research notes](doc/research/comsol-time-dependent-solver.md): what the COMSOL

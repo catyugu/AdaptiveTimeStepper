@@ -88,8 +88,8 @@ namespace atstep::detail {
   /// one dof at scale one reduces to COMSOL's scalar form, which is the only
   /// case the recorded trajectories cover.
   ///
-  /// States expose `size()` and `operator[]`; another layout can supply a custom
-  /// norm as `TimeStepper<State, Norm>`'s second template parameter.
+  /// States expose `size()` and `operator[]`; a layout that does not is given
+  /// its norm by its caller (the `Norm` parameter of `TimeStepper`).
   struct WeightedRmsNorm {
     /// The relative tolerance `R`.
     double relative = 1e-2;
@@ -152,6 +152,8 @@ namespace atstep::detail {
         throw std::invalid_argument("atstep: norm state sizes differ");
       if (n == 0)
         return 0.0;
+      // An empty list is one variable over the whole state.
+      const std::size_t count = variables.empty() ? 1 : variables.size();
       if (not variables.empty()) {
         std::size_t dofs = 0;
         for (const std::size_t variable : variables)
@@ -160,24 +162,22 @@ namespace atstep::detail {
           throw std::invalid_argument(
             "atstep: the variables of the error test do not add up to the size of the state");
       }
-      const double decay = std::exp(-0.2 * static_cast<double>(accepted_steps));
-      const auto sigma = [this](std::size_t i) {
+      // The scales and the partition, walked together.
+      const auto scale_at = [this](std::size_t i) {
         return i < scale.size() ? scale[i] : 1.0;
       };
-      // The scales and the partition, walked together.
-      const std::size_t count = variables.empty() ? 1 : variables.size();
-      std::vector<double> squares(n, 0.0);
+      const double decay = std::exp(-0.2 * static_cast<double>(accepted_steps));
+      double total = 0.0;
       std::size_t first = 0;
       for (std::size_t variable = 0; variable < count; ++variable) {
-        const std::size_t dofs
-          = variables.empty() ? n : std::min(variables[variable], n - first);
+        const std::size_t dofs = variables.empty() ? n : variables[variable];
         const bool update = scaled_tolerance.empty()
           or (variable < scaled_tolerance.size() and scaled_tolerance[variable]);
-        // The variable's own norms, from the solution the caller was given.
+        // The variable's own norm, from the solution the caller was given.
         double square = 0.0;
         double largest = 0.0;
         for (std::size_t i = first; i < first + dofs; ++i) {
-          const double y = returned[std::size_t {i}] / sigma(std::size_t {i});
+          const double y = returned[std::size_t {i}] / scale_at(std::size_t {i});
           square += y * y;
           largest = std::max(largest, std::abs(y));
         }
@@ -188,8 +188,10 @@ namespace atstep::detail {
           ? (update ? absolute * (beta + std::sqrt(square / static_cast<double>(dofs)))
                     : absolute)
           : absolute;
+        // The variable's ratios, averaged over its own degrees of freedom.
+        double sum = 0.0;
         for (std::size_t i = first; i < first + dofs; ++i) {
-          const double s = sigma(i);
+          const double s = scale_at(std::size_t {i});
           // The relative part follows the last accepted internal state; only
           // the absolute one follows the solution the caller was given.
           const double reference_value = scaled ? reference[i] / s : reference[i];
@@ -203,20 +205,10 @@ namespace atstep::detail {
             continue;
           }
           const double ratio = estimate / weight;
-          squares[i] = ratio * ratio;
+          sum += ratio * ratio;
         }
-        first += dofs;
-      }
-      // COMSOL averages over the variables first, so that a variable of many
-      // degrees of freedom does not outvote one of few.
-      double total = 0.0;
-      first = 0;
-      for (std::size_t variable = 0; variable < count; ++variable) {
-        const std::size_t dofs
-          = variables.empty() ? n : std::min(variables[variable], n - first);
-        double sum = 0.0;
-        for (std::size_t i = first; i < first + dofs; ++i)
-          sum += squares[i];
+        // COMSOL averages over the variables, so that a variable of many
+        // degrees of freedom does not outvote one of few.
         total += sum / static_cast<double>(dofs);
         first += dofs;
       }

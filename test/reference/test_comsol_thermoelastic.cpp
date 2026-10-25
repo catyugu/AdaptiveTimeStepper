@@ -16,7 +16,7 @@ namespace {
   // x' = v, v' = -4*x - 4.5*v + 0.5*theta,
   // theta' = -0.5*v - 1.5*theta.
   // Thermal expansion drives motion; deformation feeds back into temperature.
-  atstep::SolveOutcome solve_thermoelastic(const atstep::StepRequest<State>& request,
+  bool solve_thermoelastic(const atstep::StepRequest<State>& request,
     State& y)
   {
     const double cj = request.derivative_weight();
@@ -30,7 +30,7 @@ namespace {
     y[0] += (dv - residual[0]) / cj;
     y[1] += dv;
     y[2] += (-residual[2] - 0.5 * dv) / (cj + 1.5);
-    return {true, 1};
+    return true;
   }
 
   State exact(double t, int derivative = 0)

@@ -51,15 +51,14 @@ namespace {
   };
 
   /// The exact solve of the decoupled fields: `y' = -rate * y`.
-  atstep::SolveOutcome
-  solve_fields(const atstep::StepRequest<State>& request, State& y,
+  bool solve_fields(const atstep::StepRequest<State>& request, State& y,
     const std::vector<double>& rates)
   {
     const double cj = request.derivative_weight();
     const State& known = request.derivative_history();
     for (std::size_t i = 0; i < y.u.size(); ++i)
       y.u[i] = -known.u[i] / (cj + rates[i]);
-    return {true, 1};
+    return true;
   }
 
   /// The settings of one COMSOL case.
@@ -169,7 +168,7 @@ namespace {
     // are printed, not checked: a replayed run reads its first step off the
     // derivative, and COMSOL's own first step differs from what that rule gives
     // by four parts in a thousand, which the whole sequence carries
-    // (doc/refactor-plan.md, Q01).
+    // (doc/open-questions.md, Q01).
     if (stored_times.size() == reference.samples.size()) {
       double worst_time = 0.0;
       double worst_value = 0.0;

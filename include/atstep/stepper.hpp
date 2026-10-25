@@ -77,17 +77,6 @@ namespace atstep {
       return known_;
     }
 
-    /// The predictor the solve started from, and the derivative it predicts.
-    const State& predictor() const noexcept
-    {
-      return predictor_;
-    }
-
-    const State& derivative_predictor() const noexcept
-    {
-      return derivative_predictor_;
-    }
-
     /// `out = y'` of the state `y`, in the correction form IDA forms it:
     /// `derivative_predictor() + cj*(y - predictor())`. It is the same affine
     /// form as `cj*y + known`, evaluated where the correction is small, and it is
@@ -150,21 +139,11 @@ namespace atstep {
     const State& returned_;
   };
 
-  /// What the caller's solve reports back.
-  struct SolveOutcome {
-    /// Whether the nonlinear solve converged. A step that did not is
-    /// retried at a quarter of its size.
-    bool converged = false;
-    /// The nonlinear iterations the solve took, for the log.
-    int iterations = 0;
-  };
-
   /// An accepted step, as the log sees it.
   struct StepRecord {
     double time = 0.0;
     double step = 0.0;
     int order = 0;
-    int iterations = 0;
     /// The error estimate of the step: held at most to one.
     double error = 0.0;
   };
@@ -204,7 +183,9 @@ namespace atstep {
     requires detail::StateVector<State>
   class TimeStepper {
   public:
-    using Solve = std::function<SolveOutcome(const StepRequest<State>&, State&)>;
+    /// The solve of one step: whether its nonlinear iteration converged. A step
+    /// that did not is retried at a quarter of its size.
+    using Solve = std::function<bool(const StepRequest<State>&, State&)>;
     using Norm = ErrorNorm<State>;
 
     TimeStepper(const TimeStepper&) = delete;
@@ -251,10 +232,7 @@ namespace atstep {
     /// is sized from. Each is a solve of the caller's.
     void start(double time, const State& initial, double end_time)
     {
-      require_bounds(time, end_time);
-      started_ = false;
-      report_ = {};
-      controller_.emplace(settings_, end_time - time);
+      prepare_run(time, end_time);
       const double span = end_time - time;
 
       // The probe is the initial step of the alternative the run steps in, times
@@ -295,9 +273,8 @@ namespace atstep {
         work_.predictor = level;
         work_.derivative_predictor = work_.predictor;
         detail::axpy(work_.derivative_predictor, -1.0, work_.predictor);
-        const SolveOutcome outcome = solve(
-          time + static_cast<double>(j) * probe, probe, 1, cj, level, level, true);
-        if (not outcome.converged)
+        if (not solve(time + static_cast<double>(j) * probe, probe, 1, cj, level,
+              level, true))
           throw std::runtime_error(
             "atstep: the initialization step of the run at t = " + std::to_string(time) + " did not converge");
         increment = work_.solution;
@@ -317,11 +294,9 @@ namespace atstep {
     /// consistent initialization: COMSOL's "Consistent initialization: Off".
     void start(double time, const State& initial, const State& derivative, double end_time)
     {
-      require_bounds(time, end_time);
-      started_ = false;
-      report_ = {};
-      controller_.emplace(settings_, end_time - time);
-      begin_run(time, initial, derivative, norm_(derivative, initial, initial, 0), time, end_time);
+      prepare_run(time, end_time);
+      begin_run(
+        time, initial, derivative, norm_(derivative, initial, initial, 0), time, end_time);
     }
 
     /// The time the run has reached: the newest accepted level's.
@@ -329,42 +304,6 @@ namespace atstep {
     {
       require_started();
       return accepted_.time;
-    }
-
-
-    /// The tail both starts share: the level, its derivative, the first step and
-    /// the difference table they imply.
-    void begin_run(double time,
-      const State& level,
-      const State& derivative,
-      double derivative_norm,
-      double initialized_time,
-      double end_time)
-    {
-      accepted_.state = level;
-      accepted_.derivative = derivative;
-      accepted_.time = initialized_time;
-      accepted_.order = 1;
-      returned_ = level;
-      controller_->begin(derivative_norm, end_time - initialized_time, initialized_time);
-      // Zero only the columns the configured order can reach: the scheme
-      // reads `phi[0..max_order]` and the column above it, and a state
-      // allocated here is a state held for the whole run.
-      for (int j = 0; j <= controller_->order_limit() + 1; ++j) {
-        State& column = accepted_.phi[static_cast<std::size_t>(j)];
-        column = level;
-        detail::axpy(column, -1.0, level);
-      }
-      // The first difference the scheme reads is the initial derivative at the
-      // size the first step proposes — IDA's `phi[2] = h yp_0`. A step
-      // rescaled to another size reads it through its own factor.
-      accepted_.phi[0] = level;
-      detail::axpy(accepted_.phi[1], controller_->step_size(), derivative);
-      accepted_.psi.fill(0.0);
-      accepted_.psi[0] = controller_->step_size();
-      start_time_ = time;
-      end_time_ = end_time;
-      started_ = true;
     }
 
     /// The current solution: the newest accepted level's state. It is the
@@ -487,15 +426,51 @@ namespace atstep {
     }
 
   private:
-    /// Whether a step may pass the end time, whose value is then interpolated.
-    /// A strict placement never passes an output time, so it never passes the
-    /// end either.
-    bool interpolate_end_time() const
+    /// The tail both starts share: the level, its derivative, the first step and
+    /// the difference table they imply.
+    void begin_run(double time,
+      const State& level,
+      const State& derivative,
+      double derivative_norm,
+      double initialized_time,
+      double end_time)
     {
-      if (const auto* manual = std::get_if<ManualSteps>(&settings_.steps))
-        return manual->interpolate_end_time;
-      const auto& adaptive = std::get<AdaptiveSteps>(settings_.steps);
-      return adaptive.placement != Placement::strict and adaptive.interpolate_end_time;
+      accepted_.state = level;
+      accepted_.derivative = derivative;
+      accepted_.time = initialized_time;
+      accepted_.order = 1;
+      returned_ = level;
+      controller_->begin(derivative_norm, end_time - initialized_time, initialized_time);
+      // Zero only the columns the configured order can reach: the scheme
+      // reads `phi[0..max_order]` and the column above it, and a state
+      // allocated here is a state held for the whole run.
+      for (int j = 0; j <= controller_->order_limit() + 1; ++j) {
+        State& column = accepted_.phi[static_cast<std::size_t>(j)];
+        column = level;
+        detail::axpy(column, -1.0, level);
+      }
+      // The first difference the scheme reads is the initial derivative at the
+      // size the first step proposes — IDA's `phi[2] = h yp_0`. A step
+      // rescaled to another size reads it through its own factor.
+      accepted_.phi[0] = level;
+      detail::axpy(accepted_.phi[1], controller_->step_size(), derivative);
+      accepted_.psi.fill(0.0);
+      accepted_.psi[0] = controller_->step_size();
+      start_time_ = time;
+      end_time_ = end_time;
+      started_ = true;
+    }
+
+    /// The preamble both starts share: the bounds, the counts, the controller and
+    /// the placement rule.
+    void prepare_run(double time, double end_time)
+    {
+      require_bounds(time, end_time);
+      started_ = false;
+      report_ = {};
+      controller_.emplace(settings_, end_time - time);
+      const detail::PlacementRule rule = detail::placement_rule(settings_);
+      interpolate_end_time_ = rule.interpolate_end_time;
     }
 
     /// The bounds of a run.
@@ -512,7 +487,6 @@ namespace atstep {
       double step = 0.0;
       double time = 0.0;
       int order = 1;
-      int iterations = 0;
       detail::StepErrors errors;
       /// The weight `y'` carries on the state being solved for, the factor the
       /// error test is held to, the columns' factors at this step size, the
@@ -550,7 +524,7 @@ namespace atstep {
 
     /// Construct the request only for the duration of the callback. This is
     /// also the buffer-lifetime boundary between solving and error estimation.
-    SolveOutcome solve(double time, double step, int order, double cj,
+    bool solve(double time, double step, int order, double cj,
       const State& previous, const State& reference, bool initializing = false)
     {
       work_.scratch = work_.derivative_predictor;
@@ -579,17 +553,12 @@ namespace atstep {
           step = placement.step;
           boundary = placement.boundary;
         }
-        else if (not interpolate_end_time()) {
+        else if (not interpolate_end_time_) {
           // A run of the caller's own lands on the end time exactly as a
           // scheduled one does when the end is not interpolated.
-          const double cut = detail::landing_step(step, from, end_time_);
-          if (cut != step) {
-            step = cut;
-            const double fuzz = 4.0 * std::numeric_limits<double>::epsilon()
-              * (std::abs(from) + std::abs(end_time_));
-            if (std::abs(from + step - end_time_) <= fuzz)
-              boundary = end_time_;
-          }
+          step = detail::landing_step(step, from, end_time_);
+          if (detail::lands_on(from, step, end_time_))
+            boundary = end_time_;
         }
         if (not(step > 0.0))
           throw std::runtime_error(
@@ -608,10 +577,8 @@ namespace atstep {
         controller.begin_attempt(step, trial.order);
         prepare(trial);
 
-        const SolveOutcome outcome = solve(next_time, step, trial.order,
-          trial.cj, accepted_.state, returned_);
-        trial.iterations = outcome.iterations;
-        if (not outcome.converged) {
+        if (not solve(next_time, step, trial.order, trial.cj, accepted_.state,
+              returned_)) {
           ++report_.failed_solves;
           controller.reject_convergence(step);
           if (step <= controller.smallest_step())
@@ -637,11 +604,7 @@ namespace atstep {
 
         if (boundary)
           trial.time = *boundary;
-        const StepRecord record {trial.time,
-          trial.step,
-          trial.order,
-          trial.iterations,
-          trial.errors.test};
+        const StepRecord record {trial.time, trial.step, trial.order, trial.errors.test};
         accept(trial);
         return record;
       }
@@ -795,6 +758,9 @@ namespace atstep {
 
     double start_time_ = 0.0;
     double end_time_ = 0.0;
+    /// Whether a step may pass the end time, whose value is then interpolated.
+    /// The schedule resolves the same rule for its own use.
+    bool interpolate_end_time_ = true;
     bool started_ = false;
     RunReport report_ {};
   };

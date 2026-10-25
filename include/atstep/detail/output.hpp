@@ -15,6 +15,26 @@
 
 namespace atstep::detail {
 
+  /// Where a run's steps may land and whether it may pass the last output time,
+  /// from the steps alternative of the settings. One definition, because the
+  /// stepper's caller-driven path and the schedule both need it.
+  struct PlacementRule {
+    Placement placement = Placement::free;
+    bool interpolate_end_time = true;
+  };
+
+  /// A manual step is the model's own: it is placed as a free one and never cut
+  /// to an output time. A strict placement ends at an output time anyway, so it
+  /// has no end time to interpolate at.
+  inline PlacementRule placement_rule(const Settings& settings)
+  {
+    if (const auto* manual = std::get_if<ManualSteps>(&settings.steps))
+      return {Placement::free, manual->interpolate_end_time};
+    const auto& adaptive = std::get<AdaptiveSteps>(settings.steps);
+    return {adaptive.placement,
+      adaptive.placement != Placement::strict and adaptive.interpolate_end_time};
+  }
+
   /// Where the steps of a run may land, and which output times a step that
   /// reached a time stores.
   ///
@@ -82,6 +102,16 @@ namespace atstep::detail {
     std::size_t next_ = 0;
   };
 
+  /// Whether a step from `time` of `step` ends at `target` to round-off. The
+  /// margin is the one a landing leaves behind: a sum of two times carries a few
+  /// ulps of the larger.
+  inline bool lands_on(double time, double step, double target)
+  {
+    const double fuzz = 4.0 * std::numeric_limits<double>::epsilon()
+      * (std::abs(time) + std::abs(target));
+    return std::abs(time + step - target) <= fuzz;
+  }
+
   /// The step to take instead of `step` so that a step from `time` ends at
   /// `target`: the same step where it already does, otherwise one that leaves a
   /// rounding margin rather than a remainder, or half the distance where the
@@ -89,10 +119,9 @@ namespace atstep::detail {
   inline double landing_step(double step, double time, double target)
   {
     const double remaining = target - time;
-    const double fuzz = 4.0 * std::numeric_limits<double>::epsilon() * (std::abs(time) + std::abs(target));
     if (time + step > target)
       return remaining * (1.0 - 4.0 * std::numeric_limits<double>::epsilon());
-    if (std::abs(time + step - target) <= fuzz)
+    if (lands_on(time, step, target))
       return step;
     return 2.0 * step > remaining ? 0.5 * remaining : step;
   }
@@ -101,19 +130,9 @@ namespace atstep::detail {
   {
     store_ = settings.storage;
     store_every_ = static_cast<std::size_t>(settings.store_every);
-    // A manual step is the model's own, and is placed as a free one: it is not
-    // cut to an output time.
-    if (const auto* manual = std::get_if<ManualSteps>(&settings.steps)) {
-      placement_ = Placement::free;
-      interpolate_end_time_ = manual->interpolate_end_time;
-      return;
-    }
-    const auto& adaptive = std::get<AdaptiveSteps>(settings.steps);
-    placement_ = adaptive.placement;
-    // A step of the strict placement ends at an output time anyway, so it has
-    // no end time to interpolate at.
-    interpolate_end_time_ = adaptive.placement != Placement::strict
-      and adaptive.interpolate_end_time;
+    const PlacementRule rule = placement_rule(settings);
+    placement_ = rule.placement;
+    interpolate_end_time_ = rule.interpolate_end_time;
   }
 
   inline StepSchedule::StepSchedule(const Settings& settings,
@@ -176,7 +195,7 @@ namespace atstep::detail {
       : (placement_ == Placement::strict ? target : end_time_);
     const bool snapping = placement_ == Placement::strict or intermediate_landing or not interpolate_end_time_;
     Landing placement {step, std::nullopt};
-    if (snapping and std::abs(time + step - boundary) <= 4.0 * std::numeric_limits<double>::epsilon() * (std::abs(time) + std::abs(boundary)))
+    if (snapping and lands_on(time, step, boundary))
       placement.boundary = boundary;
     return placement;
   }

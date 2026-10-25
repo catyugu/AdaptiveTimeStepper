@@ -161,7 +161,10 @@ def write_header(directory: Path) -> None:
         "//",
         "// state0 and rate0 are the solved degrees of freedom at the first stored",
         "// time, in the order of `variables` (the field's dofs, then the global",
-        "// equation's). The stored dofs of the export are not a prefix: COMSOL",
+        "// equation's). `times` is the stored series of a single-variable model",
+        "// and the first two times of a multi-variable one, whose later decisions",
+        "// carry COMSOL's inexact Newton and are not replayed (Q06).",
+        "// The stored dofs of the export are not a prefix: COMSOL",
         "// interleaves the two internal reaction-force dofs with the field's (see",
         "// SOLVED in run_tolerance.py). `scales` is the solver's printed",
         '// "Scales for dependent variables", i.e. the numbers the library is',
@@ -213,9 +216,13 @@ def write_header(directory: Path) -> None:
             f"{{{numbers(scales)}}}, {{{numbers(state)}}}, {{{numbers(rate)}}}, "
             f"{accepted}, {rejected}, {failed}, {{"
         )
-        output.extend(f"            {time!r}," for time in times)
+        # Only what the test compares: the two times the first step is read
+        # from, which every case checks, and the whole series of a
+        # single-variable model, whose replay also reproduces the decisions.
+        emitted = times if len(dofs) == 1 else times[:2]
+        output.extend(f"            {time!r}," for time in emitted)
         output.append("        }},")
-        total += len(times)
+        total += len(emitted)
         seen[case["name"]] = times
     # The controls: settings that cannot change the criterion must not change
     # the trajectory, and settings that do must.

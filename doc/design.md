@@ -59,7 +59,7 @@ evaluates the same level in the form IDA forms it, `yypredict + cj*(y - ypred)`,
 into a buffer of the caller's: the correction is small where the predictor is
 good, which is where the direct form cancels. The request therefore borrows the
 predictor and its derivative as well, and keeps no buffer of its own. The solve
-starts from the predictor and returns convergence and iteration information.
+starts from the predictor and returns whether it converged.
 
 The private `solve` function bounds the request's lifetime. During that call,
 `work_.scratch` holds the known derivative term. After it returns, `work_.correction`
@@ -137,58 +137,46 @@ u' - v            = 0
 M v' + C v + K u  = f
 ```
 
-The caller's state is the state, and the first derivative is a companion the
-adapter keeps in a `detail::Augmented` state: prediction, levels, table, dense
-output and the error test of the kernel all run on the pair without knowing
-which half is which.
+and the callers state is that pair: `SecondOrderState<State>` is public because
+it is the solve's unknown and the error test's argument, not an implementation
+detail. Prediction, levels, the scaled-difference table, the dense output and the
+error test all run on it without knowing which half is which.
 
-The adapter owns only three additional state-sized buffers: the first
-and second derivative predictors and the second derivative's known term. Its
-request borrows the state predictor, first known term and derivative
-scratch from the kernel request. These borrowed references live for the same
-solve callback; no separate reference bundle is stored. A failed solve returns
-immediately, without trying to reconstruct the derivative from a failed candidate.
-
-The step's solve is then the condensed system of the state alone. With
-`cj` the step's first-derivative weight, the two derivative levels are the
-affine forms
+The solve is the pair's, which is what makes the adapter the same discretization
+COMSOL runs rather than a condensation of it:
 
 ```text
-u'  = cj    u + known(1)
-u'' = cj^2  u + known(2),   known(2) = cj known(1) + known(v),
+u'  = cj u + known.value,        v'  = cj v + known.derivative
+cj u - v                = -known.value
+K u + (cj M + C) v      = -M known.derivative
 ```
 
-where `known(v)` is the known term of the first derivative's own formula.
+Both unknowns are solved, so each is an independent unknown of the caller's
+nonlinear iteration, and the velocity comes from the row whose right-hand side is
+`O(cj |v|)` instead of from a divided difference of the displacement. That is the
+difference between a tolerance a run can meet and one it cannot: a derived
+velocity is `cj` times the displacement's round-off once the step is small, so an
+absolute tolerance far below the acceleration asks for steps whose velocity
+cannot be represented, while a solved velocity has the accuracy of its own
+unknown.
 
-and substituting them into the equation leaves
-
-```text
-(K + cj C + cj^2 M) u_{n+1} = f(t_{n+1}) - M known(2) - C known(1).
-```
-
-A nonlinear residual is condensed the same way, and its Jacobian is
-`dF/du + cj dF/du' + cj² dF/du''`. The linear system is the size it was before
-the augmentation, and the adapter is the only place that knows about it. The
-solve returns the state; the adapter derives the level's first derivative from
-the kinematic constraint, `v = cj u + known(1)`, which is what makes the pair at
-every accepted level a consistent one.
+A caller who wants the condensed system instead can eliminate `v` from the second
+row and has exactly the matrix COMSOL documents, `K + cj C + cj² M`, with the
+right-hand side `f - M known(2) - C known(1)`; the adapter does not do it for
+them, because the elimination is the step that loses the velocity's digits.
 
 `run` reports the first derivative with every stored state, `derivative()` is the
-newest level's, and `interpolate(t, 1)` is the dense first derivative: the kernel's dense
-derivative of the pair, whose derivative block is the state's derivative.
+newest level's, and `interpolate(t, 1)` is the dense first derivative: the
+kernel's dense derivative of the pair, whose derivative block is the state's
+derivative.
 
 Two consequences of the layering are deliberate:
 
-- The error test measures the state alone: the adapter wraps the caller's norm
-  so that the pair reaches it as its state's half. The first derivative's error
-  is the derivative of the state's, so a norm over it would hold the step to the
-  accuracy of a derivative — a factor `1/h` tighter — rather than to the
-  accuracy of the solution. State augmentation and error-norm selection are
-  therefore separate decisions: the caller's norm describes its own variables,
-  and the pairs never reach it. COMSOL excludes its auxiliary velocity for the
-  same reason, except that its documentation includes it while the consistent
-  initialization is on; that sentence is still unmeasured
-  (doc/refactor-plan.md, E05).
+- The error test covers both halves of the pair, each with its own weight, and
+  the average is over the two. COMSOL's does: one recorded second-order run
+  reproduces its first step and eighteen accepted steps only with the velocity in
+  the norm, and takes a step `sqrt(2)` too large without it
+  (doc/evidence/second-order.md).
 - No equation ever carries two derivatives into the kernel, so there is one
   integration path, one order selection and one error estimate. Differencing the
   state levels twice — the classical stencil of version 1.0 — is a
@@ -249,8 +237,8 @@ rejection, restart, invalid input and aliased derivative output. CTest also runs
 the three examples and `test/acceptance`, the COMSOL conformance target of the
 rewrite. The [scalar COMSOL regressions](comsol-alignment.md) compare 1,336
 recorded output samples of 21 configurations, including times, states,
-derivatives and failure counts, 1,904 samples of 23 stepping configurations, 682
-samples of 11 two-field configurations, and the 17 tolerance configurations of
+derivatives and failure counts, 1,231 samples of 19 stepping configurations, 155
+samples of 3 two-field configurations, and the 17 tolerance configurations of
 [the tolerance evidence](evidence/tolerance-axes.md) at the level that evidence
 establishes. The orders in COMSOL's solver log are printed as a diagnostic.
 Reference data is never injected into the numerical solve.
