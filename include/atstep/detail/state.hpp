@@ -137,7 +137,6 @@ namespace atstep::detail {
       return norm;
     }
 
-
     /// COMSOL updates the scaled absolute tolerance from the solution returned
     /// to the caller, which can be interpolated. The relative part and the
     /// variable's own magnitude continue to use the last accepted internal

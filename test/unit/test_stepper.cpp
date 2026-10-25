@@ -339,7 +339,7 @@ TEST_CASE("stepper: advance lands on the end only when the end is not interpolat
     atstep::Settings settings;
     adaptive_of(settings).interpolate_end_time = interpolate_end_time;
     adaptive_of(settings).max_order = 2;
-    settings.error.relative = 1e-1;  // steps large enough to pass the end
+    settings.error.relative = 1e-1; // steps large enough to pass the end
     atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
     stepper.start(0.0, Scalar {1.0}, 10.0);
     while (not stepper.finished())

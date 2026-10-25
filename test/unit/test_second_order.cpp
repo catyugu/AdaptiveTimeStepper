@@ -349,9 +349,9 @@ TEST_CASE("second order: a run of no solve is refused, and a norm of the caller'
   };
   int calls = 0;
   const auto norm = [&calls](const atstep::SecondOrderState<Own>& error,
-                       const atstep::SecondOrderState<Own>& accepted,
-                       const atstep::SecondOrderState<Own>&,
-                       std::size_t) {
+                      const atstep::SecondOrderState<Own>& accepted,
+                      const atstep::SecondOrderState<Own>&,
+                      std::size_t) {
     ++calls;
     return std::abs(error.value.v) / (1e-3 + 0.01 * std::abs(accepted.value.v));
   };

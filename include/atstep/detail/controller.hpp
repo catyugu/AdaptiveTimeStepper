@@ -204,23 +204,23 @@ namespace atstep::detail {
       // COMSOL's per-order defaults of the startup curve, and the caller's
       // own when the run names them.
       switch (manual->order) {
-        case 1:
-        case 2:
-          manual_fraction_ = 1.0;
-          manual_growth_ = 1.5;
-          break;
-        case 3:
-          manual_fraction_ = 0.1;
-          manual_growth_ = 1.2;
-          break;
-        case 4:
-          manual_fraction_ = 0.01;
-          manual_growth_ = 1.15;
-          break;
-        default:
-          manual_fraction_ = 0.001;
-          manual_growth_ = 1.1;
-          break;
+      case 1:
+      case 2:
+        manual_fraction_ = 1.0;
+        manual_growth_ = 1.5;
+        break;
+      case 3:
+        manual_fraction_ = 0.1;
+        manual_growth_ = 1.2;
+        break;
+      case 4:
+        manual_fraction_ = 0.01;
+        manual_growth_ = 1.15;
+        break;
+      default:
+        manual_fraction_ = 0.001;
+        manual_growth_ = 1.1;
+        break;
       }
       if (manual->startup_fraction)
         manual_fraction_ = *manual->startup_fraction;

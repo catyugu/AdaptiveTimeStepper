@@ -40,9 +40,9 @@ namespace {
     settings.error.relative = reference.tolerance;
     settings.store_every = reference.store_every;
     const std::string store(reference.store_mode);
-    settings.storage = store == "tlist"        ? atstep::Storage::interpolate
-      : store == "tstepsclosest"              ? atstep::Storage::closest
-                                              : atstep::Storage::steps;
+    settings.storage = store == "tlist" ? atstep::Storage::interpolate
+      : store == "tstepsclosest"        ? atstep::Storage::closest
+                                        : atstep::Storage::steps;
 
     const std::string mode(reference.step_mode);
     if (mode == "manual") {
@@ -57,9 +57,9 @@ namespace {
 
     atstep::AdaptiveSteps adaptive;
     adaptive.max_order = reference.max_order;
-    adaptive.placement = mode == "strict"          ? atstep::Placement::strict
-      : mode == "intermediate"                     ? atstep::Placement::intermediate
-                                                  : atstep::Placement::free;
+    adaptive.placement = mode == "strict" ? atstep::Placement::strict
+      : mode == "intermediate"            ? atstep::Placement::intermediate
+                                          : atstep::Placement::free;
     adaptive.interpolate_end_time = reference.end_interpolation;
 
     const std::string max_step(reference.max_step_kind);
@@ -146,7 +146,6 @@ namespace {
       if (keep(reference))
         compare(reference);
   }
-
 
 } // namespace
 
