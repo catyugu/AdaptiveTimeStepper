@@ -457,8 +457,8 @@ TEST_CASE("stepper: the store modes choose what is reported")
     settings.steps = atstep::ManualSteps {1.0, 1};
     atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
     stepper.start(0.0, Scalar {1.0}, 10.0);
-    std::vector<double> times {0.0, 1.5, 1.75, 2.5, 10.0};
-    return stepper.run(times).stored;
+    const std::vector<double> schedule {0.0, 1.5, 1.75, 2.5, 10.0};
+    return stepper.run(schedule).stored;
   };
   CHECK_EQ(coarse(atstep::Storage::interpolate), 5);
   CHECK_EQ(coarse(atstep::Storage::closest), 4);
