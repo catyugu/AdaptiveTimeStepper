@@ -95,7 +95,18 @@ velocity half until this measurement.
   augmented system: `E = rms(U) / sqrt(2)`.
 - An interpolated value's derivative is the dense output's.
 - With both, the whole exact record reproduces: 49 accepted steps, 5 rejections,
-  every stored time to 1.5e-10 and every state and derivative to 7.1e-9.
+  every stored time to 1.5e-10 and every state and derivative to 7.1e-9, which
+  is 2.2e-10 relative in a state of 32 and a derivative of 50.
+
+What is left of that difference is arithmetic, not a rule. The replay's first
+step is `2.4e-13` relative short of the record's, and the step sizes stay that
+close; the states then differ by `1e-13` relative, and the rejection cascade at
+`t = 9.4` — three retries of a step the record also retries — multiplies that by
+three orders of magnitude, to `2e-10`. Every decision the record carries agrees:
+the accepted steps, the rejections, and each stored time. Matching the last
+digits would mean reproducing COMSOL's own floating-point order in the two
+initialization probes and in the growth estimate, which is not a rule to get
+right.
 - The velocity still has to be a *solved* unknown. The adapter used to condense
   each step back to the displacement and rebuild the velocity as a divided
   difference; that rebuild is the displacement's round-off divided by the step, so

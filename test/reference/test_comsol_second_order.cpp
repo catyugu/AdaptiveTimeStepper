@@ -31,8 +31,11 @@ namespace {
   /// The damping of the recorded equation, `qtt + damping*qt + q = 0`.
   constexpr double damping = 0.1;
 
-  /// The agreement on every stored time, value and derivative: the replay solves
-  /// exactly, as the record's own run does, and the worst case is 4e-10.
+  /// The agreement on every stored time, value and derivative. The replay solves
+  /// exactly, as the record's own run does, so every decision agrees; what is
+  /// left is arithmetic: the record's first step is 2.4e-13 relative away from
+  /// the replay's, which the rejection cascade at t = 9.4 amplifies to 2.2e-10
+  /// relative in the last states (doc/evidence/second-order.md).
   constexpr double agreement = 1e-8;
 
 } // namespace
