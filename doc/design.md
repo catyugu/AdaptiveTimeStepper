@@ -26,11 +26,11 @@ a run in four parts, grouped by lifetime:
 | `accepted_`   | the accepted state, derivative, time, order and difference columns |
 | `controller_` | the step size and order proposed for the next step                 |
 | `work_`       | five buffers reused by successive attempts                         |
-| `output_`     | the value last stored, which the tolerance is measured against     |
+| `returned_`   | the value last returned, which the absolute weight is measured on  |
 
 All four are owned by the stepper. Accepted history, controller decisions and
-the last output reference persist across steps; work-buffer contents do not.
-`output_` is separate because COMSOL measures the scaled absolute tolerance
+the value last returned persist across steps; work-buffer contents do not.
+`returned_` is separate because COMSOL measures the scaled absolute tolerance
 against the value it last returned to the caller, which may be interpolated.
 `controller_` is built by `start`, once the run's span is known. State, time,
 step size, order and interpolation require a successfully initialized run.
@@ -55,18 +55,17 @@ M y' + K y = f  =>  (cj*M + K)*y = f - M*known
 ```
 
 `derivative_history()` returns `known` by reference, and `derivative(y, out)`
-evaluates `cj*y + known` in correction form into a buffer of the caller's,
-reducing cancellation where the predictor is good. The solve starts from the
-predictor and returns convergence and iteration information; matrix assembly and
-algebraic solvers belong to the caller. Custom states implement `axpy`; custom
-norms implement `norm(error, reference)`.
+evaluates the same level in the form IDA forms it, `yypredict + cj*(y - ypred)`,
+into a buffer of the caller's: the correction is small where the predictor is
+good, which is where the direct form cancels. The request therefore borrows the
+predictor and its derivative as well, and keeps no buffer of its own. The solve
+starts from the predictor and returns convergence and iteration information.
 
 The private `solve` function bounds the request's lifetime. During that call,
-`work_.scratch` holds the known derivative term and `work_.correction` is scratch
-for evaluating a requested derivative. After it returns, the correction buffer
-holds the final solution minus predictor, and scratch is reused for error
-estimates and the accepted derivative. Neither buffer needs a separate owning
-view or a second allocation for each use. `derivative(y, y)` is supported.
+`work_.scratch` holds the known derivative term. After it returns, `work_.correction`
+holds the final solution minus predictor, and scratch is reused for the error
+estimates, the accepted derivative and the dense output a store reports. No
+buffer needs a separate owning view or a second allocation for each use.
 
 A second time derivative is not a second formulation: it is an equation the
 adapter writes as a first-order system over the same kernel (see below). A third
@@ -99,21 +98,20 @@ error weights and trajectories.
 
 Accepting assigns into existing buffers instead of constructing temporary
 copies of the state and derivative. With fixed-size `std::vector` states, these
-assignments reuse capacity. The run becomes unreadable before the first history
-write and readable again only after every history, controller and output update
-succeeds. If assignment or `axpy` throws during publication, `start` is required
-before further access or stepping. There is no rollback table and no exception
-handler. This differs from an ordinary failed solve or error-test rejection,
-which leaves accepted history readable and can be retried.
+assignments reuse capacity. There is no rollback table and no exception handler:
+if a state operation throws while the level, the derivative and the columns are
+written, the history is partly written, and only `start` rebuilds it. That
+differs from a failed solve or an error-test rejection, which the attempt loop
+covers with a `continue` and which leaves accepted history untouched.
 
 `start` resets the level, the derivative, the table, the controller and the
-tolerance indexing. Its two backward-Euler probes accept nothing until the
+counts. Its two backward-Euler probes accept nothing until the
 second. Their times must be finite, advance time and remain inside the run;
 their derivative weight must be finite. A failed restart cannot expose old
 history paired with newly assigned run bounds.
 
 The stepper holds five work buffers, seven difference columns, and the accepted
-state, derivative and output reference: fifteen state objects, whatever the
+state, derivative and the value last returned: fifteen state objects, whatever the
 order and whatever the equation. A state's storage is allocated when a step
 first writes it. Initialization allocates columns `0..max_order+1`; unused higher
 columns remain empty. Dense output allocates only the buffer its caller passes.
@@ -181,14 +179,16 @@ derivative of the pair, whose derivative block is the state's derivative.
 
 Two consequences of the layering are deliberate:
 
-- The error test measures the state alone, because the norm of the kernel
-  is applied to `Augmented`, whose `size()` and `operator[]` are the
-  state's. The first derivative's error is the derivative of the state's,
-  so a norm over it would hold the step to the accuracy of a derivative — a
-  factor `1/h` tighter — rather than to the accuracy of the solution. COMSOL's
-  error test excludes its auxiliary derivative for the same reason. State
-  augmentation and error-norm selection are therefore separate decisions: the
-  caller's norm describes its own variables, and the pairs never reach it.
+- The error test measures the state alone: the adapter wraps the caller's norm
+  so that the pair reaches it as its state's half. The first derivative's error
+  is the derivative of the state's, so a norm over it would hold the step to the
+  accuracy of a derivative — a factor `1/h` tighter — rather than to the
+  accuracy of the solution. State augmentation and error-norm selection are
+  therefore separate decisions: the caller's norm describes its own variables,
+  and the pairs never reach it. COMSOL excludes its auxiliary velocity for the
+  same reason, except that its documentation includes it while the consistent
+  initialization is on; that sentence is still unmeasured
+  (doc/refactor-plan.md, E05).
 - No equation ever carries two derivatives into the kernel, so there is one
   integration path, one order selection and one error estimate. Differencing the
   state levels twice — the classical stencil of version 1.0 — is a
@@ -209,9 +209,12 @@ Landing logic preserves a step already reaching its target, otherwise shortens
 it with a rounding margin or splits the final two steps. `StepSchedule` holds
 the output times and the two modes, and answers the two questions a step asks of
 them: the size it must be cut to, and the values to report once it ended.
-It borrows the caller's schedule for the duration of `run` and emits each output
-synchronously, without allocating a list of pending output records. The caller
-must keep the schedule unchanged during the run.
+It owns a copy of the times and emits each output synchronously, without
+allocating a list of pending output records. Its one piece of state is whether
+the interval that starts at the last stored output already holds a step: an
+accepted step that crossed an output time counts as the landing of the next
+interval, and the level a consistent initialization leaves sits `2 * probe` past
+the start time without being a step, so that flag cannot be read off the clock.
 
 `run` consumes a complete schedule immediately after `start`. Calling it after
 `advance` or after a completed `run` is rejected, so a later state cannot be
@@ -225,10 +228,15 @@ passes, so it keeps nothing and invalidates nothing: the same buffer can serve
 every call. The states a hook is handed do use the run's own buffers and are
 valid only during the call.
 
-The default norm uses the last accepted internal state for relative weights
-and the most recently stored state for scaled absolute weights. Interpolated
-output therefore affects later error weights, as covered by the COMSOL tests.
-Custom norms receive only the error and accepted internal state.
+The default norm is COMSOL's error test: the weighted RMS over the state,
+averaged per dependent variable first and per degree of freedom second, with
+`Y = U / scale` and `A_s = A_k (beta + rms(Y))` for a variable whose absolute
+tolerance follows the solution and `A_s = A_k` otherwise
+(doc/evidence/tolerance-axes.md). It uses the last accepted internal state for
+the relative weights and the most recently stored state for the scaled absolute
+weight, so interpolated output affects later error weights, as the COMSOL tests
+cover. A custom norm receives the error, the accepted state, the returned state
+and the accepted-step count; the kernel never mutates it.
 
 Invalid dimensions and nonfinite configuration are rejected. A nonzero error
 with zero weight has infinite norm. A step must be finite, positive and large
@@ -237,13 +245,15 @@ enough to advance floating-point time.
 ## Validation boundaries
 
 Unit tests cover controller rules, convergence, the second-order adapter,
-rejection, restart, invalid input, aliased derivative output and failed history
-updates. CTest also runs
-four examples. The [scalar COMSOL regressions](comsol-alignment.md) compare 21 recorded
-scalar configurations, totaling 1,336 output samples, including times, states,
-derivatives and failure counts; the orders in COMSOL's solver log are printed
-as a diagnostic. Reference data is never injected
-into the numerical solve.
+rejection, restart, invalid input and aliased derivative output. CTest also runs
+the three examples and `test/acceptance`, the COMSOL conformance target of the
+rewrite. The [scalar COMSOL regressions](comsol-alignment.md) compare 1,336
+recorded output samples of 21 configurations, including times, states,
+derivatives and failure counts, 1,904 samples of 23 stepping configurations, 682
+samples of 11 two-field configurations, and the 17 tolerance configurations of
+[the tolerance evidence](evidence/tolerance-axes.md) at the level that evidence
+establishes. The orders in COMSOL's solver log are printed as a diagnostic.
+Reference data is never injected into the numerical solve.
 
 The [thermoelastic regression](multiphysics.md) additionally compares 161
 COMSOL states of a reciprocal three-variable coupled system, including all

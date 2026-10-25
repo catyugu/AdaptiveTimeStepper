@@ -86,17 +86,16 @@ namespace {
     // The state is two dependent variables: the Global Equation and the PDE
     // field. COMSOL averages the error test over the fields before it averages
     // over the degrees of freedom of a field.
-    settings.error.layout.fields.clear();
+    settings.error.variables.clear();
     if (has_first)
-      settings.error.layout.fields.push_back(atstep::Field {1, 1.0, false});
+      settings.error.variables.push_back(atstep::Variable {1, 1.0, false});
     if (has_second)
-      settings.error.layout.fields.push_back(
-        atstep::Field {fields.second, 1.0, false});
+      settings.error.variables.push_back(
+        atstep::Variable {fields.second, 1.0, false});
     // No consistent initialization: COMSOL shrinks the backward-Euler probes of
     // this model by the safety factor of its nonlinear solver, and the run is
     // replayed from the recorded state instead, with the derivative the model
     // implies.
-    settings.initialization = atstep::AssumeConsistent {};
 
     atstep::AdaptiveSteps adaptive;
     adaptive.max_order = reference.max_order;

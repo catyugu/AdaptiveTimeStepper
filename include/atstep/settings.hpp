@@ -38,12 +38,16 @@ namespace atstep {
   /// `free` lets the stepping choose, `intermediate` puts at least one step in
   /// every interval between two output times, `strict` ends every step at an
   /// output time.
-  enum class Placement { free, intermediate, strict };
+  enum class Placement { free,
+    intermediate,
+    strict };
 
   /// What the run reports: COMSOL's "Times to store". `interpolate` stores the
   /// values at the output times, `closest` the first solver step reaching each
   /// of them, `steps` the solver's own steps.
-  enum class Storage { interpolate, closest, steps };
+  enum class Storage { interpolate,
+    closest,
+    steps };
 
   /// The largest step: COMSOL's "Maximum step constraint".
   struct AutomaticMaxStep { };
@@ -60,8 +64,8 @@ namespace atstep {
     std::function<double(double)> value {};
   };
 
-  using MaximumStep =
-    std::variant<AutomaticMaxStep, ConstantMaxStep, ExpressionMaxStep>;
+  using MaximumStep
+    = std::variant<AutomaticMaxStep, ConstantMaxStep, ExpressionMaxStep>;
 
   /// A step the run chooses: its size from the local error, its order from the
   /// order selection.
@@ -111,80 +115,62 @@ namespace atstep {
     bool interpolate_end_time = true;
   };
 
-  /// One dependent variable: the degrees of freedom it holds, COMSOL's scale
-  /// of it, and whether it is algebraic.
-  struct Field {
-    /// The number of degrees of freedom of the field.
+  /// One dependent variable of the model: its share of the state, the scale
+  /// COMSOL's solver uses for it, and whether its absolute tolerance follows the
+  /// solution.
+  ///
+  /// The scale divides the solution in the scaled criterion, `Y = U / scale`
+  /// (doc/evidence/tolerance-axes.md). The library cannot derive it — COMSOL
+  /// analyses the model — so the caller passes the value the solver's log prints.
+  struct Variable {
+    /// The number of degrees of freedom of the variable.
     std::size_t dofs = 0;
 
-    /// COMSOL's "scale for dependent variable", which its solver log prints.
+    /// COMSOL's "scale for dependent variable", a divisor of the solution.
     double scale = 1.0;
 
-    /// Whether the field is algebraic, for COMSOL's "Exclude algebraic".
-    bool algebraic = false;
-  };
-
-  /// The partition of the state into dependent variables. An empty list means
-  /// one field over every degree of freedom.
-  struct Layout {
-    std::vector<Field> fields;
+    /// Whether the scaled absolute tolerance follows the solution. COMSOL sets
+    /// this for a variable whose scaling method is Automatic while "Update
+    /// scaled absolute tolerance" is on; every other combination leaves
+    /// `A_s = A_k` (doc/evidence/tolerance-axes.md).
+    bool scaled_tolerance = true;
   };
 
   /// The absolute tolerance: COMSOL's "Tolerance method". `factor` makes it a
   /// factor of the relative tolerance, `manual` a value of its own.
   struct AbsoluteTolerance {
-    enum class Kind { factor, manual };
+    enum class Kind { factor,
+      manual };
     Kind kind = Kind::factor;
     /// The factor of the relative tolerance, or the manual value.
     double value = 0.1;
   };
 
-  /// The local error test, and the tolerance it holds a degree of freedom to.
+  /// The local error test: COMSOL's absolute-tolerance settings.
   struct ErrorTest {
     /// The relative tolerance `R`.
     double relative = 1e-2;
 
-    /// The absolute tolerance.
+    /// The absolute tolerance `A_k`.
     AbsoluteTolerance absolute {};
 
-    /// Whether the tolerance is applied to scaled variables, COMSOL's "Scaled"
-    /// method, or to the variables as they are, its "Unscaled" one.
+    /// Whether the criterion is applied to the scaled variables `Y = U / scale`,
+    /// COMSOL's "Tolerance method: Scaled", or to the variables as they are.
     bool scaled = true;
 
-    /// COMSOL's "Update scaled absolute tolerance": whether the absolute
-    /// tolerance follows the magnitude of the solution.
-    bool update_scaled = true;
-
-    /// Whether the algebraic degrees of freedom are held to the tolerance:
-    /// COMSOL's "Error estimation".
-    bool include_algebraic = true;
-
-    /// The partition of the state into dependent variables.
-    Layout layout {};
+    /// The dependent variables of the state, in the order their degrees of
+    /// freedom appear. An empty list means one variable over every degree of
+    /// freedom.
+    std::vector<Variable> variables {};
   };
-
-  /// The artificial backward-Euler steps of consistent initialization, which
-  /// reconcile the initial values with the constraints of the equations and give
-  /// the time derivative the first step's size is read from. The run takes two
-  /// of them; the increment of the second is that derivative.
-  struct BackwardEuler {
-    /// The size of one, as a fraction of the first step: COMSOL's "Fraction of
-    /// initial step for Backward Euler".
-    double fraction = 1e-3;
-  };
-
-  /// No consistent initialization: the initial values are taken as they are,
-  /// and the caller supplies the initial derivative.
-  struct AssumeConsistent { };
 
   /// The time stepping of a run.
   ///
   /// The defaults are COMSOL's, read back from a COMSOL 6.2 Time-Dependent
   /// Solver node (see doc/comsol-alignment.md): the relative tolerance 0.01, the
-  /// absolute tolerance `0.1` times it, scaled by the magnitude of each degree
-  /// of freedom, the first step `1e-3` of what remains of the interval, the
-  /// largest step `0.1` of the span, the orders 1 to 5, and the interpolation
-  /// of the end time.
+  /// absolute tolerance `0.1` times it, scaled by the magnitude of each variable,
+  /// the first step `1e-3` of what remains of the interval, the largest step
+  /// `0.1` of the span, the orders 1 to 5, and the interpolation of the end time.
   struct Settings {
     /// How the run takes its steps: the solver's, from the local error, or the
     /// model's own at a fixed step and order.
@@ -193,8 +179,11 @@ namespace atstep {
     /// The tolerance the local error is held to.
     ErrorTest error {};
 
-    /// The consistent initialization every run starts with.
-    std::variant<BackwardEuler, AssumeConsistent> initialization = BackwardEuler {};
+    /// COMSOL's "Fraction of initial step for Backward Euler": the size of each
+    /// of the two artificial steps a consistent initialization takes, as a
+    /// fraction of the run's first step. A start that is given the initial
+    /// derivative takes none.
+    double initialization_fraction = 1e-3;
 
     /// Which times the run reports.
     Storage storage = Storage::interpolate;
@@ -204,9 +193,8 @@ namespace atstep {
     int store_every = 1;
   };
 
-  /// Reject a setting a run cannot be built from. Each message names the field.
-  void validate(const Settings& settings);
 
+  /// Reject a setting a run cannot be built from. Each message names the field.
   inline void validate(const Settings& settings)
   {
     const auto require = [](const char* name, bool ok) {
@@ -225,8 +213,8 @@ namespace atstep {
         : finite_positive(settings.error.absolute.value));
     require("error.relative * error.absolute.value",
       std::isfinite(settings.error.relative * settings.error.absolute.value));
-    for (const Field& field : settings.error.layout.fields)
-      require("error.layout.fields[].scale", finite_positive(field.scale));
+    for (const Variable& variable : settings.error.variables)
+      require("error.variables[].scale", finite_positive(variable.scale));
 
     if (const auto* manual = std::get_if<ManualSteps>(&settings.steps)) {
       require("steps.manual.step", finite_positive(manual->step));
@@ -244,8 +232,7 @@ namespace atstep {
       if (const auto* constant = std::get_if<ConstantMaxStep>(&adaptive.max_step))
         require("steps.adaptive.max_step.seconds", finite_positive(constant->seconds));
     }
-    if (const auto* backward = std::get_if<BackwardEuler>(&settings.initialization))
-      require("initialization.fraction", finite_positive(backward->fraction));
+    require("initialization_fraction", finite_positive(settings.initialization_fraction));
     require("store_every", settings.store_every >= 1);
   }
 

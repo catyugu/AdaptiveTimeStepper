@@ -12,7 +12,7 @@ flat:       E^2 = (1/N) * sum_i (e_i / W_i)^2,  N = sum_j N_j
 ```
 
 `WeightedRmsNorm` in `include/atstep/detail/state.hpp` computes the flat one. The same norm is used twice in a
-run: the spring step `DT * yp_norm <= 1/2` (`include/atstep/detail/controller.hpp`, `first_step`) and
+run: the spring step `DT * yp_norm <= 1/2` (`include/atstep/detail/controller.hpp`, `begin`) and
 the acceptance criterion. Sections 2 and 3 measure the two uses separately, so the claim does not
 rest on the assumption that they share one function.
 
@@ -63,19 +63,19 @@ field dofs).
 
 Dof counts as printed by the solver, `Number of degrees of freedom solved for: ...`:
 
-| Case | `field_a` | `field_b` | elements | field dofs | dofs in the log | samples | accepted | rejected | failed |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `single_a` | global | none | 100 | 0 | `1.` | 61 | 60 | 0 | 0 |
-| `single_b25` | none | pde | 25 | 26 | `26 (plus 2 internal DOFs)` | 37 | 36 | 0 | 0 |
-| `single_b100` | none | pde | 100 | 101 | `101 (plus 2 internal DOFs)` | 37 | 36 | 0 | 0 |
-| `two_equal100` | global | pde | 100 | 101 | `102 (plus 2 internal DOFs)` | 61 | 60 | 0 | 0 |
-| `two_r25` | global | pde | 25 | 26 | `27 (plus 2 internal DOFs)` | 57 | 56 | 0 | 0 |
-| `two_r100` | global | pde | 100 | 101 | `102 (plus 2 internal DOFs)` | 57 | 56 | 0 | 0 |
-| `two_r100_repeat` | global | pde | 100 | 101 | `102 (plus 2 internal DOFs)` | 57 | 56 | 0 | 0 |
-| `two_slow25` | global | pde | 25 | 26 | `27 (plus 2 internal DOFs)` | 52 | 51 | 0 | 0 |
-| `two_slow100` | global | pde | 100 | 101 | `102 (plus 2 internal DOFs)` | 52 | 51 | 0 | 0 |
-| `two_r100_order5` | global | pde | 100 | 101 | `102 (plus 2 internal DOFs)` | 29 | 28 | 1 | 0 |
-| `two_r100_rtol1e3` | global | pde | 100 | 101 | `102 (plus 2 internal DOFs)` | 182 | 181 | 0 | 0 |
+| Case               | `field_a` | `field_b` | elements | field dofs | dofs in the log              | samples | accepted | rejected | failed |
+| ------------------ | --------- | --------- | -------- | ---------- | ---------------------------- | ------- | -------- | :------- | ------ |
+| `single_a`         | global    | none      | 100      | 0          | `1.`                         | 61      | 60       | 0        | 0      |
+| `single_b25`       | none      | pde       | 25       | 26         | `26 (plus 2 internal DOFs)`  | 37      | 36       | 0        | 0      |
+| `single_b100`      | none      | pde       | 100      | 101        | `101 (plus 2 internal DOFs)` | 37      | 36       | 0        | 0      |
+| `two_equal100`     | global    | pde       | 100      | 101        | `102 (plus 2 internal DOFs)` | 61      | 60       | 0        | 0      |
+| `two_r25`          | global    | pde       | 25       | 26         | `27 (plus 2 internal DOFs)`  | 57      | 56       | 0        | 0      |
+| `two_r100`         | global    | pde       | 100      | 101        | `102 (plus 2 internal DOFs)` | 57      | 56       | 0        | 0      |
+| `two_r100_repeat`  | global    | pde       | 100      | 101        | `102 (plus 2 internal DOFs)` | 57      | 56       | 0        | 0      |
+| `two_slow25`       | global    | pde       | 25       | 26         | `27 (plus 2 internal DOFs)`  | 52      | 51       | 0        | 0      |
+| `two_slow100`      | global    | pde       | 100      | 101        | `102 (plus 2 internal DOFs)` | 52      | 51       | 0        | 0      |
+| `two_r100_order5`  | global    | pde       | 100      | 101        | `102 (plus 2 internal DOFs)` | 29      | 28       | 1        | 0      |
+| `two_r100_rtol1e3` | global    | pde       | 100      | 101        | `102 (plus 2 internal DOFs)` | 182     | 181      | 0        | 0      |
 
 The two internal dofs are the reaction-force slots at the ends of the interval; the solver reports
 them apart from the solved dofs and they carry `getUDot == 0` in every sample, which is how the
@@ -95,22 +95,22 @@ back, and the driver rejects a case whose readback differs from what it asked fo
 (`max_order_readback`, `rtol_readback`, `tout_readback`, `elements_readback`, `element_order`,
 `field_scale`, `global_scale`).
 
-| Property | Meaning | Value used |
-| --- | --- | --- |
-| `sol1/t1` `tout` | "Times to store" | `tsteps` |
-| `sol1/t1` `tstepsstore` | "Store every Nth step" | `1` |
-| `sol1/t1` `keeplog` | keep the solver log | `on` |
-| `sol1/t1` `maxorder` | maximum BDF order | `1`, and `5` in `two_r100_order5` |
-| `sol1/t1` `rtol` | relative tolerance | `0.01`, `1e-3` in `two_r100_rtol1e3` |
-| `sol1/t1` `tstepsbdf` | "Steps taken by solver" | `free` |
-| `sol1/t1/aDef` `logsampling` | log-row sampling interval | `0`, print every accepted step |
-| `sol1/v1/comp1_u` `scalemethod`, `scaleval` | scale of field B | `manual`, `1` |
-| `sol1/v1/comp1_ODE1` `scalemethod`, `scaleval` | scale of field A | `manual`, `1` |
-| `mesh1/size` `custom`, `hmax` | element size | `on`, `1/elements` |
-| `c/cfeq1` `da`, `a`, `c`, `f` | the PDE coefficients | `1`, `rateB`, `0`, `0` |
-| `c/init1` `u` | initial value | `1` |
-| `c` `prop("ShapeProperty")` `order` | element order | `1` (linear) |
-| `ge/ge1` `equation`, `name`, `initialValueU` | the global equation | `uAt+rateA*uA`, `uA`, `1` |
+| Property                                       | Meaning                   | Value used                           |
+| ---------------------------------------------- | ------------------------- | ------------------------------------ |
+| `sol1/t1` `tout`                               | "Times to store"          | `tsteps`                             |
+| `sol1/t1` `tstepsstore`                        | "Store every Nth step"    | `1`                                  |
+| `sol1/t1` `keeplog`                            | keep the solver log       | `on`                                 |
+| `sol1/t1` `maxorder`                           | maximum BDF order         | `1`, and `5` in `two_r100_order5`    |
+| `sol1/t1` `rtol`                               | relative tolerance        | `0.01`, `1e-3` in `two_r100_rtol1e3` |
+| `sol1/t1` `tstepsbdf`                          | "Steps taken by solver"   | `free`                               |
+| `sol1/t1/aDef` `logsampling`                   | log-row sampling interval | `0`, print every accepted step       |
+| `sol1/v1/comp1_u` `scalemethod`, `scaleval`    | scale of field B          | `manual`, `1`                        |
+| `sol1/v1/comp1_ODE1` `scalemethod`, `scaleval` | scale of field A          | `manual`, `1`                        |
+| `mesh1/size` `custom`, `hmax`                  | element size              | `on`, `1/elements`                   |
+| `c/cfeq1` `da`, `a`, `c`, `f`                  | the PDE coefficients      | `1`, `rateB`, `0`, `0`               |
+| `c/init1` `u`                                  | initial value             | `1`                                  |
+| `c` `prop("ShapeProperty")` `order`            | element order             | `1` (linear)                         |
+| `ge/ge1` `equation`, `name`, `initialValueU`   | the global equation       | `uAt+rateA*uA`, `uA`, `1`            |
 
 The scale override is not cosmetic. Left to `auto`, the solver picks a scale by itself - it read
 back `13` for 26 field dofs and `25` for 101 - and the scale enters the absolute-tolerance term, so
@@ -174,15 +174,15 @@ flat:       0.5 / (W * sqrt((1 + N_B*rho^2)/(1 + N_B)))
 Measured, with the first step recovered from the export as `t1 - 2e-5` (the two backward-Euler
 consistency steps advance the clock by `2 * 1e-3 * 0.1% of the span`, see `stepping-sweep.md`):
 
-| Case | field dofs | first step `h1` | `h1/h1(single_a)` | per-field prediction | flat prediction |
-| --- | --- | --- | --- | --- | --- |
-| `single_a` | 0 | 0.00550001000005 | 1 | 1 | 1 |
-| `two_equal100` | 101 | 0.00550001000005 | 1.000000000 | 1 | 1 |
-| `two_r100` | 101 | 0.00759074543243 | 1.380133024 | 1.380133117 | 4.106137 |
-| `two_r25` | 26 | 0.00759074543243 | 1.380133024 | 1.380133117 | 3.426300 |
-| `two_slow100` | 101 | 0.00773958693866 | 1.407195067 | 1.407195089 | 7.123642 |
-| `two_slow25` | 26 | 0.00773958693866 | 1.407195067 | 1.407195089 | 4.629100 |
-| `two_r100_rtol1e3` | 101 | 0.00075907454324 | 0.138013302 | 0.138013312 | 0.410614 |
+| Case               | field dofs | first step `h1`  | `h1/h1(single_a)` | per-field prediction | flat prediction |
+| ------------------ | ---------- | ---------------- | ----------------- | -------------------- | --------------- |
+| `single_a`         | 0          | 0.00550001000005 | 1                 | 1                    | 1               |
+| `two_equal100`     | 101        | 0.00550001000005 | 1.000000000       | 1                    | 1               |
+| `two_r100`         | 101        | 0.00759074543243 | 1.380133024       | 1.380133117          | 4.106137        |
+| `two_r25`          | 26         | 0.00759074543243 | 1.380133024       | 1.380133117          | 3.426300        |
+| `two_slow100`      | 101        | 0.00773958693866 | 1.407195067       | 1.407195089          | 7.123642        |
+| `two_slow25`       | 26         | 0.00773958693866 | 1.407195067       | 1.407195089          | 4.629100        |
+| `two_r100_rtol1e3` | 101        | 0.00075907454324 | 0.138013302       | 0.138013312          | 0.410614        |
 
 For `rho = 0.2236` the measured 1.380133024 agrees with the per-field prediction 1.380133117 to
 6.7e-8 relative, the roundoff of the difference that recovers `h1`, and it is 2.98x away from the
@@ -215,13 +215,13 @@ of 3x), and it runs the mesh comparison in the regime where field A's single dof
 sum and the dof count dilutes it - the regime the `sqrt(N)` heuristic describes - instead of in the
 regime where field B's own ratio dominates.
 
-| Pair | samples | worst relative difference over all times and both fields |
-| --- | --- | --- |
-| `two_slow100` vs `two_slow25` | 52 vs 52 | 1.5e-15 |
-| `two_r100` vs `two_r25` | 57 vs 57 | 4.6e-16 |
-| `two_r100` vs `two_r100_repeat` | 57 vs 57 | 0 (byte-identical) |
-| `single_b100` vs `single_b25` | 37 vs 37 | 0 (byte-identical) |
-| `two_equal100` vs `single_a` | 61 vs 61 | 2.1e-16 |
+| Pair                            | samples  | worst relative difference over all times and both fields |
+| ------------------------------- | -------- | -------------------------------------------------------- |
+| `two_slow100` vs `two_slow25`   | 52 vs 52 | 1.5e-15                                                  |
+| `two_r100` vs `two_r25`         | 57 vs 57 | 4.6e-16                                                  |
+| `two_r100` vs `two_r100_repeat` | 57 vs 57 | 0 (byte-identical)                                       |
+| `single_b100` vs `single_b25`   | 37 vs 37 | 0 (byte-identical)                                       |
+| `two_equal100` vs `single_a`    | 61 vs 61 | 2.1e-16                                                  |
 
 The step sequence, the order ramp, the accepted count (51 and 56) and the rejected count (0) are the
 same for both meshes. That equality is what rules out a flat norm, and the argument is exact rather
@@ -238,10 +238,10 @@ structure, so at the order-1 error test their per-dof ratios are in the ratio
 equal the rates would have to be equal. What a flat norm would therefore predict for the two
 meshes, step for step, with `E` proportional to `h^2` at order 1:
 
-| Pair | flat norm ratio, 26 vs 101 dofs | flat prediction for every step size | measured |
-| --- | --- | --- | --- |
-| `two_r*` | 1.792 | 1.34x smaller at 26 dofs | equal to 4.6e-16 |
-| `two_slow*` | 1.539 | 1.24x smaller at 26 dofs | equal to 1.5e-15 |
+| Pair        | flat norm ratio, 26 vs 101 dofs | flat prediction for every step size | measured         |
+| ----------- | ------------------------------- | ----------------------------------- | ---------------- |
+| `two_r*`    | 1.792                           | 1.34x smaller at 26 dofs            | equal to 4.6e-16 |
+| `two_slow*` | 1.539                           | 1.24x smaller at 26 dofs            | equal to 1.5e-15 |
 
 The control in section 4 closes the loop: when the two rates *are* equal, both formulas coincide,
 and the combined run does reproduce `single_a` to 2.1e-16 - so the insensitivity to `N_B` measured
@@ -262,16 +262,16 @@ here is a property of the norm, not of the model.
 
 Measured first six step sizes, from the log's `Stepsize` column:
 
-| Case | first six step sizes | plateau | accepted |
-| --- | --- | --- | --- |
-| `single_a` | 0.0055, 0.011, 0.022, 0.044, 0.088, 0.088 | 1.0 (the 0.1*span cap) | 60 |
-| `single_b100` | 0.01, 0.02, 0.04, 0.08, 0.16, 0.32 | 0.32 | 36 |
-| `two_r100` | 0.0075907, 0.015181, 0.030363, 0.060726, 0.060726, 0.12145 | 0.3935 | 56 |
-| `two_r25` | 0.0075907, 0.015181, 0.030363, 0.060726, 0.060726, 0.12145 | 0.3935 | 56 |
-| `two_slow100` | 0.0077396, 0.015479, 0.030958, 0.061917, 0.061917, 0.12383 | 0.80244 | 51 |
-| `two_slow25` | 0.0077396, 0.015479, 0.030958, 0.061917, 0.061917, 0.12383 | 0.80244 | 51 |
-| `two_r100_order5` | 0.0075907, 0.0075907, 0.015181, 0.030363, 0.060726, 0.12145 | 1.0 (cap) | 28 |
-| `two_r100_rtol1e3` | 0.00075907, 0.0015181, 0.0030363, 0.0060726, 0.012145, 0.02429 | 0.13859 | 181 |
+| Case               | first six step sizes                                           | plateau                | accepted |
+| ------------------ | -------------------------------------------------------------- | ---------------------- | -------- |
+| `single_a`         | 0.0055, 0.011, 0.022, 0.044, 0.088, 0.088                      | 1.0 (the 0.1*span cap) | 60       |
+| `single_b100`      | 0.01, 0.02, 0.04, 0.08, 0.16, 0.32                             | 0.32                   | 36       |
+| `two_r100`         | 0.0075907, 0.015181, 0.030363, 0.060726, 0.060726, 0.12145     | 0.3935                 | 56       |
+| `two_r25`          | 0.0075907, 0.015181, 0.030363, 0.060726, 0.060726, 0.12145     | 0.3935                 | 56       |
+| `two_slow100`      | 0.0077396, 0.015479, 0.030958, 0.061917, 0.061917, 0.12383     | 0.80244                | 51       |
+| `two_slow25`       | 0.0077396, 0.015479, 0.030958, 0.061917, 0.061917, 0.12383     | 0.80244                | 51       |
+| `two_r100_order5`  | 0.0075907, 0.0075907, 0.015181, 0.030363, 0.060726, 0.12145    | 1.0 (cap)              | 28       |
+| `two_r100_rtol1e3` | 0.00075907, 0.0015181, 0.0030363, 0.0060726, 0.012145, 0.02429 | 0.13859                | 181      |
 
 The first four steps of every run are the initial step doubled (the growth limit), so they carry the
 ratio of section 2 unchanged; from the fifth step the error test takes over and the doubling pauses.

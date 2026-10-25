@@ -24,39 +24,34 @@ namespace atstep::detail {
 
     bool passed() const noexcept
     {
-      return std::isfinite(test) and test >= 0.0 and test <= 1.0;
+      return std::isfinite(test) and test <= 1.0;
     }
   };
 
-  /// Scalar BDF step-size and order control, following IDA's startup,
-  /// error test and completion rules. It is independent of state and equations.
-  ///
-  /// Startup raises the order and doubles steps until a failure, order
-  /// reduction or maximum order ends it. Later, the growth estimate
-  /// (2*error + 1e-4)^(-1/(q+1)) selects a reduction in [0.5,0.9],
-  /// unchanged size, or doubling.
-  ///
-  /// Error-test failures reduce the step by [0.25,0.9] on the first failure,
-  /// then by 0.25; the third failure requests order 1, within configured bounds.
-  /// Convergence failures reduce the step by 0.25.
-  /// Order increases require enough steps at constant size and order.
+  /// Scalar BDF step-size and order control, following IDA's startup, error test
+  /// and completion rules, independent of state and equations: startup raises the
+  /// order and doubles the step until a failure or the maximum order ends it;
+  /// later the growth estimate `(2*error + 1e-4)^(-1/(q+1))` selects a reduction
+  /// in [0.5, 0.9], the same size, or a doubling. A failed error test reduces by
+  /// [0.25, 0.9] once and by 0.25 after, and the third one asks for order 1; a
+  /// failed solve reduces by 0.25; an order increase needs enough steps at a
+  /// constant size and order.
   class StepController {
   public:
-    /// @param[in] settings the method's settings: the alternative it steps in,
-    /// and that alternative's order range, initial step and step bounds.
-    /// @param[in] span the span the run integrates, from which the first
-    /// step and the largest one are taken.
+    /// @param[in] settings the alternative the run steps in, with its order range,
+    /// initial step and step bounds.
+    /// @param[in] span the span the run integrates, from which the first step and
+    /// the automatic largest one are taken.
     StepController(const Settings& settings, double span);
 
-    /// The first step of the run, from the weighted norm `derivative_norm`
-    /// of the time derivative the initial state starts with: the configured
-    /// initial step, or a fraction of `remaining`, the interval that is left
-    /// after the consistent initialization, and at most `1/2 /
-    /// derivative_norm` — the rule COMSOL states as `DT yp_norm <= 1/2`.
-    double first_step(double derivative_norm, double remaining) const;
-
-    /// Begin the run at the step `h`, at the first order, at the time `time`.
-    void begin(double h, double time);
+    /// Begin the run at the time `time`: the first step, from the weighted norm
+    /// `derivative_norm` of the time derivative the initial state starts with,
+    /// and the first order. The automatic first step is a fraction of
+    /// `remaining`, the interval that is left after the consistent
+    /// initialization, and at most `1/2 / derivative_norm` — the rule COMSOL
+    /// states as `DT yp_norm <= 1/2`; a manual run takes its startup curve's
+    /// first step instead.
+    void begin(double derivative_norm, double remaining, double time);
 
     /// The largest step the run may take at the current time: COMSOL's
     /// "Maximum step constraint", an absolute value for the constant form and
@@ -261,23 +256,23 @@ namespace atstep::detail {
         "atstep: the smallest step must be finite, positive and no larger than the largest");
   }
 
-  inline double StepController::first_step(double derivative_norm, double remaining) const
-  {
-    if (initial_step_) {
-      // A step the run names is taken as it is: the derivative condition
-      // bounds the automatic step, not the one the caller gave.
-      return std::max(*initial_step_, smallest_);
-    }
-    double step = default_initial_step_fraction * remaining;
-    if (derivative_norm > 0.0)
-      step = std::min(step, 0.5 / derivative_norm);
-    return std::max(step, smallest_);
-  }
-
-  inline void StepController::begin(double h, double time)
+  inline void StepController::begin(double derivative_norm, double remaining, double time)
   {
     time_ = time;
-    h_ = is_manual_ ? manual_step() : std::clamp(h, smallest_, largest());
+    if (is_manual_) {
+      h_ = manual_step();
+    }
+    else if (initial_step_) {
+      // A step the run names is taken as it is: the derivative condition
+      // bounds the automatic step, not the one the caller gave.
+      h_ = std::clamp(std::max(*initial_step_, smallest_), smallest_, largest());
+    }
+    else {
+      double step = default_initial_step_fraction * remaining;
+      if (derivative_norm > 0.0)
+        step = std::min(step, 0.5 / derivative_norm);
+      h_ = std::clamp(std::max(step, smallest_), smallest_, largest());
+    }
     order_ = std::clamp(min_order_, 1, max_order_);
     used_order_ = 0;
     used_ = 0.0;

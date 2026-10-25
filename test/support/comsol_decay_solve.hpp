@@ -9,9 +9,10 @@
 // the solve, not just the equation.
 //
 // This adapter is specific to the recorded models and is not part of the
-// library.  It reaches into two accessors the rewrite removes
-// (`request.previous()` and `request.absolute_tolerance_reference()`), so it
-// changes together with the request boundary (doc/refactor-plan.md, F08).
+// library.  It reaches into two accessors of the request
+// (`request.previous()` and `request.absolute_tolerance_reference()`) that
+// belong to the request boundary of doc/refactor-plan.md stage 2, so it
+// changes with that stage.
 #pragma once
 
 #include "atstep/stepper.hpp"
@@ -67,7 +68,7 @@ namespace comsol_decay {
       norm.relative = settings.error.relative;
       norm.absolute = settings.error.relative * settings.error.absolute.value;
       norm.scaled = settings.error.scaled;
-      norm.step_index = request.step_index;
+      norm.accepted_steps = request.accepted_steps;
       double first_norm = 0.0;
       last_cj = cj;
       for (int iteration = 0; iteration < 4; ++iteration) {
@@ -76,8 +77,8 @@ namespace comsol_decay {
         const double correction = -residual / (jacobian_cj + 1.0) * 2.0 / (1.0 + cj / jacobian_cj);
         y.u += correction;
         const double size = norm(State {correction},
-          request.previous(),
-          request.absolute_tolerance_reference());
+          request.accepted_state(),
+          request.returned_state());
         if (iteration == 0)
           first_norm = size;
         else {

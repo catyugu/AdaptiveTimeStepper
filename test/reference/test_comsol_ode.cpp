@@ -65,15 +65,18 @@ TEST_CASE("comsol: full-precision trajectories, derivatives, orders and "
     ComsolDecaySolve chord;
     chord.settings = settings;
     double last_derivative = 0.0;
-    State dy;
     State dense;
+    State dy;
     atstep::TimeStepper<State> stepper(
       settings, [&](const atstep::StepRequest<State>& request, State& y) {
         atstep::SolveOutcome outcome;
+        const double cj = request.derivative_weight();
         if (reference.exact) {
+          // One Newton update of the linear residual `y + y'`, from the
+          // predictor: the exact root of the step, to round-off.
+          State dy;
           request.derivative(y, dy);
-          const double correction = -(y.u + dy.u) / (request.derivative_weight() + 1.0);
-          y.u += correction;
+          y.u += -(y.u + dy.u) / (cj + 1.0);
           outcome = {true, 1};
         }
         else

@@ -3,7 +3,6 @@
 #include "atstep/detail/controller.hpp"
 #include "support/check.hpp"
 
-#include <cmath>
 #include <limits>
 #include <utility>
 #include <variant>
@@ -45,6 +44,19 @@ namespace {
     return errors;
   }
 
+  /// A controller that starts at `step`, the way a run whose settings name its
+  /// first step does: an automatic run would take a thousandth of what remains,
+  /// and a manual one its startup curve's first step.
+  atstep::detail::StepController
+  started_at(atstep::Settings settings, double step, double span)
+  {
+    if (auto* adaptive = std::get_if<atstep::AdaptiveSteps>(&settings.steps))
+      adaptive->initial_step = step;
+    atstep::detail::StepController controller(settings, span);
+    controller.begin(0.0, span, 0.0);
+    return controller;
+  }
+
   /// The sizes of the next `count` steps of a controller driven by estimates
   /// that always meet the tolerance with `value`.
   std::vector<double>
@@ -66,21 +78,25 @@ TEST_CASE("controller: the first step is a thousandth of the span, bounded by "
           "the derivative")
 {
   const double span = 600.0;
-  atstep::detail::StepController controller(settings_with(), span);
+  const auto first_step = [span](double derivative_norm) {
+    atstep::detail::StepController controller(settings_with(), span);
+    controller.begin(derivative_norm, span, 0.0);
+    return controller.step_size();
+  };
 
-  // 0.1% of the end time, and the rule DT * ||y'|| <= 1/2 of COMSOL's own
+  // 0.1% of what remains, and the rule DT * ||y'|| <= 1/2 of COMSOL's own
   // documentation, which takes it below that when the state starts fast.
-  CHECK_NEAR(controller.first_step(0.0, 600.0), 0.6, 1e-12);
-  CHECK_NEAR(controller.first_step(0.1, 600.0), 0.6, 1e-12); // 0.5 / 0.1 = 5 s
-  CHECK_NEAR(controller.first_step(1.0, 600.0), 0.5, 1e-12); // the condition binds
+  CHECK_NEAR(first_step(0.0), 0.6, 1e-12);
+  CHECK_NEAR(first_step(0.1), 0.6, 1e-12); // 0.5 / 0.1 = 5 s
+  CHECK_NEAR(first_step(1.0), 0.5, 1e-12); // the condition binds
   // A derivative that fast takes the step below the span rule: the bound is
   // a minimum, not a floor.
-  CHECK_NEAR(controller.first_step(1e6, 600.0), 0.5e-6, 1e-12);
+  CHECK_NEAR(first_step(1e6), 0.5e-6, 1e-12);
 
   // The largest step is a tenth of the span, the automatic maximum step
   // constraint COMSOL reports (60 s over 600 s): the startup doubles until it
   // binds.
-  controller.begin(10.0, 0.0);
+  atstep::detail::StepController controller = started_at(settings_with(), 10.0, span);
   const std::vector<double> grown = sequence(controller, 1e-9, 6);
   CHECK_EQ(grown.size(), std::size_t {6});
   CHECK_NEAR(grown.back(), 60.0, 1e-12);
@@ -93,8 +109,7 @@ TEST_CASE(
   // 0.024, 0.048, 0.096, 0.192, ... s at the orders 1, 1, 2, 3, 4, ...: the
   // startup phase IDA describes, one order higher and twice the size until
   // the order reaches its maximum.
-  atstep::detail::StepController controller(settings_with(3), 10.0);
-  controller.begin(0.006, 0.0);
+  atstep::detail::StepController controller = started_at(settings_with(3), 0.006, 10.0);
 
   const std::vector<double> sizes = sequence(controller, 1e-9, 8);
   const std::vector<double> expected {
@@ -107,8 +122,7 @@ TEST_CASE("controller: an estimate inside the deadbeat band holds the step")
 {
   // A controller past its startup, with the estimates selecting the step.
   const auto settled = [] {
-    atstep::detail::StepController controller(settings_with(2), 10.0);
-    controller.begin(0.01, 0.0);
+    atstep::detail::StepController controller = started_at(settings_with(2), 0.01, 10.0);
     for (int n = 0; n < 4; ++n) {
       const double step = controller.step_size();
       controller.begin_attempt(step, controller.order());
@@ -151,8 +165,7 @@ TEST_CASE("controller: an estimate inside the deadbeat band holds the step")
 TEST_CASE(
   "controller: a rejected step is retried smaller, then at the first order")
 {
-  atstep::detail::StepController controller(settings_with(2), 10.0);
-  controller.begin(0.01, 0.0);
+  atstep::detail::StepController controller = started_at(settings_with(2), 0.01, 10.0);
   for (int n = 0; n < 4; ++n) {
     const double step = controller.step_size();
     controller.begin_attempt(step, controller.order());
@@ -181,8 +194,7 @@ TEST_CASE(
 
 TEST_CASE("controller: a failed solve takes a quarter of the step")
 {
-  atstep::detail::StepController controller(settings_with(2), 10.0);
-  controller.begin(0.02, 0.0);
+  atstep::detail::StepController controller = started_at(settings_with(2), 0.02, 10.0);
   controller.reject_convergence(0.02);
   CHECK_NEAR(controller.step_size(), 0.005, 1e-12);
 }
@@ -194,8 +206,7 @@ TEST_CASE("controller: the order is raised only once the step has settled")
   // takes the order to its maximum; the selection is exercised from there,
   // once an estimate has lowered it.
   const auto drive = [](double above) {
-    atstep::detail::StepController controller(settings_with(), 10.0);
-    controller.begin(0.01, 0.0);
+    atstep::detail::StepController controller = started_at(settings_with(), 0.01, 10.0);
     std::vector<int> seen;
     const auto accept =
       [&](double at, double below, double above_estimate) {
@@ -240,8 +251,7 @@ TEST_CASE("controller: the order never leaves its range")
 {
   atstep::Settings settings = settings_with(3);
   adaptive_of(settings).min_order = 2;
-  atstep::detail::StepController controller(settings, 10.0);
-  controller.begin(0.01, 0.0);
+  atstep::detail::StepController controller = started_at(settings, 0.01, 10.0);
   for (int n = 0; n < 20; ++n) {
     const double step = controller.step_size();
     controller.begin_attempt(step, controller.order());
@@ -261,8 +271,7 @@ TEST_CASE("controller: manual stepping ignores the error and follows the "
   // order the run asks for is the model's own, which the stepper ramps from
   // the first order as the history behind it allows
   // (doc/evidence/stepping-sweep.md, Q03).
-  atstep::detail::StepController controller(manual_settings(0.25, 3), 10.0);
-  controller.begin(0.01, 0.0);
+  atstep::detail::StepController controller = started_at(manual_settings(0.25, 3), 0.01, 10.0);
   CHECK(not controller.error_controlled());
   CHECK_NEAR(controller.step_size(), 0.025, 1e-12);
   CHECK_EQ(controller.order(), 3);
@@ -283,8 +292,7 @@ TEST_CASE("controller: a manual run may be given the step it starts at")
 {
   atstep::Settings settings = manual_settings(0.25, 3);
   std::get<atstep::ManualSteps>(settings.steps).startup_fraction = 1.0;
-  atstep::detail::StepController controller(settings, 10.0);
-  controller.begin(0.01, 0.0);
+  atstep::detail::StepController controller = started_at(settings, 0.01, 10.0);
   CHECK_NEAR(controller.step_size(), 0.25, 1e-12);
   CHECK_EQ(controller.order(), 3);
 }
@@ -293,8 +301,7 @@ TEST_CASE("controller: the largest step bounds the growth")
 {
   atstep::Settings settings = settings_with(2);
   adaptive_of(settings).max_step = atstep::ConstantMaxStep {0.1};
-  atstep::detail::StepController controller(settings, 10.0);
-  controller.begin(0.006, 0.0);
+  atstep::detail::StepController controller = started_at(settings, 0.006, 10.0);
   const std::vector<double> sizes = sequence(controller, 1e-9, 8);
   CHECK_NEAR(sizes.back(), 0.1, 1e-12);
   for (double size : sizes)
@@ -343,7 +350,7 @@ TEST_CASE("controller: every range check of the validation rejects its boundary"
   };
 
   rejects([](atstep::Settings& s) { s.error.absolute.value = -0.1; });
-  rejects([](atstep::Settings& s) { s.error.layout.fields = {{1, -1.0, false}}; });
+  rejects([](atstep::Settings& s) { s.error.variables = {{1, -1.0, false}}; });
   rejects([](atstep::Settings& s) {
     s.error.relative = 1e300;
     s.error.absolute.value = 1e300; // their product overflows
@@ -359,7 +366,7 @@ TEST_CASE("controller: every range check of the validation rejects its boundary"
     adaptive_of(s).min_order = 2;
     adaptive_of(s).max_order = 1; // below the minimum
   });
-  rejects([](atstep::Settings& s) { std::get<atstep::BackwardEuler>(s.initialization).fraction = 0.0; });
+  rejects([](atstep::Settings& s) { s.initialization_fraction = 0.0; });
   rejects([](atstep::Settings& s) { s.steps = atstep::ManualSteps {0.1, 0}; });
 }
 
@@ -394,12 +401,12 @@ TEST_CASE("controller: nonfinite settings and reversed bounds are refused")
     }
     {
       atstep::Settings settings;
-      std::get<atstep::BackwardEuler>(settings.initialization).fraction = value;
+      settings.initialization_fraction = value;
       CHECK_THROWS(atstep::validate(settings));
     }
     {
       atstep::Settings settings;
-      settings.error.layout.fields = {{1, value, false}};
+      settings.error.variables = {{1, value, false}};
       CHECK_THROWS(atstep::validate(settings));
     }
     {

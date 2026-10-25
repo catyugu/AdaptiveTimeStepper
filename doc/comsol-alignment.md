@@ -107,17 +107,17 @@ discretization, first order whatever the scheme's order.
 
 ### Tolerances and output
 
-The weight of the error test is per degree of freedom, and the scaled absolute
-tolerance is
+The recorded references are one scalar equation, and for a single dof the
+weight of the error test is
 
 ```text
 A_i = rtol * factor * ( |y_i| + s_i ),
 s_i = (1 - exp(-j/5)) |y_i| + exp(-j/5) * sigma_i,
 ```
 
-with `j` the accepted-step count and `sigma_i` a scale of the variable — the
+with `j` the accepted-step count and `sigma_i` the scale of the variable — the
 "Scales for dependent variables" line of the solver log. Three measurements fix
-it, and each of them is a model the recorded reference cannot see:
+that form, each of them a model the recorded reference cannot see:
 
 | Measurement                                            | Result                                                                                                                                                      |
 | ------------------------------------------------------ | :---------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -125,12 +125,23 @@ it, and each of them is a model the recorded reference cannot see:
 | `u' + u = 0`, the recorded 44-step exact run           | A constant `sigma = 1` gives 31 steps; `s_i = \|y_i\|` gives 45. The `exp(-j/5)` blend gives 44.                                                            |
 | `u' = -1e-9 u, v' = -1` and `u' = -u + v, v' = -100 v` | The first step needs `sigma = (1, 1)` and `(1, 0.32)`, respectively: scale is per variable and comes from the model.                                        |
 
-An earlier form substituted the state's 2-norm for `|y_i|` and the constant one
-for `sigma_i`. It agrees with the measured form only when `sigma_i = 1`, which is
-every configuration of the reference — the 21 recorded runs are one scalar
-equation, so the difference was invisible to them. Replaying the two models whose
-scale is not one, with the scale passed in, reproduces COMSOL's accepted steps
-and its error-test-failure count exactly.
+That form is COMSOL's general rule for a variable of one dof whose scale is
+chosen automatically and updated. The general rule is per variable:
+
+```text
+Y_i   = U_i / sigma_variable
+A_s,i = A_k (beta + rms(Y over the variable))   automatic scale, update on
+A_s,i = A_k                                     otherwise
+beta  = (1 - exp(-j/5)) max(abs(Y over the variable)) + exp(-j/5)
+```
+
+so the single-dof form is what its name says — a special case, not the rule.
+The measured three-branch table, the scale's role as a divisor of the solution,
+and the two recorded switches ("Update scaled absolute tolerance" off, and a
+scale the model gives) are in [evidence/tolerance-axes.md](evidence/tolerance-axes.md).
+The kernel implements the special case only: for a state of more than one
+variable, or for a scale the model gives, its first step misses the record by up
+to 9% (doc/evidence/tolerance-axes.md). Stage 1 of doc/refactor-plan.md repaired it: every recorded first step now reproduces.
 
 COMSOL also updates the *magnitude inside* `A_i` from the solution returned to
 the caller, including an interpolated solution. Its relative reference remains
@@ -144,7 +155,7 @@ this COMSOL behavior.
 
 The recorded consistent initialization takes two short backward-Euler solves
 and labels the resulting state with the requested start time. Automatic runs
-use `span * first_step_fraction * init_step_fraction` for each solve; manual
+use 0.1% of the span times `initialization_fraction` for each solve; manual
 runs use the manual step instead of the span. The independent 0.2 s manual
 case confirms that dependence. The initialization solves are not counted as
 accepted time steps.
@@ -180,12 +191,16 @@ strategy changes the trajectory, and both strategies are reproduced.
 IDA source supplied hypotheses and a control-law reference; COMSOL experiments
 decided whether those hypotheses held. The validation does not establish
 bitwise equality for arbitrary models or undocumented COMSOL configurations.
-Coupled-field weighting has its own reference run now (the two-field sweep,
-doc/evidence/field-norm.md), but the library still averages over the degrees
-of freedom alike, so that rule is measured and not yet implemented; nonlinear
-physics, events and other COMSOL versions need their own reference runs. A
-second-order equation keeps the validated BDF path, through the state
-augmentation COMSOL documents, rather than a separate discretization.
+Coupled-field weighting has its own reference run (the two-field sweep) and the
+kernel implements it; the scaled tolerance's branch structure is measured in
+doc/evidence/tolerance-axes.md and implemented (doc/refactor-plan.md, stage 1).
+The recorded references still cover one scalar equation, so a state of several
+variables is validated by the acceptance cases of the tolerance sweep rather
+than by a long trajectory. Nonlinear physics, events and other COMSOL versions
+need their own reference runs. A second-order equation keeps the validated BDF path, through
+the state augmentation COMSOL documents, rather than a separate
+discretization; whether its auxiliary velocity belongs in the error test is
+still an open measurement (E05).
 
 ## Reproduce
 

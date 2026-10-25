@@ -86,32 +86,47 @@ States are default-constructible, copyable values with
 `std::vector<double>` is supported directly. Wrap other containers in a type
 with this member. State dimensions must remain constant during a run.
 
-The default norm requires `size()` and `operator[]`. A distributed or blocked
-state can provide its own norm:
+The default norm needs the state to expose `size()` and `operator[]`. A
+distributed or blocked state can provide its own; it receives the error, the
+last accepted state, the state last returned to the caller, and the accepted
+steps behind the run:
 
 ```cpp
-auto norm = [](const State& error, const State& reference) {
-    return global_weighted_rms(error, reference);
+auto norm = [](const State& error, const State& accepted,
+               const State& returned, std::size_t accepted_steps) {
+    return global_weighted_rms(error, accepted, returned, accepted_steps);
 };
-atstep::TimeStepper<State, decltype(norm)> stepper(settings, solve, norm);
+atstep::TimeStepper<State> stepper(settings, solve, norm);
 ```
 
-The default norm is `sqrt(mean((error_i / (A_i + R*abs(reference_i)))^2))`.
-`R` is `settings.error.relative`. When `settings.error.scaled` is false, `A_i` is
-the fixed `A_k`, which is `R * settings.error.absolute.value` under the
-"Factor" method and the value itself under the "Manual" one; under the default
-scaled form:
+The default norm is COMSOL's error test: the weighted RMS over the state,
+averaged over the dependent variables first and over the degrees of freedom of a
+variable second. For a variable of `N` dofs with scale `s`, and a dof `i` of it:
 
 ```text
-A_i = A_k * ((2 - exp(-j/5))*abs(returned_i) + exp(-j/5)*sigma_i)
+Y_i   = returned_i / s
+A_s,i = A_k * (beta + rms(abs(Y)))     when the variable's tolerance follows the solution
+A_s,i = A_k                            otherwise
+beta  = (1 - exp(-j/5)) * max(abs(Y)) + exp(-j/5)
+W_i   = A_s,i + R * abs(reference_i / s)          (scaled method)
+W_i   = A_k   + R * abs(reference_i)              (unscaled method)
+E^2   = (1/M) * sum over variables (1/N) * sum over its dofs (error_i / W_i)^2
 ```
 
-Here `j` counts accepted steps, `reference` is the last accepted internal
-state, and `returned` is the most recently stored state, possibly interpolated.
-The scale `sigma_i` of a degree of freedom is the scale of its field, which
-`settings.error.layout` names; a field's scale of one is the default. A
-nonzero error with zero weight has infinite norm. Mismatched vector sizes are
-rejected.
+with `A_k` the absolute tolerance (`R * settings.error.absolute.value` under the
+"Factor" method, the value itself under "Manual"), `R = settings.error.relative`,
+`j` the accepted-step count, `reference` the last accepted internal state and
+`returned` the most recently stored state, possibly interpolated.
+`settings.error.variables` names the variables — their sizes, the scale COMSOL
+prints for each, and whether its absolute tolerance follows the solution; an
+empty list is one variable over the whole state at scale one, which is the
+scalar form the recorded references cover. A nonzero error with zero weight has
+infinite norm. Mismatched vector sizes and a partition that does not add up to
+the state are rejected.
+
+The measured table behind the branches, the evidence that a given scale freezes
+`A_s` and divides the solution, and what the sweep could not settle are in
+[the evidence](doc/evidence/tolerance-axes.md).
 
 ## Settings and output
 
@@ -130,9 +145,9 @@ doc/design.md records how the kernel reads it.
 | `ManualSteps::step`, `::order`            | 0.0, 2                 | The fixed step of a manual run, and its BDF order          |
 | `error.relative`                          | 1e-2                   | Relative error weight                                      |
 | `error.absolute`                          | factor 0.1             | The absolute tolerance: a factor of `relative`, or a value |
-| `error.scaled`                            | true                   | Scale the absolute weight by each dof's magnitude          |
-| `error.layout`                            | empty                  | The fields of the state, and their scales                  |
-| `initialization`                          | `BackwardEuler`        | The artificial initialization, and its step factor         |
+| `error.scaled`                            | true                   | Scale the solution by each variable's scale               |
+| `error.variables`                         | empty                  | The dependent variables, their scales, their `A_s` branch   |
+| `initialization_fraction`                 | 1e-3                   | COMSOL's "Fraction of initial step for Backward Euler"     |
 | `storage`                                 | `Storage::interpolate` | Output selection                                           |
 | `store_every`                             | 1                      | Store every Nth step                                       |
 
@@ -174,7 +189,7 @@ backward-Euler solves, so the first returned state can differ slightly from
 `initial`; a second-order run gives `start(t0, u0, du0, end)` its first derivative as the
 second initial value and advances the pair the same way. `run(times, hooks)`
 requires a fresh `start` and strictly increasing times starting at `t0` and ending
-at `end`. Use either `run` for the complete schedule or `advance` for a
+at `end`; it copies them. Use either `run` for the complete schedule or `advance` for a
 caller-driven loop; call `start` before switching to a new run.
 
 `on_step` receives each accepted step's record and the state it left; `on_store`
@@ -190,14 +205,18 @@ For a caller-driven loop, `advance()` takes one step the error test accepts —
 it retries a step the solve failed or the error test refused — and reports it.
 An attempt is the library's own: a step the solve or the test refuses is
 retried inside the call, and the caller is never handed a candidate to commit.
-An integrator is neither copyable nor movable; `start` begins a run again.
+`finished()` says whether the run has reached its end time, and `report()` holds
+the counts of the run so far. `advance()` cuts its step to the placement's next
+boundary and, when the end is not interpolated, to the end time, so a
+caller-driven loop lands where a scheduled one does. An integrator is neither
+copyable nor movable; `start` begins a run again.
 
 Requests and their state references are borrowed only for the solve callback.
 The stepper constructs requests; callers do not construct or retain them.
 State assignments reuse existing buffers. A rejected attempt leaves accepted
-history intact. If a state operation throws while initialization or a history
-update is in progress, access and further stepping are refused until `start`
-rebuilds the run. The library does not catch exceptions from user code.
+history intact. A state operation that throws leaves the run's history partly
+written: call `start` before reading or stepping again. The library does not
+catch exceptions from user code.
 
 ## Build and test
 
@@ -209,8 +228,10 @@ cmake --install build --prefix .cache/install
 ```
 
 Tests cover control rules, convergence, the second-order adapter, rejection,
-restart, output modes, invalid inputs and recorded COMSOL trajectories. The four
-examples also run under CTest. COMSOL is needed only to regenerate reference data.
+restart, output modes, invalid inputs and the recorded COMSOL trajectories
+(`test/`), and the COMSOL conformance target of the rewrite
+(`test/acceptance`). The three examples also run under CTest. COMSOL is needed
+only to regenerate reference data.
 
 ## Scope and documentation
 
@@ -225,38 +246,11 @@ matching its algebraic solve strategy; the scalar references do not establish
 equivalence for arbitrary models.
 
 - [Design](doc/design.md): ownership, history and numerical boundaries.
+- [The rewrite](doc/refactor-plan.md): the interface, what has landed, what is left, and the open questions.
 - [COMSOL alignment](doc/comsol-alignment.md): measured configurations and reproduction.
 - [Coupled multiphysics](doc/multiphysics.md): thermoelastic COMSOL comparison and motor example.
 - [Research notes](doc/research/comsol-time-dependent-solver.md): what the COMSOL
   documentation established, and which of those claims the code verifies.
-
-## Migration from 1.3
-
-The configuration is a tree, and each alternative owns the fields its steps
-read. There is no compatibility layer: the old spellings below are gone, not
-aliased.
-
-| 1.3                                                                     | now                                                                                  |
-| :---------------------------------------------------------------------- | :----------------------------------------------------------------------------------- |
-| `settings.max_order`, `settings.min_order`                              | `std::get<atstep::AdaptiveSteps>(settings.steps).max_order` / `.min_order`           |
-| `settings.first_step_fraction`                                          | `AdaptiveSteps::initial_step`; unset means the automatic rule                        |
-| `settings.min_step_fraction`                                            | `AdaptiveSteps::min_step_fraction`                                                   |
-| `settings.max_step_fraction = f`                                        | `AdaptiveSteps::max_step = atstep::ConstantMaxStep {seconds}`                        |
-| `settings.max_step_fraction` not positive                               | `AdaptiveSteps::max_step = atstep::AutomaticMaxStep {}`                              |
-| `settings.stepping = atstep::ManualStep {s, o}`                         | `settings.steps = atstep::ManualSteps {s, o}`                                        |
-| `settings.stepping = atstep::AutomaticStep {placement}`                 | `AdaptiveSteps::placement = atstep::Placement::free` / `::intermediate` / `::strict` |
-| `settings.relative_tolerance`                                           | `settings.error.relative`                                                            |
-| `settings.absolute_factor`                                              | `settings.error.absolute.value`                                                      |
-| `settings.absolute_tolerance = atstep::ScaledAbsoluteTolerance {scale}` | `settings.error.scaled = true`, and the scale per field in `settings.error.layout`   |
-| `settings.absolute_tolerance = atstep::FixedAbsoluteTolerance {}`       | `settings.error.scaled = false`                                                      |
-| `settings.init_step_fraction`                                           | `std::get<atstep::BackwardEuler>(settings.initialization).fraction`                  |
-| `settings.store_mode = atstep::StoreMode::x`                            | `settings.storage = atstep::Storage::interpolate` / `::closest` / `::steps`          |
-| `settings.interpolate_end_time = flag`                                  | `AdaptiveSteps::interpolate_end_time` or `ManualSteps::interpolate_end_time`         |
-
-Two of the changes are not a spelling: `ConstantMaxStep` takes an absolute time
-value, not a fraction of the span, and the automatic first step is a fraction
-of the interval that remains after the consistent initialization, not of the
-whole span.
 
 The headers are `atstep/atstep.hpp`, `atstep/stepper.hpp`,
 `atstep/second_order.hpp` and `atstep/settings.hpp`. Everything under

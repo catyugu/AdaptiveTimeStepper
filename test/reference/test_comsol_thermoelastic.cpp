@@ -17,10 +17,10 @@ namespace {
   // theta' = -0.5*v - 1.5*theta.
   // Thermal expansion drives motion; deformation feeds back into temperature.
   atstep::SolveOutcome solve_thermoelastic(const atstep::StepRequest<State>& request,
-    State& y,
-    State& dy)
+    State& y)
   {
     const double cj = request.derivative_weight();
+    State dy = y;
     request.derivative(y, dy);
     const State residual {dy[0] - y[1], dy[1] + 4.0 * y[0] + 4.5 * y[1] - 0.5 * y[2],
       dy[2] + 0.5 * y[1] + 1.5 * y[2]};
@@ -55,17 +55,15 @@ TEST_CASE("comsol: reciprocal thermoelastic trajectories, derivatives and dissip
   atstep::Settings settings;
   settings.error.relative = 1e-7;
   settings.error.scaled = false;
-  std::get<atstep::BackwardEuler>(settings.initialization).fraction = 1e-5;
+  settings.initialization_fraction = 1e-5;
   auto& adaptive = std::get<atstep::AdaptiveSteps>(settings.steps);
   adaptive.placement = atstep::Placement::free;
   adaptive.interpolate_end_time = false;
   settings.storage = atstep::Storage::steps;
-  State last_derivative;
+  State dense;
   atstep::TimeStepper<State> stepper(settings,
-    [&](const atstep::StepRequest<State>& request, State& y) {
-      const auto outcome = solve_thermoelastic(request, y, last_derivative);
-      request.derivative(y, last_derivative);
-      return outcome;
+    [](const atstep::StepRequest<State>& request, State& y) {
+      return solve_thermoelastic(request, y);
     });
   stepper.start(0.0, exact(0.0), 5.0);
 
@@ -79,11 +77,12 @@ TEST_CASE("comsol: reciprocal thermoelastic trajectories, derivatives and dissip
     sample.time = t;
     const auto expected = exact(t);
     const auto expected_derivative = exact(t, 1);
+    stepper.interpolate(t, dense, 1);
     for (std::size_t i = 0; i < 3; ++i) {
       sample.state[i] = y[i];
-      sample.derivative[i] = last_derivative[i];
+      sample.derivative[i] = dense[i];
       analytic_state = std::max(analytic_state, std::abs(y[i] - expected[i]));
-      analytic_derivative = std::max(analytic_derivative, std::abs(last_derivative[i] - expected_derivative[i]));
+      analytic_derivative = std::max(analytic_derivative, std::abs(dense[i] - expected_derivative[i]));
     }
     stored.push_back(sample);
     const double current_energy = energy(y);
@@ -91,8 +90,9 @@ TEST_CASE("comsol: reciprocal thermoelastic trajectories, derivatives and dissip
     previous_energy = current_energy;
   };
   hooks.on_step = [&](const atstep::StepRecord& record, const State& y) {
+    stepper.interpolate(record.time, dense, 1);
     // Reciprocal coupling cancels from E': only dissipative losses remain.
-    const double rate = 4.0 * y[0] * last_derivative[0] + y[1] * last_derivative[1] + y[2] * last_derivative[2];
+    const double rate = 4.0 * y[0] * dense[0] + y[1] * dense[1] + y[2] * dense[2];
     const double loss = 4.5 * y[1] * y[1] + 1.5 * y[2] * y[2];
     const double roundoff = 64.0 * std::numeric_limits<double>::epsilon()
       * (1.0 + energy(y)) / record.step;

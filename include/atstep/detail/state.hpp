@@ -6,9 +6,7 @@
 #include <concepts>
 #include <cstddef>
 #include <limits>
-#include <numeric>
 #include <stdexcept>
-#include <type_traits>
 #include <vector>
 
 #include "../settings.hpp"
@@ -49,11 +47,17 @@ namespace atstep::detail {
   }
 
   /// A default-constructible, copyable value with the arithmetic above.
-  /// Assignment should reuse storage when dimensions are unchanged. State
-  /// operations may throw; if a history update fails, start must rebuild the
-  /// run before it can be read or advanced again.
+  /// Assignment should reuse storage when dimensions are unchanged.
   template <class State>
   concept StateVector = std::is_copy_assignable_v<State> && std::is_copy_constructible_v<State> && std::is_default_constructible_v<State> && requires(State& y, const State& x, double a) { atstep::detail::axpy(y, a, x); };
+
+  /// A state whose dofs can be read one by one: what the default norm needs and
+  /// a state of its own arithmetic may not have.
+  template <class State>
+  concept Indexable = requires(const State& s) {
+    { s.size() } -> std::convertible_to<std::size_t>;
+    { s[std::size_t {}] } -> std::convertible_to<double>;
+  };
 
   inline void
   axpy(std::vector<double>& y, double a, const std::vector<double>& x)
@@ -64,35 +68,56 @@ namespace atstep::detail {
       y[i] += a * x[i];
   }
 
-  /// Weighted RMS: sqrt(mean((error_i / (A_i + relative*abs(y_i)))^2)).
-  /// `A_i` is `absolute` everywhere when `scaled` is false, and when it is true,
-  /// for accepted-step index j:
+  /// COMSOL's local error test: the weighted RMS of the error estimate over the
+  /// state, averaged over the dependent variables first and over the degrees of
+  /// freedom of a variable second.
   ///
-  ///   A_i = absolute * ((2-exp(-j/5))*abs(returned_i) + exp(-j/5)*sigma_i).
+  /// For a variable `j` with `N_j` degrees of freedom, its scale `sigma_j` and
+  /// its error estimate `E`:
   ///
-  /// y is the accepted internal state; returned is the most recently stored
-  /// state, possibly interpolated. Missing scale entries use sigma_i=1.
-  /// States expose size() and operator[]. Other layouts can supply a custom
-  /// norm as TimeStepper<State, Norm>'s second template parameter.
+  ///     Y_i     = returned_i / sigma_j
+  ///     A_s,i   = A_k (beta_j + rms(Y_j))     automatic scale, update on
+  ///     A_s,i   = A_k                          otherwise
+  ///     beta_j  = (1 - exp(-j/5)) max(abs(Y_j)) + exp(-j/5)
+  ///     W_i     = A_s,i + R abs(Y_i)           scaled method
+  ///     W_i     = A_k   + R abs(U_i)           unscaled method
+  ///     E^2     = (1/M) sum_j (1/N_j) sum_i (E_i / W_i)^2
+  ///
+  /// where `j` is the accepted-step index and `A_k` is the entered absolute
+  /// tolerance. Measured: doc/evidence/tolerance-axes.md. A single variable of
+  /// one dof at scale one reduces to COMSOL's scalar form, which is the only
+  /// case the recorded trajectories cover.
+  ///
+  /// States expose `size()` and `operator[]`; another layout can supply a custom
+  /// norm as `TimeStepper<State, Norm>`'s second template parameter.
   struct WeightedRmsNorm {
+    /// The relative tolerance `R`.
     double relative = 1e-2;
-    double absolute = 1e-3;
-    /// The scaled form of COMSOL's absolute tolerance, which blends the magnitude
-    /// of the returned solution with `scale`. `TimeStepper` sets it from
-    /// `ErrorTest`; the plain form is what a norm on its own starts with.
-    bool scaled = false;
-    /// `sigma_i`; an empty vector, and an index past its end, are one.
-    std::vector<double> scale;
-    /// The partition of the state into fields, as their sizes: COMSOL averages
-    /// the squared ratios over the fields first and over the degrees of freedom
-    /// of a field second. An empty vector is one field over every degree of
-    /// freedom.
-    std::vector<std::size_t> fields;
-    std::size_t step_index = 0;
 
-    /// The norm of COMSOL's settings: the tolerances, and the scales of the
-    /// fields laid over the degrees of freedom in order. An empty layout is one
-    /// field of scale one over every degree of freedom.
+    /// The absolute tolerance `A_k`: a factor of `R`, or a value.
+    double absolute = 1e-3;
+
+    /// COMSOL's "Tolerance method": the criterion on `Y = U / scale`, or on `U`.
+    bool scaled = false;
+
+    /// The variables of the state, as their sizes: COMSOL averages the squared
+    /// ratios over the variables first and over the degrees of freedom of one
+    /// second. An empty vector is one variable over every degree of freedom.
+    std::vector<std::size_t> variables;
+
+    /// `sigma_i`, the scale of the variable each degree of freedom belongs to.
+    std::vector<double> scale;
+
+    /// Whether each variable's absolute tolerance follows the solution: the
+    /// `A_s` branch above. An empty vector means every variable follows it,
+    /// which is COMSOL's default.
+    std::vector<bool> scaled_tolerance;
+
+    /// The accepted steps the run has behind it: COMSOL's `j`.
+    std::size_t accepted_steps = 0;
+
+    /// The norm of COMSOL's settings. An empty `variables` is one variable of
+    /// scale one over the whole state, whose size the caller supplies.
     static WeightedRmsNorm from(const ErrorTest& error)
     {
       WeightedRmsNorm norm;
@@ -101,75 +126,101 @@ namespace atstep::detail {
         ? error.relative * error.absolute.value
         : error.absolute.value;
       norm.scaled = error.scaled;
-      for (const Field& field : error.layout.fields) {
-        if (field.dofs == 0)
+      for (const Variable& variable : error.variables) {
+        if (variable.dofs == 0)
           throw std::invalid_argument(
-            "atstep: a field of the error test needs at least one degree of freedom");
-        norm.fields.push_back(field.dofs);
-        norm.scale.insert(norm.scale.end(), field.dofs, field.scale);
+            "atstep: a variable of the error test needs at least one degree of freedom");
+        norm.variables.push_back(variable.dofs);
+        norm.scale.insert(norm.scale.end(), variable.dofs, variable.scale);
+        norm.scaled_tolerance.push_back(variable.scaled_tolerance);
       }
       return norm;
     }
 
-    template <class State>
-      requires requires(const State& s) {
-        { s.size() } -> std::convertible_to<std::size_t>;
-        { s[std::size_t {}] } -> std::convertible_to<double>;
-      }
-    double operator()(const State& error, const State& reference) const
-    {
-      return (*this)(error, reference, reference);
-    }
 
-    /// COMSOL updates the scaled absolute tolerance from the solution
-    /// returned to the caller, which can be interpolated. The relative part
-    /// continues to use the last accepted internal state.
-    template <class State>
+    /// COMSOL updates the scaled absolute tolerance from the solution returned
+    /// to the caller, which can be interpolated. The relative part and the
+    /// variable's own magnitude continue to use the last accepted internal
+    /// state.
+    template <Indexable State>
     double operator()(const State& error,
       const State& reference,
-      const State& scale_reference) const
+      const State& returned) const
     {
       const std::size_t n = reference.size();
-      if (error.size() != n or scale_reference.size() != n)
+      if (error.size() != n or returned.size() != n)
         throw std::invalid_argument("atstep: norm state sizes differ");
       if (n == 0)
         return 0.0;
-      const double decay = std::exp(-0.2 * static_cast<double>(step_index));
+      if (not variables.empty()) {
+        std::size_t dofs = 0;
+        for (const std::size_t variable : variables)
+          dofs += variable;
+        if (dofs != n)
+          throw std::invalid_argument(
+            "atstep: the variables of the error test do not add up to the size of the state");
+      }
+      const double decay = std::exp(-0.2 * static_cast<double>(accepted_steps));
+      const auto sigma = [this](std::size_t i) {
+        return i < scale.size() ? scale[i] : 1.0;
+      };
+      // The scales and the partition, walked together.
+      const std::size_t count = variables.empty() ? 1 : variables.size();
       std::vector<double> squares(n, 0.0);
-      for (std::size_t i = 0; i < n; ++i) {
-        double limit = absolute;
-        if (scaled) {
-          const double magnitude = std::abs(scale_reference[i]);
-          const double sigma = i < scale.size() ? scale[i] : 1.0;
-          limit = absolute * ((2.0 - decay) * magnitude + decay * sigma);
-        }
-        const double weight = limit + relative * std::abs(reference[i]);
-        if (not std::isfinite(error[i]) or not std::isfinite(weight) or weight < 0.0)
-          return std::numeric_limits<double>::infinity();
-        if (weight == 0.0) {
-          if (error[i] != 0.0)
-            return std::numeric_limits<double>::infinity();
-          continue;
-        }
-        const double ratio = error[i] / weight;
-        squares[i] = ratio * ratio;
-      }
-      if (fields.empty())
-        return std::sqrt(std::accumulate(squares.begin(), squares.end(), 0.0)
-          / static_cast<double>(n));
-      // COMSOL averages over the fields first, so that a field of many degrees
-      // of freedom does not outvote a field of few.
-      double total = 0.0;
       std::size_t first = 0;
-      for (const std::size_t dofs : fields) {
-        const std::size_t last = std::min(first + dofs, n);
-        total += std::accumulate(squares.begin() + static_cast<std::ptrdiff_t>(first),
-                   squares.begin() + static_cast<std::ptrdiff_t>(last),
-                   0.0)
-          / static_cast<double>(dofs);
-        first = last;
+      for (std::size_t variable = 0; variable < count; ++variable) {
+        const std::size_t dofs
+          = variables.empty() ? n : std::min(variables[variable], n - first);
+        const bool update = scaled_tolerance.empty()
+          or (variable < scaled_tolerance.size() and scaled_tolerance[variable]);
+        // The variable's own norms, from the solution the caller was given.
+        double square = 0.0;
+        double largest = 0.0;
+        for (std::size_t i = first; i < first + dofs; ++i) {
+          const double y = returned[std::size_t {i}] / sigma(std::size_t {i});
+          square += y * y;
+          largest = std::max(largest, std::abs(y));
+        }
+        const double beta = (largest > 0.0 and largest < 1.0)
+          ? (1.0 - decay) * largest + decay
+          : 1.0;
+        const double limit = scaled
+          ? (update ? absolute * (beta + std::sqrt(square / static_cast<double>(dofs)))
+                    : absolute)
+          : absolute;
+        for (std::size_t i = first; i < first + dofs; ++i) {
+          const double s = sigma(i);
+          // The relative part follows the last accepted internal state; only
+          // the absolute one follows the solution the caller was given.
+          const double reference_value = scaled ? reference[i] / s : reference[i];
+          const double estimate = scaled ? error[i] / s : error[i];
+          const double weight = limit + relative * std::abs(reference_value);
+          if (not std::isfinite(estimate) or not std::isfinite(weight) or weight < 0.0)
+            return std::numeric_limits<double>::infinity();
+          if (weight == 0.0) {
+            if (estimate != 0.0)
+              return std::numeric_limits<double>::infinity();
+            continue;
+          }
+          const double ratio = estimate / weight;
+          squares[i] = ratio * ratio;
+        }
+        first += dofs;
       }
-      return std::sqrt(total / static_cast<double>(fields.size()));
+      // COMSOL averages over the variables first, so that a variable of many
+      // degrees of freedom does not outvote one of few.
+      double total = 0.0;
+      first = 0;
+      for (std::size_t variable = 0; variable < count; ++variable) {
+        const std::size_t dofs
+          = variables.empty() ? n : std::min(variables[variable], n - first);
+        double sum = 0.0;
+        for (std::size_t i = first; i < first + dofs; ++i)
+          sum += squares[i];
+        total += sum / static_cast<double>(dofs);
+        first += dofs;
+      }
+      return std::sqrt(total / static_cast<double>(count));
     }
   };
 

@@ -38,8 +38,11 @@ namespace {
       // The predictor is the initial Newton guess. Each update solves all three
       // Jacobian rows; no field is lagged from the preceding time step.
       State dy = y; // the derivative of the iterate, written in place
+      const double cj_weight = request.derivative_weight();
+      const State& known = request.derivative_history();
       for (int iteration = 0; iteration < 20; ++iteration) {
-        request.derivative(y, dy);
+        for (std::size_t i = 0; i < dy.size(); ++i)
+          dy[i] = cj_weight * y[i] + known[i];
         const double r = winding_resistance(y[2]);
         const double electrical = inductance * dy[0] + r * y[0] + coupling * y[1] - voltage;
         const double mechanical = inertia * dy[1] + damping * y[1] - coupling * y[0];

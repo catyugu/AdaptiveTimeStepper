@@ -11,15 +11,21 @@
 #include <span>
 #include <stdexcept>
 #include <variant>
+#include <vector>
 
 namespace atstep::detail {
 
   /// Where the steps of a run may land, and which output times a step that
   /// reached a time stores.
   ///
-  /// It holds the output times and the two settings that read them: the step
-  /// placement decides the size a step is cut to, the storage what the values
-  /// reported. The stepper holds the steps themselves.
+  /// It owns the output times — a copies of the caller's schedule — and the two
+  /// settings that read them: the step placement decides the size a step is cut
+  /// to, the storage what the values reported. The stepper holds the steps
+  /// themselves.
+  ///
+  /// One invariant orders the file: `next_` is the first output time not yet
+  /// stored. A step's placement and its outputs are functions of
+  /// `(time, next_, placement, end)`, so nothing else has to be remembered.
   class StepSchedule {
   public:
     /// The step the schedule takes, and the time it must end at where it must
@@ -32,7 +38,8 @@ namespace atstep::detail {
     /// @param[in] settings the placement and storage of the run.
     /// @param[in] output_times the times to store, increasing, from the start
     /// time to the end time of the run. The value at the start time is the one
-    /// the run begins with, which the stepper stores before it steps.
+    /// the run begins with, which the stepper stores before it steps. The
+    /// schedule copies them.
     StepSchedule(const Settings& settings,
       std::span<const double> output_times,
       double start_time,
@@ -52,18 +59,27 @@ namespace atstep::detail {
     /// runs once per schedule, so that stepping reads no variant.
     void resolve(const Settings& settings);
 
+    /// Whether the interval that starts at the last output time already holds a
+    /// step: an accepted step that crossed an output time counts as the landing
+    /// of the next interval, and then the following step may cross the rest of
+    /// this one.
+    ///
+    /// It cannot be read off the clock. The level a consistent initialization
+    /// leaves sits `2 * probe` past the start time and is not a step, so
+    /// `time > times_[next_ - 1]` would call the first interval landed before
+    /// the first step.
+    bool interval_has_step_ = false;
+
     Placement placement_ = Placement::free;
     Storage store_ = Storage::interpolate;
     /// COMSOL's "Store every Nth step": the initial state is step 0 and the
     /// modulus is anchored on it.
     std::size_t store_every_ = 1;
     bool interpolate_end_time_ = true;
-    std::span<const double> times_;
+    std::vector<double> times_;
     double end_time_ = 0.0;
-    /// The next output time to store, and whether a step landed inside the
-    /// current interval.
+    /// The first output time not yet stored.
     std::size_t next_ = 0;
-    bool landed_ = false;
   };
 
   /// The step to take instead of `step` so that a step from `time` ends at
@@ -104,18 +120,18 @@ namespace atstep::detail {
     std::span<const double> output_times,
     double start_time,
     double end_time)
-    : times_(output_times)
+    : times_(output_times.begin(), output_times.end())
     , end_time_(end_time)
   {
-    if (output_times.size() < 2)
+    if (times_.size() < 2)
       throw std::invalid_argument(
         "atstep: a run needs at least two output times");
-    if (output_times.front() != start_time or output_times.back() != end_time)
+    if (times_.front() != start_time or times_.back() != end_time)
       throw std::invalid_argument("atstep: the output times must "
                                   "start at the start time and end "
                                   "at the end time of the run");
-    for (std::size_t i = 1; i < output_times.size(); ++i)
-      if (not(output_times[i] > output_times[i - 1]))
+    for (std::size_t i = 1; i < times_.size(); ++i)
+      if (not(times_[i] > times_[i - 1]))
         throw std::invalid_argument(
           "atstep: the output times must increase");
     // The first output time is the start time, whose value the caller stores
@@ -128,11 +144,14 @@ namespace atstep::detail {
     double time) const
   {
     const double target = next_ < times_.size() ? times_[next_] : end_time_;
-    const std::size_t intermediate_index = next_ + (landed_ ? 1U : 0U);
+    // The end of the interval that must hold a step: the next output time, or
+    // the one after it when this interval already got one from a crossing.
+    const std::size_t intermediate_index = next_ + (interval_has_step_ ? 1U : 0U);
     const double intermediate_target = intermediate_index < times_.size()
       ? times_[intermediate_index]
       : std::numeric_limits<double>::infinity();
-    const bool intermediate_landing = placement_ == Placement::intermediate and time + step >= intermediate_target;
+    const bool intermediate_landing = placement_ == Placement::intermediate
+      and time + step >= intermediate_target;
 
     switch (placement_) {
     case Placement::strict:
@@ -168,9 +187,9 @@ namespace atstep::detail {
     const std::size_t first = next_;
     while (next_ < times_.size() and times_[next_] <= time)
       ++next_;
+    interval_has_step_ = next_ > 0 and time > times_[next_ - 1];
     // A crossing step can already lie inside the next interval. Advance the
     // schedule before callbacks, as all outputs belong to this completed step.
-    landed_ = next_ > 0 and time > times_[next_ - 1];
 
     if (store_ == Storage::steps) {
       // The steps of the run, and none of the output times in between: a run

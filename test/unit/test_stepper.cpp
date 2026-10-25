@@ -115,33 +115,31 @@ namespace {
 
 TEST_CASE("request: the derivative is the affine form its weights define")
 {
-  // `derivative` evaluates `cj*y + known` in correction form, where the
-  // correction is small: the two are the same state, which is what a solve may
-  // rely on whichever form it reads. They differ by the round-off of the direct
-  // form's cancellation — a few units of `cj*|y|` in its last place, which the
-  // initialization step alone puts at 1e7 — so the comparison is against the
+  // `derivative` evaluates the level in correction form, around the predictor,
+  // and `derivative_history() + cj*y` is the same level in direct form: whichever
+  // a residual reads, it reads one equation. They differ by the round-off of the
+  // direct form's cancellation — a few units of `cj*|y|` in its last place, which
+  // the initialization step alone puts at 1e7 — so the comparison is against the
   // size of the terms, not against zero.
   atstep::Settings settings;
   adaptive_of(settings).max_order = 3;
   double worst = 0.0;
   int evaluated = 0;
   atstep::TimeStepper<Scalar> stepper(settings,
-    [&worst, &evaluated](const atstep::StepRequest<Scalar>& request,
-      Scalar& y) {
+    [&worst, &evaluated](const atstep::StepRequest<Scalar>& request, Scalar& y) {
       const double weight = request.derivative_weight();
       Scalar derivative;
       request.derivative(y, derivative);
       Scalar affine = request.derivative_history();
       const double terms = 1.0 + std::abs(affine.value) + std::abs(weight * y.value);
       atstep::detail::axpy(affine, weight, y);
-      worst = std::max(
-        worst, std::abs(derivative.value - affine.value) / terms);
+      worst = std::max(worst, std::abs(derivative.value - affine.value) / terms);
       ++evaluated;
       const Scalar& known = request.derivative_history();
       y.value = -known.value / (weight + 1.0);
       const Scalar solved = y;
       request.derivative(y, derivative);
-      request.derivative(y, y);
+      request.derivative(y, y); // the output may be the state itself
       CHECK_NEAR(y.value, derivative.value, 0.0);
       y = solved;
       return atstep::SolveOutcome {true, 1};
@@ -477,12 +475,12 @@ TEST_CASE("stepper: a state and a norm of the caller's own")
       v += a * x.v;
     }
   };
-  const auto norm = [](const Own& error, const Own& reference) {
-    return std::abs(error.v) / (1e-3 + 0.01 * std::abs(reference.v));
+  const auto norm = [](const Own& error, const Own& accepted, const Own&, std::size_t) {
+    return std::abs(error.v) / (1e-3 + 0.01 * std::abs(accepted.v));
   };
   atstep::Settings settings;
   adaptive_of(settings).max_order = 2;
-  atstep::TimeStepper<Own, decltype(norm)> stepper(
+  atstep::TimeStepper<Own> stepper(
     settings,
     [](const atstep::StepRequest<Own>& request, Own& y) {
       y.v = -request.derivative_history().v / (request.derivative_weight() + 1.0);
@@ -678,87 +676,6 @@ TEST_CASE("stepper: advance takes one acceptable step and moves the run")
   CHECK(std::abs(other.state().value - exact(other.time())) < 1e-2);
 }
 
-TEST_CASE("stepper: a failed history update requires a restart")
-{
-  struct Failure {
-    const void* assignment_target = nullptr;
-    bool self_axpy = false;
-    bool triggered = false;
-  };
-  struct State {
-    double value = 0.0;
-    Failure* failure = nullptr;
-
-    State() = default;
-    State(double v, Failure& fault)
-      : value(v)
-      , failure(&fault)
-    {
-    }
-    State(const State&) = default;
-    State& operator=(const State& other)
-    {
-      value = other.value;
-      failure = other.failure;
-      if (failure and failure->assignment_target == this) {
-        failure->triggered = true;
-        throw std::runtime_error("state assignment failed");
-      }
-      return *this;
-    }
-    void axpy(double a, const State& x)
-    {
-      value += a * x.value;
-      if (failure and failure->self_axpy and this == &x) {
-        failure->triggered = true;
-        throw std::runtime_error("state rescaling failed");
-      }
-    }
-  };
-  const auto norm = [](const State& error, const State&) {
-    return std::abs(error.value);
-  };
-  for (bool assignment : {true, false}) {
-    Failure fault;
-    bool fail = false;
-    atstep::TimeStepper<State, decltype(norm)> stepper(
-      manual_settings(2, 0.1),
-      [&](const atstep::StepRequest<State>& request, State& y) {
-        y.value = -request.derivative_history().value
-          / (request.derivative_weight() + 1.0);
-        if (fail and not request.initializing) {
-          // Target the accepted level, or the in-place rescaling of a history
-          // column. Both failures occur after the solve returned successfully.
-          if (assignment)
-            fault.assignment_target = &request.previous();
-          else
-            fault.self_axpy = true;
-        }
-        return atstep::SolveOutcome {true, 1};
-      },
-      norm);
-    stepper.start(0.0, State {1.0, fault}, 1.0);
-    stepper.advance();
-    fail = true;
-    CHECK_THROWS(stepper.advance());
-    CHECK(fault.triggered);
-    CHECK_THROWS(stepper.time());
-    CHECK_THROWS(stepper.state());
-    CHECK_THROWS(stepper.step_size());
-    CHECK_THROWS(stepper.order());
-    State out;
-    CHECK_THROWS(stepper.interpolate(0.0, out));
-    CHECK_THROWS(stepper.advance());
-
-    fault = {};
-    fail = false;
-    stepper.start(0.0, State {1.0, fault}, 1.0);
-    const auto report = stepper.run(std::vector<double> {0.0, 1.0});
-    CHECK(report.steps > 0);
-    CHECK(std::abs(stepper.state().value - exact(stepper.time())) < 0.05);
-  }
-}
-
 TEST_CASE("stepper: a start time the run cannot integrate from is refused")
 {
   // The initialization steps are solves of the caller's, so a run that cannot
@@ -791,7 +708,7 @@ TEST_CASE("stepper: a start time the run cannot integrate from is refused")
   CHECK(stepper.advance().time > 0.0);
 
   atstep::Settings settings;
-  std::get<atstep::BackwardEuler>(settings.initialization).fraction = 1e3;
+  settings.initialization_fraction = 1e3;
   int probe_calls = 0;
   atstep::TimeStepper<Scalar> oversized(settings,
     [&](const atstep::StepRequest<Scalar>& request, Scalar& y) {
