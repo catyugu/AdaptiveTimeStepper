@@ -64,8 +64,8 @@ Three measurements, in the order they were taken:
 
 1. **Not the algebraic solve.** `second_order_exact` rebuilds the Jacobian at
    every iteration, so its linear solve is the exact root; its probe offset is the
-   standard `2e-5` s, and its first step `8.50086e-5` s, the same as the default
-   run's to five digits. It takes 49 steps where the default run takes 43, and the
+   standard `2e-5` s, and its first stored time `1.0500856402159903e-4` s — the
+   same to the last digit as the default run's. It takes 49 steps where the default run takes 43, and the
    library diverged from it at the same nineteenth step, by the same 0.9. The
    earlier candidate — that COMSOL's default Jacobian reuse carried the divergence
    — is refuted; the record's own trajectory has to be reproduced.
