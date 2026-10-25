@@ -192,7 +192,8 @@ allows an internal step past the final time; a `Strict` placement offers none.
 Store modes, `settings.storage`:
 
 - `Interpolate`: return values at requested times.
-- `Closest`: return the first internal step reaching each requested time.
+- `Closest`: return the first internal step at or past each requested time, one
+  value per step — a step that reaches several requested times stores them as one.
 - `Steps`: return every accepted internal step.
 
 `start(t0, initial, end)` resets the run. Initialization performs two artificial

@@ -43,8 +43,9 @@ namespace atstep {
     strict };
 
   /// What the run reports: COMSOL's "Times to store". `interpolate` stores the
-  /// values at the output times, `closest` the first solver step reaching each
-  /// of them, `steps` the solver's own steps.
+  /// values at the output times, `closest` the first solver step at or past each
+  /// of them — one value per step, so a step that reaches several stores them as
+  /// one (doc/evidence/dofs.md) — and `steps` the solver's own steps.
   enum class Storage { interpolate,
     closest,
     steps };

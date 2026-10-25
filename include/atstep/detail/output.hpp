@@ -224,14 +224,21 @@ namespace atstep::detail {
       return;
     }
 
-    for (std::size_t i = first; i < next_; ++i) {
-      const double target = times_[i];
-      // closest reports once per crossed output time, even when several map
-      // to the same internal step. The final time can still be interpolated.
-      const bool interpolated = store_ == Storage::interpolate
-        or (target == end_time_ and time > end_time_ and interpolate_end_time_);
-      emit(interpolated ? target : time, interpolated);
+    if (store_ == Storage::closest) {
+      // One value per step, whatever the run reaches: the first step at or past
+      // an output time stores that step, and a step that reaches several stores
+      // them as one. The end time, which a step may pass, is interpolated.
+      if (next_ == first)
+        return;
+      const bool interpolated
+        = times_[next_ - 1] == end_time_ and time > end_time_ and interpolate_end_time_;
+      emit(interpolated ? end_time_ : time, interpolated);
+      return;
     }
+
+    // The value at each output time, interpolated from the steps around it.
+    for (std::size_t i = first; i < next_; ++i)
+      emit(times_[i], true);
   }
 
 } // namespace atstep::detail

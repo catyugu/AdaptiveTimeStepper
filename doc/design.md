@@ -204,6 +204,12 @@ accepted step that crossed an output time counts as the landing of the next
 interval, and the level a consistent initialization leaves sits `2 * probe` past
 the start time without being a step, so that flag cannot be read off the clock.
 
+The storage decides what a step that reached output times reports. Interpolated
+output reports the value at each of them, as many as it reached. Closest-step
+output reports the step itself, once: a step that reaches several output times
+stores them as one, which is what COMSOL does and what an uneven schedule shows
+(doc/evidence/dofs.md).
+
 `run` consumes a complete schedule immediately after `start`. Calling it after
 `advance` or after a completed `run` is rejected, so a later state cannot be
 mislabelled as the initial output. Caller-driven stepping uses `advance`;
@@ -235,13 +241,13 @@ enough to advance floating-point time.
 Unit tests cover controller rules, convergence, the second-order adapter,
 rejection, restart, invalid input and aliased derivative output. CTest also runs
 the three examples and `test/acceptance`, the COMSOL conformance target of the
-rewrite. The [scalar COMSOL regressions](comsol-alignment.md) compare 1,336
-recorded output samples of 21 configurations, including times, states,
-derivatives and failure counts, 1,231 samples of 19 stepping configurations, 155
-samples of 3 two-field configurations, and the 17 tolerance configurations of
-[the tolerance evidence](evidence/tolerance-axes.md) at the level that evidence
-establishes. The orders in COMSOL's solver log are printed as a diagnostic.
-Reference data is never injected into the numerical solve.
+rewrite. The [COMSOL regressions](comsol-alignment.md) compare 1,231 recorded
+samples of 19 stepping configurations, 155 samples of 3 two-field
+configurations, 110 samples of 4 variables-of-several-dofs configurations
+([the multi-dof evidence](evidence/dofs.md)), and the 17 tolerance
+configurations of [the tolerance evidence](evidence/tolerance-axes.md) at the
+level that evidence establishes. The orders in COMSOL's solver log are printed
+as a diagnostic. Reference data is never injected into the numerical solve.
 
 The [thermoelastic regression](multiphysics.md) additionally compares 161
 COMSOL states of a reciprocal three-variable coupled system, including all

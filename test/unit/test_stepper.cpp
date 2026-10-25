@@ -447,6 +447,21 @@ TEST_CASE("stepper: the store modes choose what is reported")
   // Stored as steps: the initial state and every accepted step.
   CHECK_EQ(steps.first, steps.second + 1);
   CHECK(steps.second > 11);
+
+  // A step that reaches several requested times stores one value, whatever the
+  // schedule asked for: the step of one second that crosses 1.5 also crosses
+  // 1.75. Interpolated output reports both.
+  const auto coarse = [](atstep::Storage storage) {
+    atstep::Settings settings;
+    settings.storage = storage;
+    settings.steps = atstep::ManualSteps {1.0, 1};
+    atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
+    stepper.start(0.0, Scalar {1.0}, 10.0);
+    std::vector<double> times {0.0, 1.5, 1.75, 2.5, 10.0};
+    return stepper.run(times).stored;
+  };
+  CHECK_EQ(coarse(atstep::Storage::interpolate), 5);
+  CHECK_EQ(coarse(atstep::Storage::closest), 4);
 }
 
 TEST_CASE("stepper: a solve that does not converge is retried at a quarter")

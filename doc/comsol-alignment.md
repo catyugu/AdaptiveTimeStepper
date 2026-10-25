@@ -183,9 +183,11 @@ landing in the next interval. It also prevents a jump across an entire empty
 interval. The first shortened step becomes the base for startup growth.
 
 COMSOL's `tstepsclosest` stores the first accepted step reaching an output
-time; it can choose a later point even when the previous point is nearer.
-At an internal node the stored derivative is the derivative from the solve.
-Between nodes it is the dense-output polynomial's derivative.
+time; it can choose a later point even when the previous point is nearer. A step
+stores one value however many output times it reaches, so several outputs inside
+one step collapse into that step's time (evidence/dofs.md). At an internal node
+the stored derivative is the derivative from the solve. Between nodes it is the
+dense-output polynomial's derivative.
 
 ## Separate the algebraic solve from time stepping
 
