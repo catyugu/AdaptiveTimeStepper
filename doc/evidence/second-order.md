@@ -66,6 +66,26 @@ passes. COMSOL reports the *derivative of the dense output* there, not the pair'
 own velocity — the recorded `q'(10)` is `-47.84868137`, the interpolated velocity
 half `-48.42728879`, and the derivative of the interpolated state `-47.84868137`.
 
+## Several independent oscillators
+
+The divisor is `2K`, not two: `K` copies of the same oscillator, each its own
+Global Equation, were recorded with the solve made exact, and K = 1, 2 and 3 give
+**the same stored times and the same states, every copy of every sample, bit for
+bit**. Adding an identical oscillator multiplies the error test's mean square and
+the number of variables it averages over alike, so nothing moves — which the
+other readings cannot produce:
+
+| Divisor | first-step ratio, K = 2 | K = 3  |
+| ------- | ----------------------- | ------ |
+| `2K`    | 1                       | 1      |
+| `K + 1` | 0.8660                  | 0.8165 |
+| `2`     | 0.7071                  | 0.5774 |
+| `K`     | 0.7071                  | 0.7071 |
+
+`test/reference/comsol_second_order_k.hpp` carries that series and
+`test_comsol_second_order_k.cpp` replays it for K = 1, 2 and 3, so a kernel whose
+divisor stops scaling with the number of variables fails on K = 2.
+
 ## What is left
 
 The residual of the whole-run replay is arithmetic, not a rule: the replay's first
@@ -75,9 +95,10 @@ step is `2.4e-13` relative short of the record's, and the rejection cascade at
 
 Not settled:
 
-- A state of several variables. The record is one displacement dof, so it says
-  `M = 2` and cannot say whether a state of `K` variables brings `2K` — the same
-  `sqrt(1/2)` — or something else (Q09 of `doc/open-questions.md`).
+- A system that mixes first and second order in time. Every dof of a
+  `SecondOrderStepper` state is second order, so a model with `L` first-order and
+  `K` second-order variables would need its own measurement: the same reading
+  would make the divisor `L + 2K` and the factor `sqrt(K/(L + 2K))`, not `1/sqrt 2`.
 - The default algebraic solve: `second_order`'s 43 steps need COMSOL's Jacobian
   reuse, which the library leaves to the caller ([dofs.md](dofs.md)).
 - Whether the interpolated derivative's rule is the same for a state of several

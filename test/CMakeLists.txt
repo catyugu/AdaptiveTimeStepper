@@ -40,6 +40,7 @@ set(ATSTEP_ACCEPTANCE_SOURCES
     acceptance/test_tolerance.cpp
     acceptance/test_session.cpp
     reference/test_comsol_second_order.cpp
+    reference/test_comsol_second_order_k.cpp
     support/main.cpp)
 
 add_executable(atstep_acceptance ${ATSTEP_ACCEPTANCE_SOURCES})
