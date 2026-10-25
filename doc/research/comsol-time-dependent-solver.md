@@ -32,8 +32,8 @@ Last read 2026-10, with the local COMSOL 6.2.0.290 solver readback of 2026-10-23
 
 ## What this file does not establish
 
-- **The automatic scale of a multi-dof tolerance.** `sigma` comes from COMSOL's analysis of the model and is printed per dependent variable, to two digits; the library cannot derive it, so the caller passes it. The branch structure around it is measured in doc/evidence/tolerance-axes.md; `beta`'s argument at `j > 0` on a variable of several dofs is not (Q01 of doc/open-questions.md).
-- **The weighting of a multi-field system.** The field average over dofs is measured and implemented (doc/evidence/field-norm.md, `test_comsol_twofield.cpp`). The second-order error test's divisor, `M = 2`, is measured on one state variable (doc/evidence/second-order.md); whether a state of several variables brings `2K` is Q09 of doc/open-questions.md.
+- **The automatic scale.** `sigma` comes from COMSOL's analysis of the model and is printed per dependent variable, to two digits; the library cannot derive it, so the caller passes it. Everything built on top of it — the three branches, the RMS and the maximum `beta` reads, and that `M` counts dependent variables — is measured in doc/evidence/tolerance-axes.md and doc/evidence/dofs.md.
+- **A state that mixes first and second order in time.** The second-order error test's divisor is `2K` over `K` second-order variables (doc/evidence/second-order.md); a model with `L` first-order variables beside them would need its own measurement.
 - **Generalized-α.** Its step-size sequence, its high-frequency damping (`rho_inf`) and its predictor choices are not stated in the fetched manuals, and the library has no such path, so nothing here constrains one.
 
 ## Sources

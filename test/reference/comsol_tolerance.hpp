@@ -6,7 +6,7 @@
 // time, in the order of `variables` (the field's dofs, then the global
 // equation's). `times` is the stored series of a single-variable model
 // and the first two times of a multi-variable one, whose later decisions
-// carry COMSOL's inexact Newton and are not replayed (Q06).
+// carry COMSOL's inexact Newton and are not replayed.
 // The stored dofs of the export are not a prefix: COMSOL
 // interleaves the two internal reaction-force dofs with the field's (see
 // SOLVED in run_tolerance.py). `scales` is the solver's printed

@@ -259,8 +259,9 @@ matching its algebraic solve strategy; the scalar references do not establish
 equivalence for arbitrary models.
 
 - [Design](doc/design.md): ownership, history and numerical boundaries.
-- [Open questions](doc/open-questions.md): what the library does not know yet about COMSOL, and the measurement that would settle each.
-- [COMSOL alignment](doc/comsol-alignment.md): measured configurations and reproduction.
+- [COMSOL alignment](doc/comsol-alignment.md): the recorded configurations and
+  how to reproduce them; the per-rule records are the
+  [evidence documents](doc/evidence/).
 - [Coupled multiphysics](doc/multiphysics.md): thermoelastic COMSOL comparison and motor example.
 - [Research notes](doc/research/comsol-time-dependent-solver.md): what the COMSOL
   documentation established, and which of those claims the code verifies.

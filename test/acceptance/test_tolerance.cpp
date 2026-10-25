@@ -131,7 +131,7 @@ namespace {
       = data.times.size() > 1 ? data.times[1] - data.times[0] - data.probe : 0.0;
     // The record carries the whole series of a single-variable model and the
     // first two times of a multi-variable one, whose later decisions are
-    // COMSOL's inexact Newton and are not replayed (Q06).
+    // COMSOL's inexact Newton and are not replayed.
     const bool whole_series = stored.size() == data.times.size();
     double worst = 0.0;
     if (whole_series) {
