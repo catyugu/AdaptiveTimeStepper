@@ -6,8 +6,8 @@ on accepted-step counts, rejection counts, stored times, values and
 derivatives. The tests compare actual trajectories, rather than accepting a
 band around the step count. The orders in COMSOL's solver log are printed as
 a diagnostic: the log is sampled on the wall clock, so its rows are not
-reproducible (doc/evidence/stepping-sweep.md, "Why every case forces
-logsampling = 0").
+reproducible (doc/evidence/stepping-sweep.md, "The log is sampled unless told
+otherwise").
 
 ## Evidence and acceptance
 

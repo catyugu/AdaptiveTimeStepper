@@ -20,14 +20,13 @@ namespace atstep {
   inline constexpr int max_levels = max_order + 2;
 
   /// The automatic initial step, as a fraction of the interval that remains
-  /// after the consistent initialization. Measured: 0.1% of what is left, not
-  /// of the span and not of the end time (doc/evidence/stepping-sweep.md, Q05
-  /// and Q02).
+  /// after the consistent initialization: 0.1% of what is left, not of the span
+  /// and not of the end time (doc/evidence/stepping-sweep.md).
   inline constexpr double default_initial_step_fraction = 1e-3;
 
   /// The automatic maximum step, as a fraction of the span: COMSOL's Automatic
   /// constraint, measured as exactly 0.1 of the span
-  /// (doc/evidence/stepping-sweep.md, Q04).
+  /// (doc/evidence/stepping-sweep.md, the automatic maximum step).
   inline constexpr double automatic_max_step_fraction = 0.1;
 
   /// The smallest step a run may be reduced to before it gives up, as a fraction
@@ -190,10 +189,9 @@ namespace atstep {
     Storage storage = Storage::interpolate;
 
     /// COMSOL's "Store every Nth step"; the initial state is step 0 and the
-    /// modulus is anchored on it (doc/evidence/stepping-sweep.md, Q07).
+    /// modulus is anchored on it (doc/evidence/stepping-sweep.md).
     int store_every = 1;
   };
-
 
   /// Reject a setting a run cannot be built from. Each message names the field.
   inline void validate(const Settings& settings)

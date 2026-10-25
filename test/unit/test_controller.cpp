@@ -270,7 +270,7 @@ TEST_CASE("controller: manual stepping ignores the error and follows the "
   // grows towards it: the order 3 starts at a tenth and grows by 1.2. The
   // order the run asks for is the model's own, which the stepper ramps from
   // the first order as the history behind it allows
-  // (doc/evidence/stepping-sweep.md, Q03).
+  // (doc/evidence/stepping-sweep.md, the manual startup curve).
   atstep::detail::StepController controller = started_at(manual_settings(0.25, 3), 0.01, 10.0);
   CHECK(not controller.error_controlled());
   CHECK_NEAR(controller.step_size(), 0.025, 1e-12);
