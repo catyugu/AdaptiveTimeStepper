@@ -389,6 +389,14 @@ norm = sqrt( (1/M) * Σ_{场 j} (1/n_j) * Σ_{i∈j} (e_i / (A_i + R|y_i|))² )
       C++ 侧：test/reference/test_comsol_twofield.cpp，Solve 回调复刻 COMSOL 的 Fully Coupled 策略
 ```
 
+**实测结果（`doc/evidence/field-norm.md`）.** 取数用的是两个各自解析的场，而不是上面 (b) 的热传导：Coefficient
+Form PDE 给 26 或 101 个 DOF，Global Equation 给 1 个 DOF，两场的误差与权重按已知比例设定。答案是**按场平均**，
+三个独立判据都指向它：首步比值实测 1.380133024（按场预测 1.380133117，平铺 4.106137）；场 DOF 从 26 加密到
+101，步序列按场不变（4.6e-16 内）而平铺必变；换一个误差比后两种预测分开 3.3–5.1 倍。保护控制也做了——变量
+scale 必须手工钉成 1，否则 COMSOL 自选 13（26 DOF）/ 25（101 DOF），而 scale 本身就进绝对容差项。落点是
+`tools/comsol/GeFieldNormSweep.java` + `run_twofield.py` + `test/reference/comsol_twofield.hpp`（11 例、682 个
+样本）；C++ 侧的双分母重放不单独做，它随 F02 一起落地——库现在仍是平铺 RMS，还没有可重放的对象。
+
 **风险.** 需要构造"误差只落在小场"的驱动；若两场耦合太强会掩盖差异。备用驱动：给 g 一个 1e-3 量级的快速衰减（g' = -100 g），T 场用极慢的时间常数。
 
 ---
