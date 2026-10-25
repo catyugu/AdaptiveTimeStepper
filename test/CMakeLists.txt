@@ -13,6 +13,8 @@ set(ATSTEP_TEST_SOURCES
     unit/test_norm.cpp
     reference/test_comsol_thermoelastic.cpp
     reference/test_comsol_ode.cpp
+    reference/test_comsol_stepping.cpp
+    reference/test_comsol_twofield.cpp
     support/main.cpp)
 
 add_executable(atstep_tests ${ATSTEP_TEST_SOURCES})
