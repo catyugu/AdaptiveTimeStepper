@@ -17,9 +17,9 @@ It reads time, state and derivative directly through `getPVals`, `getU` and
 the final label `10` may be an interpolated value from a step ending past 10.
 `tools/comsol/run_stepping.py` validates the exports against `exp(-t)` and the
 solver log, then writes `test/reference/comsol_stepping.hpp`; `run_tolerance.py`,
-`run_twofield.py`, `run_thermoelastic.py` and `run_second_order.py` do the same
-for the other four models.
-The 1,336 samples in that file come from COMSOL, not from this library.
+`run_twofield.py`, `run_thermoelastic.py`, `run_second_order.py` and
+`run_dofs.py` do the same for the other five models.
+The 1,231 samples in that file come from COMSOL, not from this library.
 
 The regression checks each stored time, value and derivative, the accepted,
 error-test-failure and failed-solve counts, and the order of every logged step.
@@ -144,6 +144,16 @@ scale the model gives) are in [evidence/tolerance-axes.md](evidence/tolerance-ax
 The kernel implements the special case only: for a state of more than one
 variable, or for a scale the model gives, its first step misses the record by up
 to 9% before the repair; every recorded first step now reproduces (doc/evidence/tolerance-axes.md).
+
+Two readings of that formula are decided on a model whose variables are not one
+dof each ([evidence/dofs.md](evidence/dofs.md)). `M` counts dependent variables,
+not physics interfaces: two global equations in one interface and the same two in
+an interface each are one trajectory to the last bit, while a partition of
+unequal size changes the step count. And `beta`'s argument is the maximum of
+`abs(Y)` over the variable's dofs, not their RMS: the RMS reading agrees with the
+44-sample record of a six-dof field for eleven samples and then leaves it by
+1.9e-3. A variable of six dofs replays over its whole run once the algebraic
+solve is exact, which is what the tolerance sweep's own records could not do.
 
 COMSOL also updates the *magnitude inside* `A_i` from the solution returned to
 the caller, including an interpolated solution. Its relative reference remains

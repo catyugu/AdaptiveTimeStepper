@@ -133,7 +133,11 @@ the state are rejected.
 
 The measured table behind the branches, the evidence that a given scale freezes
 `A_s` and divides the solution, and what the sweep could not settle are in
-[the evidence](doc/evidence/tolerance-axes.md).
+[the evidence](doc/evidence/tolerance-axes.md). That `M` counts dependent
+variables rather than physics interfaces, and that `beta`'s argument is the
+maximum over the variable's dofs rather than their RMS, are measured on a model
+whose variables are not one dof each:
+[the multi-dof evidence](doc/evidence/dofs.md).
 
 ## Settings and output
 
