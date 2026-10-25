@@ -1,17 +1,12 @@
 // COMSOL's second-order equation, replayed against the library.
 //
 // The record is one Global Equation written in the second derivative,
-// `qtt + 0.1*qt + q = 0` with `q(0)=1` and `q'(0)=100`, integrated from 0 to 10.
-// COMSOL adds the velocity to the system its integrator carries and covers both
-// halves in the local error test; the state's derivative is two orders of
-// magnitude above the state, so the two readings of the error test differ by
-// sqrt(2) in the first accepted step and by far more than that in the values
-// that follow (doc/evidence/second-order.md).
-//
-// The case asserts the recorded prefix only. The twentieth accepted step is one
-// borderline decision apart (the library reduces the step by 0.9 where COMSOL
-// keeps its size, both at order 3), which is Q07 of doc/open-questions.md; until
-// that is settled the step count is printed and not checked.
+// `qtt + 0.1*qt + q = 0` with `q(0)=1` and `q'(0)=100`, integrated from 0 to 10
+// with COMSOL's Jacobian rebuilt at every iteration, so the trajectory is the
+// time integration's alone. COMSOL adds the velocity to the system its integrator
+// carries but leaves it out of the local error test: the state's weighted norm
+// enters divided by the two variables the augmented system solves for, and this
+// file measures that the whole run follows.
 #include "atstep/second_order.hpp"
 #include "reference/comsol_second_order.hpp"
 #include "support/check.hpp"
@@ -36,21 +31,13 @@ namespace {
   /// The damping of the recorded equation, `qtt + damping*qt + q = 0`.
   constexpr double damping = 0.1;
 
-  /// The samples the record settles: the state the consistent initialization
-  /// leaves and the seventeen accepted steps after it, up to t = 0.9576. The
-  /// eighteenth is already 3e-4 apart, which is Q07's borderline decision and
-  /// not a difference of rule; started from the record's own state, without the
-  /// probes, the same norm agrees for one step longer
-  /// (doc/evidence/second-order.md).
-  constexpr std::size_t settled_samples = 18;
-
-  /// The agreement on the prefix: the record carries COMSOL's own Newton, and
-  /// the worst difference over the settled samples is 1.1e-6 relative.
-  constexpr double agreement = 1e-5;
+  /// The agreement on every stored time, value and derivative: the replay solves
+  /// exactly, as the record's own run does, and the worst case is 4e-10.
+  constexpr double agreement = 1e-8;
 
 } // namespace
 
-TEST_CASE("comsol second order: the error test covers the velocity")
+TEST_CASE("comsol second order: the error test measures the state alone")
 {
   atstep::Settings settings;
   settings.error.relative = 0.01;
@@ -93,21 +80,32 @@ TEST_CASE("comsol second order: the error test covers the velocity")
   const auto report = stepper.run(std::vector<double> {0.0, 10.0}, hooks);
   const auto& record = comsol_second_order::samples();
 
-  std::printf("COMSOL second order: %zu stored, %zu recorded, %d steps/%d\n",
-    stored.size(), record.size(), report.steps,
-    comsol_second_order::accepted_steps);
+  std::printf("COMSOL second order: %zu stored, %zu recorded, %d steps/%d rejects=%d/%d\n",
+    stored.size(), record.size(), report.steps, comsol_second_order::accepted_steps,
+    report.rejected, comsol_second_order::rejected_steps);
 
-  CHECK(stored.size() >= settled_samples);
-  const std::size_t count = std::min(stored.size(), settled_samples);
+  CHECK_EQ(report.steps, comsol_second_order::accepted_steps);
+  CHECK_EQ(report.rejected, comsol_second_order::rejected_steps);
+  CHECK_EQ(report.failed_solves, comsol_second_order::failed_solves);
+  CHECK_EQ(stored.size(), record.size());
+  if (stored.size() != record.size())
+    return;
 
-  for (std::size_t i = 0; i < count; ++i) {
+  double worst_time = 0.0;
+  double worst_value = 0.0;
+  std::size_t worst_at = 0;
+  for (std::size_t i = 0; i < stored.size(); ++i) {
+    worst_time = std::max(worst_time, std::abs(stored[i].time - record[i].time));
+    const double difference = std::max(std::abs(stored[i].value[0] - record[i].value),
+      std::abs(stored[i].derivative[0] - record[i].derivative));
+    if (difference > worst_value) {
+      worst_value = difference;
+      worst_at = i;
+    }
     CHECK_NEAR(stored[i].time, record[i].time, agreement);
     CHECK_NEAR(stored[i].value[0], record[i].value, agreement);
     CHECK_NEAR(stored[i].derivative[0], record[i].derivative, agreement);
-    if (not check::near(stored[i].time, record[i].time, agreement)) {
-      std::printf("  the first disagreement is sample %zu: %.17g vs %.17g\n", i,
-        stored[i].time, record[i].time);
-      break;
-    }
   }
+  std::printf("  worst |dt| = %.3e  worst |du| = %.3e at sample %zu\n", worst_time,
+    worst_value, worst_at);
 }

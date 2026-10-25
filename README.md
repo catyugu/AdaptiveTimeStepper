@@ -64,8 +64,9 @@ solve's unknown: the caller solves both rows, `cj u - v = -known.value` and
 `K u + (cj M + C) v = -M known.derivative`. The velocity is therefore solved, not
 reconstructed from the displacement — a reconstruction loses its digits as the
 step shrinks, and a tight absolute tolerance on the velocity becomes
-unattainable. The error test measures the pair, each half with its own weight,
-which is what COMSOL does; a norm of the caller's is typed over
+unattainable. The error test measures the state alone, divided by the two
+variables the augmented system solves for (`sqrt(1/2)`), which is what COMSOL
+does; a norm of the caller's is typed over
 `SecondOrderState`. `run` reports the first derivative with every stored value,
 and `start` runs the two initialization probes for a pair and skips them when the
 caller also gives the pair's derivative. See

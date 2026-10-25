@@ -1,13 +1,10 @@
 # The second-order error test
 
 COMSOL solves a second-order equation in time by adding the velocity to the
-system its BDF integrator sees. Whether that velocity joins the local error test
-decides how the library's second-order adapter measures a step. It was recorded
-in COMSOL 6.2.0.290 by `tools/comsol/GeSecondOrder.java`.
-
-## The model and the probe
-
-One global equation written in the second derivative,
+system its BDF integrator sees. What that velocity does to the local error test
+decides how the library's second-order adapter measures a step. It was recorded in
+COMSOL 6.2.0.290 by `tools/comsol/GeSecondOrder.java`, in four runs of the same
+oscillator:
 
 ```text
 qtt + 0.1*qt + q = 0,   q(0) = 1,   q'(0) = 100
@@ -15,94 +12,108 @@ qtt + 0.1*qt + q = 0,   q(0) = 1,   q'(0) = 100
 
 integrated from 0 to 10 with `tout = tsteps`, `maxorder = 5`, `rtol = 0.01`, the
 scaled absolute tolerance at its defaults, and every accepted step in the log.
-The velocity starts two orders of magnitude above the state, so the two readings
-of the error test cannot agree by accident: the derivative's contribution to the
-norm dominates one of them and is absent from the other.
 
-Two controls record the same problem as two explicit global equations
-(`at-b`, `bt+0.1*b+a`), once with COMSOL's automatic scales and once with both
-scales pinned to one.
+| Run                  | how it differs                                              | dofs | steps | samples |
+| -------------------- | ----------------------------------------------------------- | ---- | ----- | ------- |
+| `second_order`       | the second derivative, COMSOL's default algebraic solve     | 1    | 43    | 44      |
+| `second_order_exact` | the same, with the Jacobian rebuilt at every iteration      | 1    | 49    | 50      |
+| `first_order_pair`   | two global equations `at-b`, `bt+0.1*b+a`, automatic scales | 2    | 43    | 44      |
+| `pair_scale1`        | the same pair with both scales pinned to one                | 2    | 57    | 58      |
 
-## What the record shows
+The velocity starts two orders of magnitude above the state, so a reading of the
+error test that covers it and one that does not are far apart by the end of a run,
+and the automatic scales of the pair are printed to two digits while the
+second-order form's one variable has a scale of one, exactly.
 
-| Run                                       | dofs | accepted steps | first step     |
-| ----------------------------------------- | ---- | -------------- | -------------- |
-| second-order form, automatic scale        | 1    | 43             | **8.5009e-05** |
-| explicit pair, automatic scales (56, 100) | 2    | 43             | 4.9556e-04     |
-| explicit pair, scales pinned to (1, 1)    | 2    | 57             | 9.7923e-05     |
+## The reading that reproduces the record
 
-The second-order form reports one dependent variable and one scale, in the log
-and in `getU`: the velocity the integrator carries is not a variable the model
-sees. The explicit pair is not a substitute for it either — with matched scales
-it takes 57 steps where the second-order form takes 43 — so the second-order
-record, not the pair, is the reference.
+The state's weighted norm enters **divided by the two variables the augmented
+system solves for**, and the velocity is not measured at all:
 
-## The reading that reproduces it
+```text
+E = rms(U) / sqrt(2)      rms(U) the weighted RMS of doc/evidence/tolerance-axes.md
+```
 
-The record replays through the library's first-order kernel over the pair
-`(q, v)`, started from the recorded state at the recorded time, with the two
-readings of the norm:
+`M = 2` is the count of dependent variables the augmented system has, and the
+velocity contributes no error to the average, so the state's mean square is
+divided by two and nothing else. Replayed from the model's own initial values,
+with COMSOL's two backward-Euler probes, the exact run reproduces completely:
 
-| Norm over                                                                   | first step      | accepted steps |
-| --------------------------------------------------------------------------- | --------------- | -------------- |
-| the state alone                                                             | 6.0110e-05      | 44             |
-| the state and the velocity, each with its own weight, averaged over the two | **8.50085e-05** | 46             |
+| Reading of the error test                            | samples | steps | first difference                  |
+| ---------------------------------------------------- | ------- | ----- | --------------------------------- |
+| the state alone, over `M = 2`                        | 50 / 50 | 49/49 | —                                 |
+| the state alone, over `M = 1`                        | 1 / 50  | 44/49 | its first step, 8.011e-5          |
+| the state and the velocity, each with its own weight | 20 / 50 | 46/49 | its 21st stored time, `t = 1.967` |
+| the state and the velocity, one variable of two dofs | 1 / 50  | 40/49 | its second stored time            |
+| the velocity weighted with the state's own weight    | 2 / 50  | 44/49 | its third stored time             |
 
-The second reading matches the logged first step to four parts in `10^5`, which
-is the accuracy the automatic initial step has anywhere. Replayed to the end, it
-agrees with the record step for step:
+The library took the third reading until this measurement: it averaged the two
+halves of the pair, which reproduces the *first* step because the velocity's half
+contributes 2e-6 of the mean square there — the automatic first step is
+`0.5 / E(yp)` with `yp = (100, -11)`, and the velocity's own weight makes its term
+negligible. The difference appears where the velocity passes through zero, at
+`t = 1.45`: there its weight is its absolute tolerance, its error is the
+acceleration's, and the reading decides whether the run reduces its step by 0.9
+or keeps it. With the third reading the library reduced at the twentieth
+accepted step, exactly 0.9 times the recorded step, and then followed neither
+record.
 
-| accepted step | recorded time | replay        | difference |
-| ------------- | ------------- | ------------- | ---------- |
-| 1             | 1.0500856e-04 | 1.0500850e-04 | 6e-11      |
-| 6             | 2.7402740e-03 | 2.7402721e-03 | 2e-09      |
-| 13            | 2.6116631e-01 | 2.6116612e-01 | 2e-07      |
-| 19            | 1.6539466e+00 | 1.6539454e+00 | 1.2e-06    |
+## What settled it
 
-The 20th diverges: the record takes a step of 3.4820e-01 where the replay takes
-3.1338e-01, which is the record's step times 0.9000 — the upper bound of the
-library's reduction band. Both runs are at order 3 there, and the nineteen steps
-before it agree to 1.2e-6, so the two are one borderline decision apart, not one
-rule apart. That is Q07 in the plan.
+Three measurements, in the order they were taken:
 
-Started instead from the model's own initial values, so that the two backward-
-Euler probes are part of the replay, the agreement holds for eighteen accepted
-steps (to `t = 0.9576`, worst `1.1e-6` relative); the nineteenth is where the
-same borderline decision lands first. That is the form
-`test/reference/test_comsol_second_order.cpp` takes, and `atstep_acceptance`
-passes it: the adapter measures the pair as of the plan's stage 1.
+1. **Not the algebraic solve.** `second_order_exact` rebuilds the Jacobian at
+   every iteration, so its linear solve is the exact root; its probe offset is the
+   standard `2e-5` s, and its first step `8.50086e-5` s, the same as the default
+   run's to five digits. It takes 49 steps where the default run takes 43, and the
+   library diverged from it at the same nineteenth step, by the same 0.9. The
+   earlier candidate — that COMSOL's default Jacobian reuse carried the divergence
+   — is refuted; the record's own trajectory has to be reproduced.
+2. **Not the order.** The equivalent first-order pair, recorded with
+   `maxorder` pinned to 1, 2, 3 and 5, first leaves the library at `t = 1.54`,
+   `1.57`, `1.52` and `1.52` — the same physical time in every case, where the
+   velocity crosses zero.
+3. **The weights are not the suspect.** A run started at the divergence's own
+   state, `a = 92.9388`, `b = 0.2801`, with both scales pinned to one, has the
+   automatic first step `h1 = 2.8769e-5` s. That step is `0.5 / E(yp)` with
+   `yp = (b, -a - 0.1b)`, so it reads the weight of the near-zero variable out as
+   `W = 3.78e-3`, against `A_k + R abs(b) = 3.80e-3`; a weight of `A_k` alone
+   would give `7.6e-6`.
+
+## The derivative at an interpolated time
+
+One sample of the record is interpolated: the end time, which the last step
+passes. COMSOL reports the *derivative of the dense output* there, not the pair's
+own velocity: the run's last step ends at `10.126`, the recorded `q'(10)` is
+`-47.84868137`, the interpolated velocity half is `-48.42728879` and the
+derivative of the interpolated state is `-47.84868137`. The adapter reported the
+velocity half until this measurement.
 
 ## What this settles
 
-The auxiliary velocity **is** part of the error test, with its own weight: the
-`A_s` and relative parts are read from the velocity's own magnitude, and the
-average is over the two components. A `SecondOrderStepper` that measures the
-state alone takes steps `sqrt(2)` too large on a problem whose velocity is
-large, which is every structural-dynamics problem started from rest with a
-nonzero velocity.
-
-The velocity has to be a *solved* unknown for that measure to be usable. The
-adapter used to condense each step back to the displacement and rebuild the
-velocity as a divided difference; that rebuild is the displacement's round-off
-divided by the step, so a velocity whose weight is its absolute tolerance alone —
-one starting at zero against a nonzero acceleration — asked for steps whose
-velocity cannot be represented, and the run stopped at its smallest step. With
-the pair solved, that same setting is an ordinary tight tolerance: at `rtol =
-1e-8` on the oscillator the run takes 296 steps and holds `1.6e-7` in the
-displacement and `1.1e-7` in the velocity.
-
-Two further facts the same run gives:
-
-- `SecondOrderStepper`'s only `start` runs the two consistent-initialization
-  probes, so a caller replaying a record from its own state cannot skip them.
-  The first-order stepper decides by arity; the second-order one has to as well.
-- COMSOL's `getU` on the second-order form returns the state alone, so a record
-  compares the state, not the pair. The velocity is checked only through the
-  decisions it drives.
+- The error test measures the state alone, over the two variables of the
+  augmented system: `E = rms(U) / sqrt(2)`.
+- An interpolated value's derivative is the dense output's.
+- With both, the whole exact record reproduces: 49 accepted steps, 5 rejections,
+  every stored time to 1.5e-10 and every state and derivative to 7.1e-9.
+- The velocity still has to be a *solved* unknown. The adapter used to condense
+  each step back to the displacement and rebuild the velocity as a divided
+  difference; that rebuild is the displacement's round-off divided by the step, so
+  a velocity whose weight is its absolute tolerance alone — one starting at zero
+  against a nonzero acceleration — asked for steps whose velocity cannot be
+  represented, and the run stopped at its smallest step. With the pair solved,
+  that same setting is an ordinary tight tolerance: at `rtol = 1e-8` on the
+  oscillator the run takes 261 steps and holds `2.4e-7` in the displacement and
+  `2.4e-7` in the velocity.
 
 ## What it does not settle
 
-Q07: the divergence at step 19. The candidate causes are the cadence of the
-velocity's `A_s` (the state it is read from) and the order-3 estimates; telling
-them apart needs a record whose velocity varies slowly relative to the state, or
-the velocity's `A_s` printed by the solver.
+- A state of several variables. The record is one displacement dof, so it says
+  `M = 2` and cannot say whether a state of `K` variables brings `2K` to the
+  average — which would be the same `sqrt(1/2)` — or something else. That is Q09
+  of `doc/open-questions.md`.
+- The default algebraic solve. `second_order` (43 steps) is not the exact solve's
+  trajectory; reproducing it needs COMSOL's Jacobian reuse, which the library
+  leaves to the caller (doc/evidence/dofs.md).
+- Whether the interpolated derivative's rule is the same for a state of several
+  dofs. The library applies it to every dof of the state.

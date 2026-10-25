@@ -46,8 +46,10 @@ namespace atstep {
     /// call.
     std::function<void(const StepRecord&, const State&, const State&)> on_step;
     /// Every stored value: the time, the state, its first derivative, and
-    /// whether the value was interpolated from the steps around it. The states
-    /// are the stepper's own buffers and are only valid during the call.
+    /// whether the value was interpolated from the steps around it. An
+    /// interpolated value's derivative is the dense output's, which is what
+    /// COMSOL reports there. The states are the stepper's own buffers and are
+    /// only valid during the call.
     std::function<void(double, const State&, const State&, bool)> on_store;
   };
 
@@ -70,9 +72,11 @@ namespace atstep {
   /// solved, each unknown comes from the equation that determines it best, and
   /// what accuracy is left over belongs to the caller's solver.
   ///
-  /// The error test covers both halves, each with its own weight, which is what
-  /// makes the steps of a problem whose velocity dwarfs its state the steps
-  /// COMSOL takes (doc/evidence/second-order.md).
+  /// The error test measures the state alone, as COMSOL's does: the velocity is
+  /// carried by the system but left out of the local error, while the average
+  /// over the variables the augmented system solves for still counts it, so the
+  /// state's weighted norm enters divided by `sqrt(2)`
+  /// (doc/evidence/second-order.md).
   ///
   /// The integrator is neither copyable nor movable.
   template <class State>
@@ -100,8 +104,11 @@ namespace atstep {
     SecondOrderStepper(SecondOrderStepper&&) = delete;
     SecondOrderStepper& operator=(SecondOrderStepper&&) = delete;
 
-    /// The norm COMSOL's settings describe: the weighted RMS of each half of the
-    /// pair, averaged over the two. A state must expose its dofs to accept it.
+    /// The norm COMSOL's settings describe: the weighted RMS of the state alone,
+    /// divided by the two variables the augmented system solves for. COMSOL adds
+    /// the velocity to the system its integrator carries but leaves it out of the
+    /// error test, while the average over `M` still counts it, so with `M = 2` the
+    /// state's norm enters as `rms / sqrt(2)`. A state must expose its dofs.
     static Norm default_norm(const ErrorTest& error)
     {
       if constexpr (detail::Indexable<State>) {
@@ -111,11 +118,7 @@ namespace atstep {
                  const Pair& returned,
                  std::size_t accepted_steps) mutable {
           weights.accepted_steps = accepted_steps;
-          const double value
-            = weights(estimate.value, accepted.value, returned.value);
-          const double derivative = weights(
-            estimate.derivative, accepted.derivative, returned.derivative);
-          return std::sqrt(0.5 * (value * value + derivative * derivative));
+          return std::sqrt(0.5) * weights(estimate.value, accepted.value, returned.value);
         };
       }
       else {
@@ -203,8 +206,16 @@ namespace atstep {
           hooks.on_step(record, y.value, y.derivative);
         };
       if (hooks.on_store)
-        inner_hooks.on_store = [&hooks](double time, const Pair& y, bool interpolated) {
-          hooks.on_store(time, y.value, y.derivative, interpolated);
+        inner_hooks.on_store = [this, &hooks](double time, const Pair& y, bool interpolated) {
+          if (not interpolated) {
+            hooks.on_store(time, y.value, y.derivative, false);
+            return;
+          }
+          // An interpolated value's derivative is the dense output's, not the
+          // pair's own velocity there: `u'` of the polynomial that produced the
+          // value is what COMSOL reports (doc/evidence/second-order.md).
+          inner_.interpolate(time, dense_, 1);
+          hooks.on_store(time, y.value, dense_.value, true);
         };
       return inner_.run(output_times, std::move(inner_hooks));
     }

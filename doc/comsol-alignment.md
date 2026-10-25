@@ -213,9 +213,9 @@ variables is validated by the acceptance cases of the tolerance sweep rather
 than by a long trajectory. Nonlinear physics, events and other COMSOL versions
 need their own reference runs. A second-order equation keeps the validated BDF path, through
 the state augmentation COMSOL documents, rather than a separate discretization:
-the pair `(u, u')` is the solve's unknown and the velocity **is** part of the
-error test, measured by a recording that separates the two readings by `sqrt(2)`
-(doc/evidence/second-order.md).
+the pair `(u, u')` is the solve's unknown, and the error test measures the state
+alone divided by the two variables the augmentation adds — the velocity is in the
+system, not in the local error (doc/evidence/second-order.md).
 
 ## Reproduce
 

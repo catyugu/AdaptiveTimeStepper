@@ -4,9 +4,10 @@ import java.io.*;
 
 // The same second-order ODE in COMSOL's two formulations:
 //
-//   second_order      one Global Equation written in qtt: qtt+0.1*qt+q=0
-//   first_order_pair  two Global Equations: at-b=0, bt+0.1*b+a=0
-//   pair_scale1       the pair with both variable scales pinned to one
+//   second_order       one Global Equation written in qtt: qtt+0.1*qt+q=0
+//   second_order_exact the same with its Jacobian rebuilt at every iteration
+//   first_order_pair   two Global Equations: at-b=0, bt+0.1*b+a=0
+//   pair_scale1        the pair with both variable scales pinned to one
 //
 // q(0)=1, q'(0)=100. The derivative is two orders of magnitude above the state,
 // so an error test that covers the auxiliary velocity computes a norm the state
@@ -51,7 +52,8 @@ public class GeSecondOrder {
         return m;
     }
 
-    static void run(String name, boolean secondOrder, boolean unitScale) throws Exception {
+    static void run(String name, boolean secondOrder, boolean unitScale, boolean exact)
+        throws Exception {
         Model m = build(secondOrder);
         if (unitScale) {
             // The pair pinned to the scale the second-order form reports for its
@@ -71,6 +73,13 @@ public class GeSecondOrder {
         f.set("tstepsbdf", "free");
         f.set("atolglobalmethod", "scaled");
         f.set("atolglobalvaluemethod", "factor");
+        if (exact) {
+            // The default Fully Coupled node reuses its Jacobian, so a linear
+            // model's solve stops when the increment is small, not when the
+            // residual is. This case takes the exact root instead.
+            f.feature("fc1").set("jtech", "onevery");
+            f.feature("fc1").set("ntolfact", "1e-8");
+        }
         // Every accepted step in the log, which is where the step sizes and the
         // Tfail counter come from.
         f.feature("aDef").set("logsampling", "0");
@@ -109,7 +118,8 @@ public class GeSecondOrder {
         }
         manifest.println(String.join(",", name, Integer.toString(dofs),
             Integer.toString(t.length), Double.toString(t[0]), Double.toString(t[1]),
-            Double.toString(t[t.length - 1]), "\"" + scales.replace("\"", "\"\"") + "\""));
+            Double.toString(t[t.length - 1]), exact ? "onevery" : "default",
+            "\"" + scales.replace("\"", "\"\"") + "\""));
         manifest.flush();
         ModelUtil.clear();
         System.out.println("CASE_OK " + name + " dofs=" + dofs + " samples=" + t.length
@@ -120,10 +130,11 @@ public class GeSecondOrder {
         directory = args != null && args.length > 1 ? args[1] : "secondorder";
         new File(directory).mkdirs();
         manifest = new PrintWriter(new File(directory, "manifest.csv"));
-        manifest.println("name,dofs,samples,first,second,last,scales");
-        run("second_order", true, false);
-        run("first_order_pair", false, false);
-        run("pair_scale1", false, true);
+        manifest.println("name,dofs,samples,first,second,last,jtech,scales");
+        run("second_order", true, false, false);
+        run("second_order_exact", true, false, true);
+        run("first_order_pair", false, false, false);
+        run("pair_scale1", false, true, false);
         manifest.close();
         System.out.println("ALL_CASES_OK");
     }

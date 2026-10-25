@@ -172,11 +172,11 @@ derivative.
 
 Two consequences of the layering are deliberate:
 
-- The error test covers both halves of the pair, each with its own weight, and
-  the average is over the two. COMSOL's does: one recorded second-order run
-  reproduces its first step and eighteen accepted steps only with the velocity in
-  the norm, and takes a step `sqrt(2)` too large without it
-  (doc/evidence/second-order.md).
+- The error test measures the state alone, divided by the two variables the
+  augmented system solves for (`sqrt(1/2)`): COMSOL carries the velocity in the
+  system but leaves it out of the local error. One recorded run of the exact
+  solve reproduces its whole 49-step trajectory that way, and no reading that
+  puts the velocity in the norm does (doc/evidence/second-order.md).
 - No equation ever carries two derivatives into the kernel, so there is one
   integration path, one order selection and one error estimate. Differencing the
   state levels twice — the classical stencil of version 1.0 — is a
