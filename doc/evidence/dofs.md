@@ -81,9 +81,12 @@ run:
 
 Zero, not small: the two models share one trajectory to the last bit. So `M = 3`
 here, the field and the two global equations, and an interface is not a unit of
-the average. That is also what the solver's own log says: it prints one scale per
-dependent variable, `comp1.u`, `comp1.ODE1`, `comp1.ODE2`, and the count of
-degrees of freedom it reports (`8 (plus 2 internal DOFs)`) is the sum over them.
+the average. The unit is what COMSOL calls a field and the solver calls a
+dependent variable: a vector unknown such as a displacement is one of them with
+several dofs, which is the library's `Variable::dofs`. That is also what the
+solver's own log says: it prints one scale per dependent variable, `comp1.u`,
+`comp1.ODE1`, `comp1.ODE2`, and the count of degrees of freedom it reports
+(`8 (plus 2 internal DOFs)`) is the sum over them.
 
 The second row is the control for the scaled criterion: with a given scale its
 absolute tolerance stays `A_k`, so `scaled` and `unscaled` are the same
