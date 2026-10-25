@@ -240,7 +240,7 @@ namespace atstep {
       // The probe is the initial step of the alternative the run steps in, times
       // the fraction of it the initialization takes. A manual run has no initial
       // step fraction, and is scaled by the library default, as it always was
-      // (doc/refactor-plan.md D26).
+      // (doc/evidence/stepping-sweep.md, the manual startup curve).
       const auto [probe_step, probe_fraction] = std::visit(
         [span](const auto& steps) -> std::pair<double, double> {
           using Alternative = std::decay_t<decltype(steps)>;

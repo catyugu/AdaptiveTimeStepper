@@ -1,845 +1,753 @@
-# AdaptiveTimeStepper 审计与重构计划
+# AdaptiveTimeStepper 审计与重构计划（v2）
 
-> 审计对象：当前工作树 `main@aee93c7`（"Express the mutually exclusive settings as variants"），以及附件《AdaptiveTimeStepper_架构重构方案.md》《AdaptiveTimeStepper_COMSOL_audit.md》（二者审计的是 `113e1d7`，比当前树早一个提交）。
-> 本文只做审计与计划，不含源码修改。所有"实测"均指本次会话在当前树上编译运行的验证程序输出；所有 COMSOL 行为引用均指本次会话抓取的 6.4 官方在线文档，链接见 §1.2。
-
----
-
-## 0. 结论摘要
-
-三条判断，按重要性排序：
-
-1. **数值内核值得保留，但它的"归一化约定"没有被写下来，所以不能碰。** `phi/psi/beta/sigma` 的缩放规律（`prepare()`）与高列的复用方式（`accept()`）既没有推导也没有 IDA 行号引用，`prepare()` 一个函数里滚了 6 个可变标量。它和 COMSOL 21 组轨迹逐步对齐（含每一次换阶决策），这是资产；但正因如此，**任何重构前必须先建立逐位轨迹基线**（§7.1），否则一次"等价改写"就能悄悄改掉轨迹而 1e-8 的判据看不出来。
-
-2. **真正的"过度设计"是配置与误差策略的重复表达，不是模板。** 同一份配置被拷贝 4 次（`stepper.hpp:207`、`controller.hpp:184-191`、`output.hpp:80-84`、`configure_norm()`）；同一个 scaled 容差公式有 4 份文字版本；同一个"默认范数有特权"的特殊化被写了 4 遍（`if constexpr is_same_v` ×2 + `conditional_t` + `inner_norm`）。这些是可以在净化后一次删掉的 200 行，且删掉即等于修掉三个 COMSOL 语义缺口（N01/N02/N06）。
-
-3. **与 COMSOL 的不符不是"少几个开关"，而是三处结构性错位。** (a) 误差范数是平铺 RMS，COMSOL 是"先按场取均方、再按场取均值"；(b) 绝对容差只建模了 Scaled/Unscaled 一根轴，COMSOL 是"Scaled/Unscaled × Factor/Manual + Update 开关 + 导数容差 + 逐变量覆盖"四件事；(c) 一致性初始化被硬编码成"无条件两次 BE"，COMSOL 是 Off/Backward-Euler/On 三态。三者都在误差控制链路上，必须先在类型上表达，再谈数值。
-
-代码量（物理行，本次统计）：
-
-| 部分                               |                行数 | 说明                     |
-| ---------------------------------- | ------------------: | ------------------------ |
-| `include/atstep/*` + `detail/*`    | 2 024（非空 1 826） | 7 个头文件               |
-| `test/`（含 1 401 行生成参考数据） |               3 799 | 单元 + 参考 + 支撑       |
-| `examples/`                        |                 468 | 4 个                     |
-| `doc/` + `README`                  |               1 283 | 5 篇                     |
-| `tools/comsol/`                    |                 502 | Java + Python 数据生产线 |
-
-**判断：库本体 2 千行对"变阶 BDF + 二阶适配"是合理量级；吓人的是 3.8k 测试 + 1.3k 文档 + 2k 库里约 500 行的重复策略表达。** 因此本计划不承诺"总行数下降到 X"，而是给出**可数的删除清单**（§4.5，45 个符号/机制）与**可测的语义收敛**（§6 的验收门）。
+> 审计对象：当前工作树 `refactor/conformance`（M1 配置树重构之后的树，2026-10-25）。
+> 本文**替换** v1 计划（845 行）。v1 的行号、规模数字和若干结论已随代码前进而过时，本文重新计数、重新取证。
+> 本文只做审计与计划，不含源码修改。所有"实测"指本次会话在当前树、本机 COMSOL 6.2.0.290 与 COMSOL 6.4 官方在线文档上的验证；引用随处给出 `文件:行`。
 
 ---
 
-## 1. 审计方法与本次证据
+## 0. 结论
 
-### 1.1 代码侧
+按重要性排序的六条判断：
 
-- 当前树构建通过，`ctest` 5/5 通过（clang-cl 18，Release，Ninja）。
-- 单翻译单元（`examples/heat_equation.cpp`，`#include <atstep/atstep.hpp>` + `std::vector<double>` 状态）编译 0.77 s，预处理后 78 035 行。这是编译成本的基线。
-- 写了 6 个断言验证程序（`.cache/verify.cpp`，不入库）核验本文的每条"实测"：
+1. **库本体不是问题，配置与误差策略的"重复表达"才是。** 库本体 2 092 物理行（其中代码 1 356 行、注释 524 行、空白 212 行）——对一个变阶 BDF + 二阶凝聚适配器是合理量级。真正吓人的是仓库其余部分：测试 6 627 行（其中 4 284 行是生成的参考数据，**2 708 行是待修行为的验收数据、尚无对应测试**）、文档 2 115 行、COMSOL 工具链 1 663 行、CI 861 行。
+
+2. **与 COMSOL 的不符集中在"误差判据"这一条链路上，而且这条链路现在已经被实测钉住。** COMSOL 6.4 的文档公式（本次从官方页面的公式图片中读出）规定：判据是**按场加权的 RMS**；绝对容差有**三根正交轴**（全局方法 Scaled/Unscaled × 变量缩放方法 Automatic/Manual × `Update scaled absolute tolerance`）。库把三根轴压成了一个 `bool scaled` 加一个逐 dof 的 `sigma` 向量。
+
+3. **三根轴的差别已由本机 COMSOL 6.2 受控实测确定**（§1.2）：只有"Automatic 缩放 + `ewtrescale` 开"走缩放容差（有效权重 0.012），其余三格都是 `A_s = A_entered`（0.011），比值恰为 `12/11`。同时测出：**文档里的 `norm(Y)_2` 实为"均方根"而非 2-范数**（网格加密三档上，RMS 读法精确到机器精度，2-范数读法偏 +12%/+34%/+74%）。**库现有的公式被证明正是 COMSOL 规则在"单 dof + σ=1"下的特例**——这既解释了 21 组回归为什么全绿，也说明该格外的一切语义（多 dof、σ≠1、Manual 缩放、`ewtrescale` 关、Manual 绝对容差）库里一条都表达不了。
+
+4. **配置树用错了形状。** COMSOL 自己的模型是"单选组 + 从属字段"（一个下拉框 + 若干依赖它的输入框），不是和类型。库把 `Free`/`Intermediate`/`Strict` 做成三个空结构体的 `variant`，把 `Interpolate`/`Closest`/`Steps` 做成三个空结构体的 `variant`，换来的是一层 `std::visit` 阶梯和 40 行空壳，而非法状态并没有因此不可表达（值的校验仍在运行期）。
+
+5. **真正过时的不是模板，是重复。** 同一份缩放绝对容差公式写在**6 个地方**（`settings.hpp:145`、`detail/state.hpp:68`、`README.md:105`、`doc/comsol-alignment.md:111`、`doc/research/comsol-time-dependent-solver.md:14`、`test/unit/test_norm.cpp:87`）；"初始步是跨度的 0.1%"写在 6 处（而这句本身已被 §1.2 的 (4c) 修正为"初始步比例 × 剩余区间"）；"初始化是两次 BE"写在 7 处。两份已提交的文档还互相矛盾：`doc/research/…:12` 说按场加权"未验证、仓库里没有耦合场算例"，而 `doc/evidence/field-norm.md:293` 说"已实测到 7 位有效数字"——后者是对的，前者写于三变量热弹与双场参考数据入库之前。
+
+6. **有一处 CI 是红的，而且是长期红的。** `.github/workflows/ci.yml:309` 写 `settings.max_order = 2;`，而 `max_order` 已在 M1 配置树重构中从 `Settings` 移到 `AdaptiveSteps`，`consumer` job 自那以后一直编译失败（本次用 `clang++ -fsyntax-only` 复现）。
+
+**因此本计划的可验收目标不是"总行数降到 X"，而是三件可数的事**：(a) 一份可数的删除清单（§5，约 60 项）；(b) 误差判据与 COMSOL 文档公式对齐（§4.2、§6 F01/F02）；(c) 配置模型改成 COMSOL 的形状、并补上**有实测证据**的缺失功能（§6 F03–F06）。
+
+### 规模画像（当前树 → 计划后）
+
+| 部分 | 现在（物理行） | 计划后 | 说明 |
+| --- | ---: | ---: | --- |
+| `include/atstep/**` | 2 092 | ~1 750 | 代码 1 356 → ~1 150；删空壳变体与类型特权 |
+| `test/**` | 6 627 | ~6 000 | 手写 2 343 → ~1 700；生成数据 4 284 行保留（活的 1 576 + 待接的 2 708） |
+| `doc/**` | 2 115 | ~1 400 | 公式与事实各留一处；研究文档并入对齐文档 |
+| `tools/comsol/**` | 1 663 | ~900 | 模型样板去重；算例表数据化 |
+| `examples/**` | 497 | ~400 | 删一个不断言物理量的例子 |
+| `.github` + `cmake` + `CMakeLists.txt` | 861 | ~700 | CI 18 次矩阵运行 → 10 |
+| **合计（跟踪文件）** | **~13 855** | **~11 150** | 缩减全部来自手写代码与文档；生成的验收数据一行不删 |
+
+---
+
+## 1. 本次新增的证据
+
+### 1.1 COMSOL 的判据公式（官方文档，本次取回图片读出）
+
+来源：[6.4 About the Time-Dependent Solver](https://doc.comsol.com/6.4/doc/com.comsol.help.comsol/comsol_ref_solver.36.122.html)（公式在页面里是图片，已下载 `comsol_ref_solver.36.122.07–13.png` 到 `.cache/docs/img64/`）。
+
+**Unscaled 接受判据**（图片 07）：
 
 ```text
-min_order=1..5 全部被 validate() 接受          → COMSOL 只允许 1 或 2
-manual order 5 + max_order 2: validate 不报错，实际取阶 1 1 2 3 4 5
-manual + rtol=1e-12: rejected=0，步长恒 0.1     → 误差测试确已关闭
-interpolate(50.0) 在 t=0.2 处返回 -40.33       → 静默外推，无任何报错
-manual step 3.0 over span 1.0: 一步到 t=3.000006，final_time=3.000006
-StoreMode::steps: accepted=17, stored=18        → 初值计为一次存储
-COMSOL 记录 manual_default 的日志取阶 1→2    → 手动启动确实升阶，D29 的现状与 COMSOL 一致
+( (1/M) * sum_j (1/N_j) * sum_i ( abs(E_i) / (A_us,i + R*abs(U_i)) )^2 )^(1/2) < 1
 ```
 
-### 1.2 COMSOL 侧（本次实际抓取）
+**Scaled 接受判据**（图片 08）：
 
-- [6.4 Time-Dependent Solver](https://doc.comsol.com/6.4/doc/com.comsol.help.comsol/comsol_ref_solver.36.139.html)：`Steps taken by solver` 四选一、`Initial step` 复选框、`Maximum step constraint` Automatic/Constant/Expression、BDF 最大/最小阶（仅自适应）与 `BDF order` 1–5（默认 2，仅手动）、`Initial step fraction`/`Initial step growth rate`（仅手动）、`Time step` 可为标量/时间向量/表达式、`Nonlinear controller`、广义 α 的 `Time step increase delay`/`Amplification for high frequency`/`Predictor`、`Singular mass matrix`、`Consistent initialization` Off/Backward Euler/On + `Fraction of initial step for Backward Euler` + `Safety factor for Backward Euler` + `Rescale after initialization`、`Error estimation` Include/Exclude algebraic、`Times to store` 三选一 + `Store every Nth step`、`Interpolate solution at end time`（Strict 下不提供）、`Method` = BDF / Generalized alpha / Initialization only。
-- [6.4 About the Time-Dependent Solver](https://doc.comsol.com/6.4/doc/com.comsol.help.comsol/comsol_ref_solver.36.122.html)：误差接受判据中出现 "M is the number of fields, and Nj is the number of degrees of freedom in field j"（⇒ 按场加权）；Scaled 绝对容差的自动 scale 使用**因变量的 2-范数与最大范数**、α=1/5、j 为时间步迭代号；"If the solution is smaller than the absolute tolerance, there is no accuracy at all"；二阶 IDA 增广的 "The error test excludes the variable Uv **unless consistent initialization is on**"。
-- [6.4 Time API](https://doc.comsol.com/6.4/doc/com.comsol.help.comsol/comsol_api_solver.51.51.html)：`atolglobal` 1e-3、`atolglobalfactor` 0.1、`atolglobalmethod` scaled、`atolglobalvaluemethod` factor、`ewtrescale` on、`bdforder` 2、`bwinitstepfrac` 1e-3、`bwinitfactor` 20、`consistent` bweuler、`endtimeinterpolation` true、`estrat` include、`incrdelay` 15、`incrdelayactive` off。
+```text
+( (1/M) * sum_j (1/N_j) * sum_i ( abs(E_Y,i) / (A_s,i + R*abs(Y_i)) )^2 )^(1/2) < 1
+```
 
-**未能取得的证据**（如实标注，见 §9）：误差判据与 scaled 容差公式在在线文档里是图片，只有文字描述；`minorder`/`rhoinf`/`maxstepconstraintbdf` 的 API 默认值落在被截断的表格后半段。
+其中 `M` 是场数，`N_j` 是第 j 个场的 dof 数，`Y` 是**缩放后**的解向量。
+
+**缩放绝对容差**（图片 09–13）：
+
+```text
+A_s,i = A_k,i * ( beta_k + norm(Y)_2,k )                       (Automatic 变量缩放)
+beta_k = (1 - exp(-alpha*j)) * norm(Y)_inf,k + exp(-alpha*j)    当 0 < norm(Y)_inf,k < 1
+       = 1                                                     其它情况
+alpha = 1/5,  j = 时间步迭代号
+A_s,i = A_k,i                                                   当变量用 Manual 缩放，或 ewtrescale 关闭
+```
+
+`norm(Y)_2,k` 与 `norm(Y)_inf,k` 是**第 k 个因变量（整个场）**的 2-范数与最大范数（图片 10、11 的下标是 `2,k_i` 与 `inf,k_i`）。
+
+三点结论：
+
+- **判据是按场加权的**，不是平铺 RMS。库现在是平铺（`detail/state.hpp:129` 的 `sqrt(sum / n)`）。
+- **绝对容差是逐场的常量**（`A_s,i` 对同一场的所有 dof 相同），库现在是**逐 dof** 的 `abs(returned_i)` 混合式。
+- **"无缩放"有两条路**（Manual 变量缩放 / `ewtrescale` 关闭），两者都给 `A_s,i = A_k,i`；库一条都没有。
+
+**但文档里的 `norm(Y)_2,k` 并不是通常意义的 2-范数**——这一点只能靠实测确定，见 §1.2。
+
+### 1.2 实测：COMSOL 的三条容差分支与那个 9%
+
+本机 COMSOL 6.2.0.290 直接跑的受控实验（脚本在 `.cache/pde-scale/` 与 `.cache/ge-scale/`，数据在同目录）。模型：`u' + u = 0`（单 dof）或一个 Coefficient Form PDE 场（6/26/101 dof）+ 一个 Global Equation；`[0,10]`、`rtol=0.01`、`factor=0.1`、`maxorder=1`；首步由 `DT·ypnorm <= 1/2` 决定，故首步反解出 `ypnorm`，再反解出该场的绝对容差 `A_s`。
+
+**（1）三条分支的实测值**（单场，σ 为该变量的 scale）：
+
+| 情形 | 实测 `A_s` | 文档 | 库的现状 |
+| --- | --- | --- | --- |
+| 变量缩放 = Manual（scale 1），`ewtrescale=on` | `A_k` | `A_s,i = A_k,i` ✓ | 不可表达 |
+| 变量缩放 = Automatic（σ=2），`ewtrescale=off` | `A_k` | `A_s,i = A_k,i` ✓ | 不可表达 |
+| 变量缩放 = Automatic（σ=2），`ewtrescale=on` | `A_k·(1 + RMS(|Y|))` | `A_k,i·(β + norm(Y)_2,k)` ✓ | 不可表达 |
+
+三行的拟合残差分别为 2.6e-15、1.3e-15、机器精度。
+
+**（2）`norm(Y)_2,k` 实际是"均方根"，不是 2-范数。** 把 6、26、101 dof 三个网格的实测首步与两种读法对比：
+
+| 场 dof | 实测首步 | RMS 读法 | 2-范数读法 | 均值读法 |
+| --- | ---: | ---: | ---: | ---: |
+| 6 | 0.006225600693 | 0.006225600693（rel −1.1e−16） | 0.006983149730（+12%） | 0.006212477883（−0.2%） |
+| 26 | 0.006211697892 | 0.006211697892（−3.3e−16） | 0.008320411900（+34%） | 0.006201602870（−0.16%） |
+| 101 | 0.006209112033 | 0.006209112033（0） | 0.010827457180（+74%） | 0.006199582838（−0.15%） |
+
+RMS 读法在三个网格上都**精确到机器精度**；2-范数读法随 dof 数以 `sqrt(N)` 漂移（+12%/+34%/+74%），被实测排除。因此 COMSOL 的 `norm(Y)_2,k` 等于
+
+```text
+sqrt( (1/N_k) * sum_{i in k} (U_i / sigma_k)^2 )
+```
+
+即**该场缩放后幅度的均方根**，而不是 `sqrt(sum)`。
+
+**（3）原先那个 9% 的差异已被受控实验证实并归因。** `.cache/comsol-tolerance/` 里前一轮的容差轴扫描已经跑过同一模型的 5 个分支（`decay_default`、`decay_scale1`、`decay_scale1_off`、`decay_auto_off`、`decay_scale1_manualatol`，全部 `maxorder=1`，所以原记录里 `maxorder` 5 vs 1 的混淆被消除）：
+
+| 例 | 变量缩放 | `ewtrescale` | 首步 | 有效权重 |
+| --- | --- | --- | ---: | ---: |
+| `decay_default` | Automatic | on | 0.00600001 | 0.01200002 |
+| `decay_scale1` | Manual(1) | on | 0.00550001 | 0.01100002 |
+| `decay_scale1_off` | Manual(1) | off | 0.00550001 | 0.01100002 |
+| `decay_auto_off` | Automatic | off | 0.00550001 | 0.01100002 |
+| `decay_scale1_manualatol` | Manual(1) + 手动 atol | on | 0.00550001 | 0.01100002 |
+
+即：**只有"Automatic 缩放 + `ewtrescale` 开"这一格走缩放容差（0.012），其余三格都是 `A_s = A_k`（0.011）**；比值 `0.00600001/0.00550001 = 1.0909089 = 12/11` 到 8 位。原先靠两份记录推断（两份的 `maxorder` 与模型都不同），现在有了同模型同阶的受控对照。
+
+**（4）库的现有公式正是这条规则在"单 dof + σ=1"下的特例**（可证，也可测）：
+
+```text
+库:      A_i = A_k * ( (2 - e^(-j/5)) * |u_i| + e^(-j/5) * sigma_i )
+本规则:  A_s = A_k * ( beta + RMS(|Y_i|) ),  beta = (1 - e^(-j/5)) * RMS + e^(-j/5)
+```
+
+单 dof 时 `RMS = |u|`，`sigma = 1` → `beta + RMS = (2 - e^(-j/5))*|u| + e^(-j/5)`，两者逐项相同 ✓。这解释了为什么 21 组回归在 1e-8 上全绿：**它们恰好落在"单 dof、σ=1"的格子里**，而该格之外的语义（多 dof、σ≠1、Manual 缩放、`ewtrescale` 关、Manual 绝对容差）库里一条都表达不了。
+
+**（4b）顺带确认了初始化探针的算法。** `g_fast` 例（`u' + 100u = 0`）里，导数条件给出的首步只有 6.0e-5 s，但两次 BE 探针仍各推进 1e-5 s（推进量 2e-5）——即**探针用的是"跨度的 0.1%"这个未受导数条件约束的初始步**，而不是受约束的首步。这与库 `start()` 里的 `probe = span * initial_step_fraction * initialization.fraction` 一致 ✓，也与 COMSOL 文档"一致性的初始化结果强烈依赖所用的初始步"一致 ✓。
+
+**（4c）自动初始步的精确规则被 `rtol=1` 三例钉死了：它是"比例 × 剩余区间"，剩余区间从一致性初始化之后算起。** 库的 `first_step_fraction * span` 少了一次初始化推进的折算（`detail/controller.hpp:210`）：
+
+| 例 | t0, end | 实测首步 | 0.1%×跨度 | 0.1%×end time | **0.1%×(end−初始化后)** |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `rtol1_span10` | 0, 10 | 0.00999998 | 0.01 ✗ | 0.01 ✗ | 0.001×(10−2e-5)=0.00999998 ✓ |
+| `rtol1_span100` | 0, 100 | 0.0999998 | 0.1 ✗ | 0.1 ✗ | 0.001×(100−2e-4)=0.0999998 ✓ |
+| `rtol1_t0_2` | 2, 12 | 0.00999998 | 0.01 ✗ | **0.012 ✗** | 0.001×(12−2.00002)=0.00999998 ✓ |
+
+两条连带修正：
+
+- **COMSOL 文档的"0.1% of the end time"被 `rtol1_t0_2` 证伪**（它给 0.012，实测 0.00999998）；
+- 仓库 `doc/evidence/stepping-sweep.md` 的 Q05 结论"0.1% of the span"只是近似，精确式是"0.1% × 剩余区间"。
+
+**21 组回归看不出这个差**（那里导数条件先夹住首步，比例上限没生效）；**恰恰是 `rtol=1` 这三例把它顶出来**：库跑 `rtol=1` 得 accepted/rejected/failed = 20/0/0（与 COMSOL 一致），但首步差 +2e-8，后续按 2ⁿ 累积（span 100 时 2e-7）。
+
+**（5）库里的两处把 Automatic 分支当成"COMSOL 唯一行为"钉死了**：
+
+- `test/unit/test_stepper.cpp:296`：`CHECK_NEAR(stepper.step_size(), 0.5 / (1.0 / 0.012), 1e-6)`，而它自己的注释 `:292-293` 写的是"权重 `0.01 * (1 + 0.1)`"（= 0.011 → 步长 0.0055），`:294` 还留着工具损坏的注释 `\\texttt0A = R * 0.1 * (1 + 1) = 0.002`。断言与注释互相矛盾，且 0.012 只对 Automatic 分支成立。
+- `test/unit/test_norm.cpp:87-115`：把 scaled 读法写成"Measured against COMSOL"。
+
+**处置**：这两处降级为**关系断言**（首步不大于跨度的 0.1%，且等于 `0.5/‖y'‖`），去掉 0.012 这个魔数；等 F01 落地后由新测试覆盖。
+
+### 1.3 CI 的 `consumer` job 是坏的
+
+`.github/workflows/ci.yml:309`：`settings.max_order = 2;`。`Settings`（`include/atstep/settings.hpp:189-202`）现在只有 `steps / error / initialization / storage` 四个成员，`max_order` 在 `AdaptiveSteps` 里。用 `clang++ -std=c++20 -I include -fsyntax-only` 复现该 consumer 程序：
+
+```text
+main.cpp:8:14: error: no member named 'max_order' in 'atstep::Settings'
+```
+
+改成 `std::get<atstep::AdaptiveSteps>(settings.steps).max_order = 2;` 后编译干净。该 job 自 M1 配置树重构以来一直是红的。
+
+### 1.4 两份生成的参考数据是待修行为的验收数据
+
+`test/reference/comsol_stepping.hpp`（1 975 行，23 例）与 `test/reference/comsol_twofield.hpp`（733 行，11 例）是**本轮要修的那些行为的验收记录**：库还没实现的行为，COMSOL 的正确答案已经录在里面。**本轮已接上消费者**：`test/reference/test_comsol_stepping.cpp` 与 `test/reference/test_comsol_twofield.cpp` 按 [doc/target-api.md](target-api.md) 把它们接进套件，缺哪一项就报哪一项（§7.1）。
+
+因此**两份头留在 `test/reference/` 原处，不移动、不删除**；每一条用例都对应本计划的一个 feature，feature 合合时必须同时接上它：
+
+| 头 | 用例 | 对应的行为修复 | 计划的 feature |
+| --- | --- | --- | --- |
+| `comsol_stepping.hpp` | `maxstep_const_005` | 常数最大步，单位是**绝对秒数**（不是跨度的比例） | F03 / C03 |
+| | `maxstep_expr_sin` | 表达式最大步，求解中求值、取绝对值 | F03 / C05 |
+| | `initstep_002`、`initstep_01` | 指定初始步（`initialstepbdfactive`） | F03 / C06 |
+| | `store_every1`、`store_every3` | 每 N 步存储（初值是第 0 步、取模锚定在它上面） | F03 / C02、Q05 |
+| | `manual_order1/2/3/5`、`manual_order2_frac1e-4/1e-2`、`manual_order2_growth1.5/3`、`manual_order3_growth1.5/3` | 手动启动曲线 `h_k = min(fraction·H·growth^(k-1), H)` 与逐阶默认值 | F06 / C07、S01 |
+| | `auto_span10`、`auto_span100`、`rtol1_*`、`t0_2_span10` | 自动最大步 = 0.1×跨度；自动初始步 = 比例 × **剩余区间**（§1.2 的 (4c)；`rtol1_*` 三例现在会因首步差 2e-8 而红）；`t0 ≠ 0` | 部分已实现，作为回归锁 |
+| | `log_default_sampling` | COMSOL 日志采样（墙钟），只作确定性对照 | 无（不测） |
+| `comsol_twofield.hpp` | `single_a`、`single_b25/100`、`two_equal100`、`two_r25/100`、`two_slow25/100`、`two_r100_order5`、`two_r100_rtol1e3` | **按场加权**的判据与逐场绝对容差 | F02 / E01、E02 |
+| | 同上 | **Manual 变量缩放**分支（§1.2 那 9% 差异的对照） | F01 / E01、Q01 |
+
+两条约束：
+
+- `comsol_stepping.hpp` 的 7/23 例与活的 `comsol_trajectories.hpp` **逐字节重复**（`auto_span10`、`maxstep_const_005`、四个 `manual_order2*` 变体、`store_every1`、`log_default_sampling`）。重复的是**数据**，不是文件：接测试时让新测试复用已有的用例名，不必再存一份。
+- `comsol_twofield.hpp` 是 §1.2 那 9% 差异的**唯一对照记录**，也是唯一一份"Manual 变量缩放"的证据。**不能删**。
+
+**处置**：两份头留在 `test/reference/`；按 feature 分批接测试——F02 接双场重放（§1.5 的目标值 `dt <= 1e-10`），F03/F06 接步进设置扫描。**本轮已完成接入**：两个消费者文件已入库，套件里 8 个用例组按"缺哪项"红灯，其余用例绿（§7.1）。
+
+### 1.5 一个被陈旧构建产物保存下来的目标值
+
+`build/test/atstep_tests.exe`（2026-10-25 03:37，早于源码 12:03）里残留一个当前树已不存在的 `REPLAY` 测试，它用双场记录重放两种分母：
+
+```text
+REPLAY two_r100   reference 56/0/0 n=57 | per-field 56/0/0 n=57 dt=3.48e-11 | flat 37/0/0 n=38 dt=6.12
+REPLAY two_slow100 reference 51/0/0 n=52 | per-field 51/0/0 n=52 dt=5.02e-11 | flat 27/0/0 n=28 dt=7.36
+```
+
+**按场分母与 COMSOL 记录吻合到 3.5e-11；平铺分母（库当前实现）偏差 5–7 个数量级。** 这是 M2 目标值的直接来源：按场实现后，双场重放必须达到 `dt <= 1e-10`。
+
+### 1.6 官方文档核对过的其余 COMSOL 事实
+
+来源：[6.4 Time-Dependent Solver](https://doc.comsol.com/6.4/doc/com.comsol.help.comsol/comsol_ref_solver.36.139.html) 与 [6.4 Time API](https://doc.comsol.com/6.4/doc/com.comsol.help.comsol/comsol_api_solver.51.51.html)（API 默认值逐项核对过）。
+
+| 事实 | 值 / 范围 | 库的现状 |
+| --- | --- | --- |
+| `Steps taken by solver` | Free / Intermediate / Strict / Manual | ✅ 一致 |
+| `Interpolate solution at end time` | 除 Strict 外都有，默认 on | ✅ 一致 |
+| `Minimum BDF order` | 只能防止降到 2 以下，即 1 或 2 | ✅ `settings.hpp:240` 已收窄 |
+| `Maximum BDF order` / `BDF order` | 1–5（手动默认 2） | ✅ |
+| `Initial step` | 复选框 + 绝对值；BDF 自动步 = 初始步比例 × **剩余区间**（从一致性初始化之后算起）且满足 `DT·ypnorm <= 1/2` | ❌ 缺"指定初始步"；❌ 自动步的"剩余区间"语义未实现 |
+| `Maximum step constraint` | Automatic / Constant（绝对标量）/ Expression（求解中求值，取绝对值） | ❌ 库是"跨度的比例"，且无表达式 |
+| `Consistent initialization` | Off / Backward Euler（默认）/ On | ❌ 只有 Backward Euler |
+| `Fraction of initial step for BE` / `Safety factor for BE` / `Rescale after initialization` | 0.001 / 20 / 复选框 | ⚠️ 只有第一个；后两个属调用方的代数终止 |
+| `Error estimation` | Include algebraic（默认）/ Exclude algebraic | ❌ 缺 |
+| `Absolute tolerance` | Global method Scaled/Unscaled × Tolerance method Factor(0.1)/Manual × 逐变量 Method × Derivative tolerance Automatic/Factor | ❌ 只有 Scaled/Unscaled + Factor，Manual 不可表达 |
+| `Update scaled absolute tolerance`（`ewtrescale`） | on（默认）/ off | ❌ 缺 |
+| `Times to store` | 插值 / closest / 每 N 步（`tstepsstore`，默认 1） | ❌ 缺"每 N 步" |
+| 二阶误差测试 | "误差测试排除辅助变量 Uv，除非一致性初始化为 On" | ✅ 与库一致（库永远排除） |
+| 广义 α | 独立方法；`rhoinf`、`predictor`、`incrdelay` | ❌ 未实现（本轮不做） |
 
 ---
 
-## 2. 两份附件文档的审计
+## 2. 代码缺陷清单
 
-### 2.1 成立且应保留的结论
+每条给出：现象 → 证据 → 处置。分组对应 §4 的目标模块。
 
-- 《差异审计》§1–§5 的 40 余条 ID（M/T/N/I/O）分类与优先级**大体准确**，其中 M01–M04、T02–T07、N01–N08、I01–I06、O01–O07 本次均可在代码或 6.4 文档中复核成立。
-- §8"不应制造的差异"五条全部成立，尤其"不应把 `SecondOrderStepper` 当广义 α"与"不应因文档未公开自动最大步长公式而声称 10% 规则已证实错误"。
-- 《架构重构方案》§2 的"1 304 行不构成模板滥用"、§4.1"不要一个可配置通吃的 TimeStepper"、§6"不要在核心库实现方程通用层"、§10 的三档清单，方向正确。
-- 两份文档都正确地指出：**广义 α 必须是新内核，不能是 BDF 的开关**。
+### 2.1 配置（`settings.hpp`）
 
-### 2.2 已过时（当前树已改）
+| ID | 现象与证据 | 处置 |
+| --- | --- | --- |
+| C01 | `Placement = variant<Free, Intermediate, Strict>`（`settings.hpp:60`）三个空结构体只为了各自带一个 `interpolate_end_time`。COMSOL 的模型是"单选组 + 复选框"。 | 删：改为 `enum class Placement` + 一个 bool |
+| C02 | `Storage = variant<Interpolate, Closest, Steps>`（`:180`）三个空结构体，零信息量。 | 删：改为 `enum class Storage` + `int store_every` |
+| C03 | `ConstantMaxStep{fraction}`（`settings.hpp:66`）的单位是**跨度的比例**，COMSOL 的 `maxstepbdf` 是**绝对时间值**。证据三重：(a) 6.4 API 表 `maxstepbdf` = "positive scalar 1e-1, Maximum time step for BDF, when maxstepconstraintbdf is set to const"；(b) 文档页"a fixed maximum time step … a positive scalar value"；(c) 实测 `maxstep_const_005` 在 [0,10] 上最大步 0.0500000000000007 s——0.05 s 是跨度的 0.5%，按比例解释应是 0.5 s（`doc/evidence/stepping-sweep.md:105-108`）。**该缺陷之所以没被 21 组回归发现，是因为同一个量在两处各换算一次、互相抵消**：`GeDecayTransient.java:51` 把比例乘以硬编码的跨度 10 写给 COMSOL，`controller.hpp:194` 又乘以 span，夹具 `comsol_trajectories.hpp:573` 存的正是 0.005，而测试跨度恒为 10（`test_comsol_ode.cpp:153`）。**在当前单位下，调用方无法表达 COMSOL 的这个设置**（跨度未知时无从换算）。 | 改：绝对时间值。连带：Java 算例表的 `maxStep` 列改成存秒并去掉 `10.0 *`，`maxStep != 0.1` 的哨兵改成显式 kind 字段；夹具的 `max_step_fraction` 改名 `max_step_seconds`（两个头）；`controller.hpp` 不再乘 span。**COMSOL 跑出的样本一个不变** |
+| C04 | `UnlimitedMaxStep`（`:71`）在 COMSOL 里没有对应项，是"≤0 表示关闭"这个魔法值的残留。 | 删 |
+| C05 | 缺"表达式最大步"（COMSOL `maxstepconstraintbdf=expr`，求解中求值、取绝对值）。实测数据已在 `doc/evidence/stepping-sweep.md:105-108`。 | 加 |
+| C06 | 缺"指定初始步"（COMSOL `initialstepbdfactive` + `initialstepbdf`）。实测数据已在 `doc/evidence/stepping-sweep.md:130-137`。 | 加 |
+| C13 | 自动初始步用了 `first_step_fraction * span`（`detail/controller.hpp:210`），COMSOL 实测是"比例 × **剩余区间**"（§1.2 的 (4c)）：span 10 差 2e-8、span 100 差 2e-7，且 `rtol=1` 的三例会把它顶出来。21 组回归看不见（那里导数条件先夹住首步）。 | 改：控制器持有 end time 与初始化后的时刻，按剩余区间算 |
+| C07 | `ManualSteps`（`:110-122`）缺 `Initial step fraction` 与 `Initial step growth rate`（COMSOL 按阶各有默认值）。实测公式与逐阶默认值见 `doc/evidence/stepping-sweep.md:179-232`。 | 加 |
+| C08 | `ErrorTest::scaled`（`:134`）一个 bool 同时承担 COMSOL 的**全局方法**（`atolglobalmethod`）、**变量缩放方法**（`scalemethod`）与 **`ewtrescale`** 三件事（§1.1）。 | 拆：见 §4.2 |
+| C09 | `ErrorTest::absolute_factor`（`:140`）使 COMSOL 的 **Manual** 绝对容差（`atolglobalvaluemethod=manual`，API 默认 `atolglobal=1e-3`）不可表达。 | 改：`factor` / `manual` 二选一 |
+| C10 | `ErrorTest::scale`（`:156`）是**逐 dof** 的 σ 向量；COMSOL 的变量 scale 是**逐场**的（`scalemethod`/`scaleval` 是因变量属性）。且库的 σ 与 COMSOL 的 σ 不是同一个量（§1.1）。 | 改：σ 归入"场" |
+| C11 | `validate()`（`:205-274`）70 行拼字符串检查；其中 `min_order`/`max_order`/正性检查与变体形状重复。 | 缩：只留值域检查（约 15 行） |
+| C12 | `Settings::steps` 变体在 `stepper.hpp:244-252`、`controller.hpp:180-199`、`output.hpp:110-117` 三处各写一遍分派（一个 `std::visit`、两个 `get_if`）。 | 改：一次分派，派生标量各自持有 |
 
-| 附件说法                                                                                      | 当前事实                                                                                                        |
-| --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `settings.hpp` 203 行、含 `manual_order`/`scale_absolute_tolerance`/`absolute_scale` 平铺字段 | 262 行，已是 `StepControl = variant<AutomaticStep, ManualStep>` 与 `AbsoluteTolerance = variant<Fixed, Scaled>` |
-| §3.2"第二层：自适应与手动不是同一个结构加开关"待办                                            | 已做（`variant`），但**只做了一半**：阶数范围、初始步、最大步、初始化、存储仍是全局字段                         |
-| §7 阶段 1"用 variant 替代扁平配置"待办                                                        | 部分落地 `aee93c7`，其余见 §5 F01                                                                               |
+### 2.2 误差测试（`detail/state.hpp`）
 
-### 2.3 错误或不成立（本计划修正）
+| ID | 现象与证据 | 处置 |
+| --- | --- | --- |
+| E01 | 平铺 RMS（`state.hpp:129` 的 `sqrt(sum / n)`），COMSOL 是按场加权（§1.1 图片 07/08；实测 `doc/evidence/field-norm.md:293-309` 与本次的网格加密三档；重放值 §1.5）。 | 改：按场 |
+| E02 | 绝对容差是**逐 dof** 的 `abs(returned_i)` 混合（`state.hpp:108-116`），COMSOL 是**逐场**的 `A_s,k`（§1.1 图片 09 + §1.2 实测）。单 dof、σ=1 时两者恰好一致（可证亦可测），多 dof 或 σ≠1 时不一致（实测偏 12%–74%）。 | 改：逐场 |
+| E03 | 只有 Scaled/Unscaled 两态，缺"Manual 变量缩放"与 `ewtrescale=off` 两个都给 `A_s = A_k` 的分支（§1.2 实测差 9%）。 | 加 |
+| E04 | 缺"Exclude algebraic"（COMSOL `estrat`）。 | 加（随 D01 的场划分） |
+| E05 | 缺"逐变量 Method"（COMSOL `atolmethod`，如 "u unscaled v scaled"）。 | 加（随 D01） |
+| E06 | 缺导数容差（COMSOL `atoludot`：Automatic = 1/时间跨度，Factor 默认 1 Hz）。 | P2，本轮不做 |
+| E07 | `WeightedRmsNorm` 的公有数据成员（`state.hpp:75-83`：`relative/absolute/scaled/scale/step_index`）既是配置又是运行期状态；`stepper.hpp:696-704` 用 `if constexpr (is_same_v<Norm, WeightedRmsNorm>)` 特判两次来"配置"它。 | 删：改成"范数上下文"，见 §4.3 |
+| E08 | 自定义范数只拿到 `(error, reference)`，拿不到步号、最后返回值、场划分——所以 scaled 绝对容差对自定义范数不可实现，`if constexpr` 特判是这种设计缺陷的症状。 | 改：上下文含步号、返回值引用、场划分 |
 
-| 附件说法                                                                                                                                                         | 问题                                                                                                                                                                                                     | 本计划的处理                                                                                                              |
-| ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| 《架构重构方案》§3.3 建议 `AbsoluteTolerance = variant<ScaledTolerance, UnscaledTolerance>`，数值来源再来 `variant<FactorOfRtol, ManualAbsolute>`                | **轴选对了，嵌套错了。** Scaled/Unscaled 与 Factor/Manual 是**同时生效的两根正交轴**，不是互斥分支；两层 `variant` 意味着每次范数求值要 `visit` 两次，而 `WeightedRmsNorm` 在整步热路径上被调用 3–4 次。 | 改为：`bool scaled` + `variant<ToleranceFactor, ToleranceValue> absolute` + `bool update_scaled` 三个并列成员（§5 F03）。 |
-| 同上 §3.3"`Initialization = variant<AssumeConsistent, BackwardEulerInitialization, IndexOneInitialization>`；`OutputStorage = variant<...EveryNthAcceptedStep>`" | 这两条正确，采纳。                                                                                                                                                                                       | F04、F07。                                                                                                                |
-| 同上 §4 建议引入 `TolerancePolicy`、`Initialization`、`StepSchedule`、`Session/Driver` 五个"层"                                                                  | 对一个 header-only 库而言是**过度分层**：除 `StepSchedule` 外，其余四者都是 30–80 行的具体类型，套上"层"只会增加跳转而不增加约束。                                                                       | 合并为 3 个具体类型：`ErrorTest`（配置）、`WeightedRms`（策略）、`OutputSchedule`（调度）。不建抽象基类。                 |
-| 《差异审计》N03"`absolute_scale` 是用户输入的每 DOF `sigma_i`，公式用局部 returned_i 混合"                                                                       | 成立但不完整：6.4 原文说自动 scale 来自**因变量的 2-范数与最大范数**（逐变量统计量），不是逐 DOF 的 abs(y_i)；单 DOF 变量下二者退化相同，所以 21 组标量回归**在原理上无法验证**多 DOF 形式。             | 作为 §9 Q01 单独立项，用 E02 取证；在此之前文档不得声称已对齐。                                                           |
-| 《差异审计》§6"已支持且应视为回归保护"含"对二阶方程进行 IDA 风格增广与凝聚"                                                                                      | **证据不足**：`test_second_order.cpp` 只对比解析解与自建的 `Block` 一阶等价系统，**仓库里没有任何二阶模型的 COMSOL 参考数据**（21 组是单变量一阶，热弹是三个一阶变量）。                                 | E09 补二阶 COMSOL 算例；在补上之前 README 不得写"as COMSOL's IDA path does"。                                             |
-| 《架构重构方案》§7 阶段 0"钉住 `main@113e1d7`"                                                                                                                   | 树已前进一格，基线需在当前树上重建。                                                                                                                                                                     | M0 重做基线，且用逐位轨迹而不仅是 1e-8。                                                                                  |
-| 两份文档都建议"保留 `State`/`Norm` 两个模板参数"                                                                                                                 | 成立，但**必须同时废掉默认范数的类型特权**，否则"保留"等于保留 N08 缺陷。                                                                                                                                | F08。                                                                                                                     |
+### 2.3 内核与请求（`stepper.hpp`）
 
----
+| ID | 现象与证据 | 处置 |
+| --- | --- | --- |
+| K01 | `StepRequest::absolute_tolerance_reference()`（`:61-64`）与 `previous()`（`:88-92`）把内部缓冲暴露给调用方，只被测试适配器使用。 | 删 |
+| K02 | `derivative()`（`:80-86`）是 `const` 却写 `derivative_scratch_`；`SecondOrderRequest::derivative`（`second_order.hpp:131-140`）直接取 `step_.derivative_scratch_`（私有，靠 `friend` 打通）。两个头文件通过私有成员耦合。 | 删：别名禁止，scratch 私有化 |
+| K03 | `StepRequest` 的 10 参构造（`:101-112`）携带 6 个内部引用。 | 缩 |
+| K04 | `start()`（`:228-316`）无条件做两次 BE；失败抛 `runtime_error`（`:277-279`）。COMSOL 的一致性初始化是 Off/BE/On 三态（§1.6）。 | 改：三态 |
+| K05 | `start()` 里 `probe` 的三因子乘积（`:244-253`）在代码注释与 `doc/comsol-alignment.md:144-147` 里写法不一致（后者漏了手动分支的 `×1e-3`）。 | 改：单一写法 + 修正文档 |
+| K06 | `advance()`（`:356-360`）完全不看终点，`run()` 靠 `while (time < end_time_)` 收尾但步长本身不截断；调用方没有 `end_time()`，也没有 `finished()`。 | 改：显式终点与完成态 |
+| K07 | `run()` 要求"新鲜 start"（`:371-372` 用 `controller_->steps() != 0` 判），`advance()` 无此限制——两个入口的前置条件不对称。 | 改：统一会话状态 |
+| K08 | 计数器双权威：`report.rejected`（`:567`）与控制器内部的失败计数；`report.max_order`（`:176`）是"用过的最高阶"而非配置上限，零步时也报 1。 | 改：单一来源，`highest_order` |
+| K09 | `accept()`（`:591-618`）一个函数做 5 件事；只缩放 `phi[1..k]`（`:606-608`），`phi[k+1..]` 既不缩放也不清零，无注释无证明。 | 改：拆两步；补注释与测试 |
+| K10 | `prepare()`（`:628-660`）6 个滚动标量与 `psi/beta/sigma` 的归一化没有推导、没有 IDA 出处；`estimate()` 的 `above` 除以 `(order+2)`（`:686`）同样无出处。 | 保留行为 + 补推导与出处 |
+| K11 | `interpolate()`（`:410-436`）接受任意时间并静默外推；`derivative` 是运行期检查的 int 参数。 | 改：区间契约 + 拆两个方法 |
+| K12 | `configure_norm()`（`:694-705`）每接受一步就把配置重新拷进范数（`:616`）；`settings_` 又被 `controller_`、`output_` 各拷一份（`:237`、`:373`）。 | 删：单一配置 + 派生标量 |
+| K13 | `RunReport::max_order`、`SolveOutcome::iterations`、`StepRecord::iterations`、`StepRequest::order` 在全仓库无任何读取点。 | 留 `iterations`（调用方需要），其余复核后删 |
 
-## 3. 代码缺陷清单
+### 2.4 控制器（`detail/controller.hpp`）
 
-每条给出：现象 → 证据 → 处置（删 / 改 / 保留）。分组与 §4 的目标模块对应。
+| ID | 现象与证据 | 处置 |
+| --- | --- | --- |
+| S01 | 手动分支不实现 COMSOL 的启动 ramp（`fraction`/`growth`），`accept()` 在手动分支直接返回（`:270-271`），步长恒为 `manual_step`。COMSOL 的实测公式见 `doc/evidence/stepping-sweep.md:193-221`。 | 加（配置 C07） |
+| S02 | `reject_convergence()` 的 1/4 系数（`:363-367`）无出处；COMSOL 只说"会被减小"。 | 标注出处或改 |
+| S03 | `factor()`（`:251-259`）与 `reject()`（`:338-361`）里的公式在测试里被逐字复述（`test/unit/test_controller.cpp:144-145`、`:166-169`），测试永远不会红。 | 改测试为性质断言 |
+| S04 | `begin_attempt()` 的 `ns_ = min(ns_+1, used_order_+2)`（`:233`）与 `accept()` 里 `order_+1 >= ns_` 的"未稳定"判据无出处。 | 补出处 |
 
-### 3.1 配置与验证（`settings.hpp`）
+### 2.5 输出（`detail/output.hpp`）
 
-| ID  | 现象与证据                                                                                                                                                                                                                                               | 处置                                                             |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| D01 | `min_order` 接受 3–5（`settings.hpp:228` 只校验 `1..max_order`）。实测 3/4/5 全部通过 `validate`。COMSOL 的 Minimum BDF order 只有 1 或 2（6.4："can be used to prevent the solver from decreasing the order below 2"）。                                | 改：收窄为 1–2。                                                 |
-| D02 | `min_order`/`max_order` 是顶层字段，但在手动分支无意义。实测 `ManualStep{0.1,5}` + `max_order=2`：既不报错，`max_order` 也不再被读取；`controller.hpp:215,227` 的 `clamp(...,max_order_)` 在该分支是死逻辑。                                             | 删：字段移入自适应分支。                                         |
-| D03 | `absolute_factor` 顶层（`settings.hpp:136`）+ `AbsoluteTolerance` 变体只编码 Scaled/Unscaled（`:141`）。**Manual 绝对容差不可表达**，Factor 恒在——变体给出的"类型安全"是假象。                                                                           | 删：`AbsoluteTolerance` 换成正交三元组。                         |
-| D04 | 缺 `ewtrescale`（Update scaled absolute tolerance，API 默认 on）。当前实现等价于恒 on，用户无法关。                                                                                                                                                      | 加 `update_scaled`。                                             |
-| D05 | `max_step_fraction <= 0` 表示"无约束"（`settings.hpp:152`、`controller.hpp:197-198`）——魔法值；COMSOL 无此状态（Automatic/Constant/Expression 三选一）；且 `min>max` 的校验被该魔法值短路（`settings.hpp:221-223`）。                                    | 删：改为三态 `MaximumStep`。                                     |
-| D06 | `first_step_fraction` 用**区间长度**（`fraction*span`），而 6.2 手册写 "0.1% of the end time"；`t0≠0` 时二者不同。                                                                                                                                       | 已答：实测是 span（§12.3），保持现状；手册措辞只在 t0=0 时成立。 |
-| D07 | 缺"指定初始步"（COMSOL 的 Initial step 复选框）。                                                                                                                                                                                                        | 加 `SpecifiedInitialStep`。                                      |
-| D08 | 缺 `Maximum step constraint` 的 Constant/Expression（表达式取绝对值、随 t 求值）。                                                                                                                                                                       | 加。                                                             |
-| D09 | `interpolate_end_time` 是全局 bool，对 Strict 也生效（`output.hpp:127-128`）；COMSOL 在 Strict 下**不提供**该选项（默认 on 只对 Free/Intermediate/Manual）。                                                                                             | 改：并入放置方式的分支类型。                                     |
-| D10 | `StoreMode` 无"每 N 步"（O01）。                                                                                                                                                                                                                         | 加 `StepsEvery{n}`。                                             |
-| D11 | 缺一致性初始化三态，`start()` 无条件两次 BE（见 D26）。                                                                                                                                                                                                  | 删/加。                                                          |
-| D12 | 缺导数容差（`atoludot`：Automatic=1/时间跨度，或 Factor 默认 1 Hz）。                                                                                                                                                                                    | 延后（P2）。                                                     |
-| D13 | 缺 `Error estimation` Include/Exclude algebraic（DAE 掩码）。                                                                                                                                                                                            | 加，随 F02。                                                     |
-| D14 | 缺变量/场布局，默认范数只能按裸索引缩放（N04 的库侧部分）。                                                                                                                                                                                              | 加 `Layout`。                                                    |
-| D15 | 同一配置被拷贝 4 次：`stepper.hpp:207`（`settings_`）、`controller.hpp:184-191`（`manual_/min_order_/max_order_/first_step_fraction_/span_`）、`output.hpp:80-84`（`placement_/store_mode_/interpolate_end_time_`）、`stepper.hpp:686-689`（范数三值）。 | 删：单一 config 引用 + 各部件只持有自己的派生标量。              |
-| D16 | `Settings::manual()`（`:165`）与 `placement()`（`:174`）用默认值填补缺失分支，使"哪个分支生效"的判断散落在 4 处（`controller.hpp:185`、`output.hpp:80`、`stepper.hpp:238`、`controller.hpp:63`）。                                                       | 删：一次 `std::visit` 分派。                                     |
-| D17 | `validate()` 65 行顺序检查（`:194-260`）+ `detail::reject_setting` 拼字符串。非法组合本应不可表达。                                                                                                                                                      | 删：类型化后只保留值域检查（约 15 行）。                         |
-| D18 | 同一公式 4 份文字：`settings.hpp:77-81`、`state.hpp:67-71`、`README.md:105`、`doc/comsol-alignment.md:111`。                                                                                                                                             | 删：只留实现处一份，文档链接过去。                               |
-| D19 | `Method = Initialization only` 无对应（M06）。它不是"配置分支"而是**会话动作**；建议以 `initialize()` 提供而非再造一个方法枚举。                                                                                                                         | 见 F04 的可选部分。                                              |
+| ID | 现象与证据 | 处置 |
+| --- | --- | --- |
+| O01 | `Placement{step, optional boundary}`（`:28-31`）的 `boundary` 在 accept **之后**回填 `trial.time`（`stepper.hpp:576-577`），使"接受的步长"与"记录的时间"不再严格一致。 | 删：一步 `snap(from, proposed) -> next_time` |
+| O02 | `4*eps*(abs(a)+abs(b))` 边距写 3 遍（`:90`、`:169`、`:182`）；`landed_` 在回调前更新（`:195`）并带解释性注释——状态模型脆弱的信号。 | 删/改：统一 `snap()` |
+| O03 | `resolve()`（`:98-123`）用 `if constexpr` 把三个变体摊平成两个枚举——这正是"配置树形状错了"的证据。 | 随 C01/C02 一起删 |
+| O04 | `for_each_store()`（`:187-213`）一个函数含 4 类决策（哪些输出、是否插值、steps 模式的终点插值、`landed_`）。 | 改：一函数一问 |
+| O05 | `detail::landing_step()`（`:87-96`）与 `StepSchedule` 零直接测试；"余数小于一步则取一半"分支（`:95`）从未被命中。 | 加测或删 |
 
-### 3.2 请求与求解边界（`stepper.hpp::StepRequest`）
+### 2.6 二阶适配（`second_order.hpp`）
 
-| ID  | 现象与证据                                                                                                                                                                                           | 处置                                        |
-| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
-| D20 | `derivative()` 是 `const` 却写 `static_cast<State&>` 到 `derivative_scratch_`——构造参数里的非 const 引用（`stepper.hpp:79-85,132`），只为支持 `derivative(y,y)` 原地别名（`test_stepper.cpp:137`）。 | 删：`out` 不得与 `y` 别名，去掉 scratch。   |
-| D21 | `friend class SecondOrderRequest` 让适配器直接取 `step_.derivative_scratch_`（`stepper.hpp:97-98`；`second_order.hpp:134`）。两个头文件通过私有成员耦合。                                            | 删。                                        |
-| D22 | `previous()`（`:88`）与 `absolute_tolerance_reference()`（`:60`）只被测试适配器使用（`test_comsol_ode.cpp:74-75`）。它们是"把内部引用掏出来"，而不是语义操作。                                       | 删：换成 `request.error_norm(correction)`。 |
-| D23 | `initializing` 是 bool，无法区分 BE 第一步/第二步，也无法表达 On 的初始化阶段。                                                                                                                      | 改：`Phase` 枚举。                          |
-| D24 | `SolveOutcome` 无法拿到代数终止所用的范数（COMSOL 的 `ntolfact` 语义）。                                                                                                                             | 由 D22 的 `error_norm` 补上。               |
+| ID | 现象与证据 | 处置 |
+| --- | --- | --- |
+| T01 | `Augmented::size()/operator[]`（`:34-42`）把"误差测试只看位移"这一策略藏进容器接口；COMSOL 的规则是"排除辅助速度"（一个掩码）。 | 删：位移范数显式包装 |
+| T02 | `ValueNorm`（`:46-55`）+ `conditional_t`（`:195-197`）+ `inner_norm`（`:301-307`）：三处只为让默认范数"看得见"位移的一半。 | 删 |
+| T03 | `SecondOrderStepper::step_size()/order()`（`:249-256`）无外部调用者。 | 删 |
+| T04 | 二阶路径**没有任何 COMSOL 参考数据**：`test/unit/test_second_order.cpp` 只对解析解与自建的 `Block` 等价系统。仓库宣称"COMSOL's IDA path"却无一条 COMSOL 二阶记录。 | 补 E05（§6 F07） |
+| T05 | `interpolate()`（`:294-298`）用 `dense_` 缓冲只为把 `Augmented` 拆一半。 | 简化 |
 
-### 3.3 内核（`stepper.hpp`）
+### 2.7 文档、测试、工具、CI
 
-| ID  | 现象与证据                                                                                                                                                                                                                                                                              | 处置                                                             |
-| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| D25 | 默认范数特权 × 4：`configure_norm()`（`:681-691`）、`error_norm()`（`:693-699`）、`std::conditional_t`（`second_order.hpp:195-197`）、`inner_norm()`（`second_order.hpp:301-307`）+ `ValueNorm`（`:46-55`）。                                                                           | 删 4 处：改为范数上下文 + 一次 `configure` 检测。                |
-| D26 | `start()`：无条件两次 BE（`:256-270`）、失败抛 `runtime_error`（`:264`）、`probe = (manual? step : span) * first_step_fraction * init_step_fraction`（`:239-240`，两个分数相乘，其中 `first_step_fraction` 在手动分支无意义）、导数写作 `axpy(derivative, cj-1, increment)`（`:279`）。 | 改：三态初始化；导数直接写 `(level2-level1)/probe`。             |
-| D27 | 会话门禁与结束语义：`run` 用 `controller_->steps()!=0` 判"必须新 start"（`:358`）；`run` 内额外 `store()` 初值并计入 `report.stored`（`:370,707`）；`advance()` 完全不看终点（实测 manual 3.0 / span 1.0 一步到 3.000006）。                                                            | 改：显式 `Session` 状态 + `finished()`；`advance` 也在终点截断。 |
-| D28 | 计数器双权威：`report.rejected`（`:554`）与 `controller.rejections_`（`controller.hpp:337,368`，还把收敛失败算进去）；`report.max_order`（`:175`）是"用过的最高阶"而非配置上限，且零步报告也报 1。                                                                                      | 删/改：单一计数来源；`highest_order` + `optional`。              |
-| D29 | `trial.order = min(controller.order(), max(1, steps()))`（`:530`）在手动模式下覆盖固定阶：实测 manual order 5 的实际取阶序列 1 1 2 3 4 5。COMSOL 的手动启动确实升阶（`manual_default` 日志 1→2），只剩 bdforder 3–5 的形状待证（Q03）。                                                 | 保留（COMSOL 的 manual 日志即 1→2）；仅 bdforder 3–5 待证。      |
-| D30 | `accept()`（`:578-605`）一个函数里做 5 件事：rescaling 列、写新列、累积、控制器 accept、更新范数与输出引用、两次翻转 `started_`。                                                                                                                                                       | 改：拆成"提交历史"与"提交报告"两步，保持原地写。                 |
-| D31 | `accept()` 只缩放 `phi[1..k]`，`phi[k+1..]` 既不缩放也不清零（`:593-599`）；运行时若升阶到曾达到过的阶，读取的高列属于**旧步长基准**。无注释、无证明。                                                                                                                                  | 保留行为 + 加注释 + 加测试（先证明现状，再决定）。               |
-| D32 | `prepare()`（`:615-647`）的 6 个滚动标量（`beta/distance/alpha/gamma/alpha0/harmonic`）与 `psi/beta/sigma` 的归一化无推导、无 IDA 出处。`estimate()` 的 `above` 除以 `(order+2)`（`:673`）同样无出处。                                                                                  | 保留行为 + 补推导与出处；禁止顺手"整理"公式。                    |
-| D33 | `interpolate()` 接受任意时间并静默外推（`:397-423`；实测 t=50 处返回 −40.33）；`int derivative` 参数 + 运行期检查。                                                                                                                                                                     | 改：区间契约 + 拆成两个方法。                                    |
-| D34 | `Work` 5 个缓冲 + `History` 2 + 7 列 + `Output` 1 = 15 个 state；`start()` 用 `column=level; axpy(-1)` 两遍写零来"分配并清零"（`:287-291`）。                                                                                                                                           | 保留（这是零分配的基础），但提炼成具名 `resize_like`。           |
-| D35 | `History.phi[0]` 与 `state` 故意分离（`:446-449`），解释只在 `doc/design.md:96`。                                                                                                                                                                                                       | 改：注释就近写清。                                               |
-
-### 3.4 控制器（`detail/controller.hpp`）
-
-| ID  | 现象与证据                                                                                                                                                            | 处置                                          |
-| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| D36 | `reject()` 的手动分支（`:338-341`）是死代码：stepper 只在 `error_controlled()` 时调用 `reject`（`stepper.hpp:550-561`）。                                             | 删。                                          |
-| D37 | 手动步长不受 `largest_/smallest_` 约束（`begin()` `:211-223` 不 clamp `manual_step_`）；`reject_convergence` 的 1/4 系数无证据（`:366-375`；COMSOL 只说"会被减小"）。 | 改，并由 E03 取证。                           |
-| D38 | 诊断 getter `rejections()`/`failures()`/`largest_step()`（`:87-122`）只被测试使用。                                                                                   | 删（改测行为）。                              |
-| D39 | `StepErrors{test, at, below, below2, above}` 与 `order±1` 的算术散落（`:233-246,258-333`），读者要在脑子里做一次命名映射。                                            | 改：`order_k/order_km1/order_km2/order_kp1`。 |
-| D40 | `begin_attempt` 的 `ns_ = min(ns_+1, used_order_+2)`（`:230`）与 `accept` 里 `order_+1 >= ns_` 的"未稳定"判据无出处。                                                 | 保留 + 具名 `settled()` + 出处。              |
-
-### 3.5 输出（`detail/output.hpp`）
-
-| ID  | 现象与证据                                                                                                                                    | 处置                                                |
-| --- | :-------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------------------- |
-| D41 | `Placement::boundary`（`:26-29`）只是为了在 accept **之后**回填 `trial.time`（`stepper.hpp:563-564`）：被接受的步长与记录的时间不再严格一致。 | 删：`place` 直接返回让 `from+step==target` 的步长。 |
-| D42 | `4*eps*(abs(a)+abs(b))` 边距写 3 遍（`:68,70,122,135`）；`landed_`在回调节点前更新（`:148`）并有解释性注释——状态模型脆弱的信号。              | 删/改：统一 `snap()`。                              |
-| D43 | `StepSchedule` 在 `run` 内构造（`stepper.hpp:360`），`start` 已知 span 却不用；清点 3 个配置字段再拷一次。                                    | 改。                                                |
-| D44 | `for_each_store` 同时含 4 类决策（哪些输出、是否插值、`steps` 模式的终点插值、`landed_`）。                                                   | 改：一函数一问。                                    |
-
-### 3.6 二阶适配（`second_order.hpp`）
-
-| ID  | 现象与证据                                                                                                                                                                               | 处置                   |
-| --- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
-| D45 | `Augmented::size()`/`operator[]` 只暴露位移（`:34-42`），把"误差测试只看位移"这一**策略**藏进容器接口；而 COMSOL 是"consistent initialization=On 时才包含辅助速度"。同一机制既过又不足。 | 删：位移范数显式包装。 |
-| D46 | `ValueNorm` + `conditional_t` + `inner_norm`（见 D25）。                                                                                                                                 | 删。                   |
-| D47 | 纯转发 getter `step_size()`/`order()`（`:249-256`）无外部调用者。                                                                                                                        | 删。                   |
-| D48 | `SecondOrderRequest` 持内层 `StepRequest` 引用并借其 scratch（`:147-170`）；`dense_` 缓冲（`:339`）只为把 `Augmented` 拆一半交给调用者。                                                 | 删/改。                |
-| D49 | **二阶路径没有任何 COMSOL 参考数据**（`test_second_order.cpp` 只对解析解与自建 `Block` 等价系统）。                                                                                      | 补 E09。               |
-
-### 3.7 文档、测试与工具
-
-| ID  | 现象与证据                                                                                                      | 处置                                                                |
-| --- | --------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------ |
-| D50 | 公式/不变量在 4 处文档重复（D18）；`doc/research/comsol-time-dependent-solver.md` 412 行几乎全是引文摘录。      | 删/压缩。                                                           |
-| D51 | `test_stepper.cpp` 814 行、21 例，其中 3 例把"外推""原地别名""私有引用"当作契约（`:137,316,722`）。             | 改：外推改成显式契约，别名删除，私有引用改用有副作用的 state 计数。 |
-| D52 | `test_stepper.cpp:287` 有工具损坏的注释：`// \\texttt0A = R * 0.1 * (1 + 1) = 0.002 ...`。                      | 删。                                                                |
-| D53 | `run_decay.py` 硬编码 `len(cases) != 21`、`samples[-1][0] != 10.0`、`< 0.05`（`:36,70-78`）；加算例必须改脚本。 | 改：由 manifest 驱动。                                              |
-| D54 | 空目录 `test/reference/cases/`、`tools/comsol/cases/`（无文件、无 .gitkeep）。                                  | 删。                                                                |
-| D55 | CI 8 个 job × 2 构建类型 + consumer 全量重编（`ci.yml`）。对 2 千行 header-only 库偏重。                        | 精简（非阻塞）。                                                    |
+| ID | 现象与证据 | 处置 |
+| --- | --- | --- |
+| D01 | 缩放绝对容差公式写在 6 处（§0 第 5 条）。 | 留 1 处（`detail/` 的实现处），其余链接过去 |
+| D02 | 两份已提交文档互相矛盾：`doc/research/comsol-time-dependent-solver.md:12`、`:36`（"未验证 / 没有耦合场算例"）vs `doc/evidence/field-norm.md:293-309`（"已实测到 7 位"）。 | 删前者，事实并入 `doc/comsol-alignment.md` |
+| D03 | `doc/research/comsol-time-dependent-solver.md` 的 6 处代码引用已失效（`:17`、`:18`、`:28`、`:29`、`:31`、`:35` 指向不存在的行或已删除的 `ScaledAbsoluteTolerance` 类型）。 | 删（随 D02 并入） |
+| D04 | `doc/comsol-alignment.md:5-6`、`:130` 与 `doc/design.md:244` 仍宣称回归比较"每一行日志阶数"；该断言已于 v1 计划 §12.2 降级为诊断（`test/reference/test_comsol_ode.cpp:196-203`），因为 COMSOL 的日志行是墙钟采样的、不可复现。 | 改正 |
+| D05 | `doc/evidence/stepping-sweep.md:148-152` 断言 `settings.hpp` "仍在重复 0.1% of the end time"——该注释已修。 | 改正 |
+| D06 | `doc/evidence/field-norm.md:14`、`:302` 引用不存在的 `include/atstep/norm.hpp`。 | 改正 |
+| D07 | `doc/refactor-plan.md` 被代码引用两处（`include/atstep/stepper.hpp:243`、`test/reference/test_comsol_ode.cpp:197`）。本文替换后这两处指向的 D26 与 §12.2 已不存在。 | **已在本次修订中改掉**：两处改指 `doc/evidence/stepping-sweep.md` 的对应小节 |
+| D08 | 4 个 Java 模型之间约 120 行是逐字复制（`build()` 18/19 行相同、导出与日志块 9/12 行相同、`num()`/`csv()` 辅助函数相同）；4 个 Python 驱动约 200 行是复制（日志行正则、版本读取、`--header-only` 分派、拒绝覆盖守卫各 3 份）。 | 删：模型族合并 + 驱动共用模块 |
+| D09 | 每个驱动都把算例数、跨度、解析解、控制算例名写死（`run_decay.py:41`、`:76-77`；`run_stepping.py:25`、`:92`；`run_twofield.py:25`、`:187`）。加一个算例就改脚本。 | 改：算例表数据化 |
+| D10 | `run_thermoelastic.py:98-99` 缺另外三个驱动都有的"拒绝覆盖已提交头"守卫。 | 加 |
+| D11 | `GeDecayTransient.java:42-52` 用**算例名**决定 store 模式与手动步长；`:49-52` 把"跨度的比例"当绝对步长传给 COMSOL（`10.0 * maxStep`），而库那边又乘一次 span（`controller.hpp:194`）——**两个换算互相抵消，所以 21 组回归发现不了任何一处的单位错**（C03）。 | 改：算例表参数化，单位改成秒，去掉 `10.0 *`；哨兵 `maxStep != 0.1` 改成显式 kind 字段 |
+| D12 | CI：18 次矩阵运行验一个 header-only 库；`standards` job 与 `linux-gcc` 重复；`consumer` 自成一 job 重装重编。 | 缩：10 次运行、5 个 job |
+| D13 | `examples/vector_state.cpp:103` 只断言 `report.steps > 0`——不断言任何物理量；`:73` 的注释（"一个从零开始的物种"）与 `:83` 的初值 `{1.5, 3.0}` 矛盾。 | 删该例子 |
+| D14 | `test/unit/test_stepper.cpp:296` 与 `test/unit/test_norm.cpp:87-115` 把 Automatic 分支当成 COMSOL 唯一行为（§1.2）。 | 降级为关系断言 |
+| D15 | `test/unit/test_controller.cpp:144-145`、`:166-169` 逐字复述实现公式（§2.4 S03）。 | 改为性质断言 |
+| D16 | 两份生成的验收数据（`comsol_stepping.hpp`、`comsol_twofield.hpp`，共 2 708 行）当前还没有测试消费（§1.4）。 | **保留原位**；按 feature 分批接测试（F02 接双场、F03/F06 接步进设置） |
 
 ---
 
-## 4. 目标架构
+## 3. 目标架构
 
-### 4.1 模块边界（三个具体类型，不建"层"）
+### 3.1 模块边界
 
-| 模块                                                            | 职责                                                                                                                                                                  | 与现状对应                                             |
-| --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| `settings.hpp` → **配置**                                       | `BdfSettings`：`steps`（`variant<AdaptiveSteps,ManualSteps>`）、`error`（`ErrorTest`）、`initialization`（`variant`）、`storage`（`variant`）。所有非法组合不可构造。 | 替换 `Settings`                                        |
-| `stepper.hpp` → **内核 + 会话**                                 | `BdfStepper`：`start/advance/run/finished`、Nordsieck 表、`prepare/estimate/accept`、`StepRequest`、dense output。                                                    | 替换 `TimeStepper`                                     |
-| `detail/controller.hpp` → **BDF 控制律**                        | `AdaptiveControl`（IDAS 规则）与 `ManualControl`（固定步/阶 + 失败减步），二者一个 `variant` 成员（实施时改为单一类型，见 §12.1）。                                   | 拆 `StepController`                                    |
-| `detail/norm.hpp` → **误差策略**（新文件，从 `state.hpp` 拆出） | `ErrorTest`（配置）、`ErrorContext`（每次调用的标量）、`WeightedRms`（默认实现，按场加权）、`Layout`/`Field`。                                                        | 替换 `WeightedRmsNorm` + `configure_norm`/`error_norm` |
-| `detail/state.hpp` → **状态算术**                               | `StateVector` + `axpy` + `std::vector<double>` 支持。只此一件事。                                                                                                     | 保留（删范数）                                         |
-| `detail/output.hpp` → **输出调度**                              | `OutputSchedule`：放置（含终点截断）与存储枚举。                                                                                                                      | 简写 `StepSchedule`                                    |
-| `second_order.hpp` → **二阶适配**                               | `SecondOrderBdfStepper`：`(u,v)` 增广 + 凝聚 + 请求翻译。                                                                                                             | 瘦身                                                   |
-| （新增，M4）`alpha.hpp`                                         | `AlphaStepper`：独立内核，不复用 BDF 的任何权重/历史接口。                                                                                                            | 新增                                                   |
+| 模块 | 职责 | 现状对应 |
+| --- | --- | --- |
+| `settings.hpp` | 配置：一个和类型（自适应 / 手动）+ 其余为"单选组 + 从属字段" | 替换 `Settings` |
+| `stepper.hpp` | 内核 + 会话：`start/advance/run/finished`、`StepRequest`、稠密输出 | 替换 `TimeStepper` |
+| `detail/controller.hpp` | BDF 控制律（IDA 规则），只吃标量 | 保留，瘦身 |
+| `detail/state.hpp` | 状态算术（`StateVector` + `axpy`），**只此一件事** | 保留，范数移出 |
+| `detail/errortest.hpp`（新） | 误差测试：配置、场划分、COMSOL 判据 | 替换 `WeightedRmsNorm` + `configure_norm`/`error_norm` |
+| `detail/output.hpp` | 输出调度：放置与落点 | 简写 `StepSchedule` |
+| `second_order.hpp` | 二阶适配：增广 + 凝聚 + 请求翻译 | 瘦身 |
+| （P1，可整段砍掉）`alpha.hpp` | 广义 α 内核，不复用 BDF 的任何权重/历史接口 | 新增 |
 
-### 4.2 公共接口（全部）
+`detail/errortest.hpp` 单独成文件的理由是它会长大（场划分、三根容差轴、DAE 掩码、逐变量覆盖），不是因为"分层好看"。
+
+### 3.2 配置模型：COMSOL 的形状
+
+COMSOL 的模型是"单选组 + 依赖它的输入框"，不是和类型。库照抄这个形状。
+
+**接口的完整定义在 [doc/target-api.md](target-api.md)**：那里是重写与验收测试共同对准的契约（字段、语义、当前接口的对照表、每个验收用例需要哪一项）。本节只留结论，不再复制声明：
+
+要点：
+
+- **单位规则：COMSOL 的自动启发式是跨度相对的，用户填的数是绝对的。** 自动最大步 = 0.1×跨度（实测）、自动初始步 = 初始步比例 × 剩余区间（实测，§1.2 的 (4c)）；而"Constant 最大步"与"指定初始步"都是绝对时间值。库现在把 Constant 也做成了比例（C03），是这条规则唯一的例外。
+- `Free`/`Intermediate`/`Strict`/`Interpolate`/`Closest`/`Steps` 六个空结构体消失，`Placement`/`Storage` 两个枚举取而代之；`resolve()` 里那层 `if constexpr` 阶梯（`output.hpp:98-123`）随之消失。
+- `MaximumStep` 保留变体（载荷类型确实不同：标量 vs 函数），但补上 `ExpressionMaxStep`，删掉 `UnlimitedMaxStep`。
+- `initial_step` 用 `std::optional<double>` 表示"自动"，不用魔法值 0。
+- 手动启动的 fraction/growth 用 `std::optional<double>` 表示"按阶的 COMSOL 默认值"，库提供 `default_startup_fraction(order)` / `default_startup_growth(order)`（实测值见 `doc/evidence/stepping-sweep.md:179-185`）。
+
+### 3.3 误差测试：按 COMSOL 的公式实现
 
 ```cpp
 namespace atstep {
 
-  // --- 状态定制点 -------------------------------------------------------
-  template <class State> concept StateVector;          // copyable + default-constructible + axpy
-  void axpy(State& y, double a, const State& x);       // y += a*x，唯一的算术
+  /// One dependent variable: its degrees of freedom, COMSOL's scale of it,
+  /// whether it is algebraic, and how COMSOL scales it.
+  struct Field {
+    std::size_t dofs = 0;              // N_j
+    double scale = 1.0;                // COMSOL's scale of the variable
+    bool algebraic = false;            // for COMSOL's "Exclude algebraic"
+    bool automatic_scaling = true;     // COMSOL's "scaling method"
+  };
 
-  // --- 误差测试 ---------------------------------------------------------
-  struct Field { std::size_t begin, end; bool algebraic = false; };
-  struct Layout { std::vector<Field> fields; };        // 空 = 一个场覆盖全体
-  struct ToleranceFactor { double factor = 0.1; };     // A = R * factor
-  struct ToleranceValue  { double value = 1e-3; };     // A = value
+  /// The partition of the state into fields. Empty means one field over
+  /// every degree of freedom.
+  struct Layout {
+    std::vector<Field> fields;
+  };
+
+  /// The absolute tolerance: COMSOL's "Tolerance method".
+  struct AbsoluteTolerance {
+    enum class Kind { factor, manual };
+    Kind kind = Kind::factor;
+    /// The factor of the relative tolerance, or the manual value.
+    double value = 0.1;
+  };
+
   struct ErrorTest {
     double relative = 1e-2;
-    bool scaled = true;                                // COMSOL Global method
-    std::variant<ToleranceFactor, ToleranceValue> absolute = ToleranceFactor {};
-    bool update_scaled = true;                         // COMSOL ewtrescale
+    AbsoluteTolerance absolute {};
+    /// COMSOL's "Global method": scaled or unscaled.
+    bool scaled = true;
+    /// COMSOL's "Update scaled absolute tolerance" (`ewtrescale`).
+    bool update_scaled = true;
+    /// COMSOL's "Error estimation": include or exclude algebraic dofs.
+    bool include_algebraic = true;
     Layout layout {};
-    bool include_algebraic = true;                     // COMSOL estrat
-  };
-  struct ErrorContext { std::size_t accepted_steps = 0; bool initializing = false; };
-
-  template <class Norm, class State> concept ErrorNorm; // f(e, accepted, returned, ctx) -> double
-  struct WeightedRms { void configure(const ErrorTest&); template <class S> double operator()(...) const; };
-
-  // --- 配置 -------------------------------------------------------------
-  struct Free         { bool interpolate_end_time = true; };
-  struct Intermediate { bool interpolate_end_time = true; };
-  struct Strict       { };
-  struct AutomaticInitialStep { };
-  struct SpecifiedInitialStep { double step; };
-  struct AutomaticMaxStep { };
-  struct ConstantMaxStep  { double step; };
-  struct ExpressionMaxStep { std::function<double(double)> step; };
-
-  struct AdaptiveSteps {                              // COMSOL: Free/Intermediate/Strict
-    std::variant<Free, Intermediate, Strict> placement;
-    std::variant<AutomaticInitialStep, SpecifiedInitialStep> initial_step;
-    std::variant<AutomaticMaxStep, ConstantMaxStep, ExpressionMaxStep> max_step;
-    int min_order = 1;                                 // 1..2
-    int max_order = 3;                                 // 1..5
-  };
-  struct ConstantStep { double step; };
-  struct StepSequence { std::vector<double> steps; };
-  struct StepFunction { std::function<double(double)> step; };
-  struct ManualSteps {                                 // COMSOL: Steps taken by solver = Manual
-    std::variant<ConstantStep, StepSequence, StepFunction> step;
-    int order = 2;                                      // 1..5
-    double startup_fraction = 1e-3;                     // Initial step fraction
-    double startup_growth = 2.0;                        // Initial step growth rate
-  };
-  struct BackwardEuler {                               // COMSOL default
-    double fraction = 1e-3;                            // bwinitstepfrac
-    double safety = 20.0;                              // bwinitfactor
-    bool rescale = true;
-  };
-  struct AssumeConsistent { };                         // COMSOL Off
-  struct Interpolate {}; struct Closest {}; struct StepsEvery { int n = 1; };
-
-  struct BdfSettings {
-    std::variant<AdaptiveSteps, ManualSteps> steps;
-    ErrorTest error;
-    std::variant<BackwardEuler, AssumeConsistent> initialization;
-    std::variant<Interpolate, Closest, StepsEvery> storage;
   };
 
-  // --- 一次 run ---------------------------------------------------------
-  struct SolveOutcome { bool converged; int iterations; };
-  struct StepRecord { double time, step; int order, iterations; std::optional<double> error; };
-  template <class State> struct RunHooks { std::function<void(const StepRecord&, const State&)> on_step;
-                                           std::function<void(double, const State&, bool)> on_store; };
-  struct RunReport { int accepted, rejected, failed_solves, stored, highest_order; };
+  /// What a norm may need about the run it is called in.
+  struct ErrorContext {
+    std::size_t accepted_steps = 0;   // j
+    bool initializing = false;
+  };
 
-  template <class State, class Norm = WeightedRms> class BdfStepper;
-  template <class State, class Norm = WeightedRms> class SecondOrderBdfStepper;
-}
+} // namespace atstep
 ```
 
-`StepRequest` 收窄为：
-
-```cpp
-template <class State> class StepRequest {
-public:
-  const double time, step;      // 当前步
-  const int order;
-  const std::size_t step_index;
-  const bool initializing;      // → M2 改为 Phase 枚举
-
-  double derivative_weight() const;              // cj
-  const State& derivative_history() const;       // known
-  void derivative(const State& y, State& out) const;   // out 不得与 y 或任何 request state 别名
-  double error_norm(const State& e) const;       // 用本次 run 的范数：代数终止与误差测试同权
-};
-```
-
-### 4.3 关键机制说明
-
-**范数上下文取代类型特权。** `BdfStepper` 每次估计误差只调用一次 `norm_(correction, accepted_.state, output_.reference, ctx)`。`WeightedRms` 的容忍度与布局通过 `configure(const ErrorTest&)` 注入（一次，在 `start`）；用户范数若有同名成员就被调用，没有就不调用：一处 `if constexpr (requires { norm_.configure(error_test); })`。于是：
-
-- 删除 `configure_norm()`/`error_norm()` 的 2 处 `is_same_v`；
-- 删除 `second_order.hpp` 的 `conditional_t`/`inner_norm`/`ValueNorm`，改为显式 `DisplacementNorm{inner}` 包装（`Augmented` 不再暴露 `size/operator[]`）；
-- 用户范数第一次能拿到 `last_returned`、`step_index`、`initializing` 与场布局（修 N08）；
-- COMSOL 的"输出返回值影响 scaled 绝对容差"这条**已被实测证实**的行为仍在默认范数里，但不再是不可复制的特权。
-
-**按场加权。** 默认范数：
+默认实现按 §1.2 **实测**的规则算（文档公式 + 实测的"均方根"读法）：
 
 ```text
-norm = sqrt( (1/M) * Σ_{场 j} (1/n_j) * Σ_{i∈j} (e_i / (A_i + R|y_i|))² )
+unscaled:  weight_i = A_k,j + R*abs(U_i),        error_i = E_i
+scaled:    Y_i     = U_i / sigma_j
+           A_s,j   = A_k,j * (beta_j + rms_j)   若 update_scaled 且该场自动缩放
+                   = A_k,j                    否则（Manual 缩放，或 ewtrescale 关）
+           rms_j   = sqrt( (1/N_j) * sum_{i in j} Y_i^2 )    实测：不是 2-范数
+           beta_j  = (1 - exp(-j/5)) * rms_j + exp(-j/5)     j = 0 时 beta_j = 1
+           weight_i = A_s,j + R*abs(Y_i),       error_i = E_i / sigma_j
+           判据 = ( (1/M) * sum_j (1/N_j) * sum_i (error_i/weight_i)^2 )^(1/2) < 1
 ```
 
-`M` 为场数、`n_j` 为场内 DOF 数。`Layout` 为空时 `M=1`，与现行平铺 RMS **逐位相同**（因此 21 组标量回归不受影响，可作为重构的硬门）。`exclude_algebraic` 只跳过 `Field::algebraic` 的 DOF。
+`A_k,j` 是"进入的绝对容差"（Factor 时 `R*factor`，Manual 时用户值），**不再乘 scale**——按文档的"缩放变量"约定，误差与相对项都除以 `σ`，绝对容差就是进入的值（§1.2 的三行实测：A_k、A_k、A_k·(1+rms)）。
 
-**会话状态。** `enum class Session { fresh, running, finished }`；`run` 要求 `fresh`，`advance` 从 `fresh` 或 `running` 都可，两者在到达终点后置 `finished` 并允许重复调用 `time()/state()`。`advance` 与 `run` 共用同一条"算下一步时间"的路径（含终点截断与输出时刻落点），因此不再存在"advance 会越过终点"的行为差异。
+**不变性**：单场、单 dof、σ=1 的情况下，上式退化为库现有的
+`A_i = R*factor*((2-exp(-j/5))*abs(returned_i) + exp(-j/5)*sigma_i)`，因此 21 组 COMSOL 回归**逐位不变**——这是 M2 的硬门。
 
-### 4.4 公共接口不新增抽象（明确拒绝）
+**仍未定**（§10 Q01）：`beta_j` 在 `j > 0` 时用的是**最大范数**（文档的 `norm(Y)_inf`）还是**均方根**（实测里两者只在单 dof 时重合）；以及 σ 的来源（COMSOL 从模型分析得出，库只能由调用方给出）。
 
-- 不引入 `IntegrationAlgorithm<T,...>` 基类、虚函数层次、policy 类族。
+### 3.4 请求与范数的边界
+
+- 范数改成"上下文式"：`norm(error, reference, context)`，context 携带步号、最后返回值引用与场划分。删掉 `configure_norm()`/`error_norm()` 的两处 `if constexpr (is_same_v<Norm, WeightedRmsNorm>)` 特判（`stepper.hpp:696`、`:709`），以及 `WeightedRmsNorm` 的公有数据成员。
+- `StepRequest` 收窄到：时间、步长、阶、步号、初始化相位、`derivative_weight()`、`derivative_history()`、`derivative(y, out)`（**out 不得与 y 别名**）、`error_norm(e)`。删 `previous()`、`absolute_tolerance_reference()`、`friend SecondOrderRequest` 与 scratch 的借用。
+- 二阶适配器用"位移范数"显式包装表达"只看位移"，不再借 `Augmented::size/operator[]` 把策略藏进容器接口。
+
+### 3.5 明确不引入的东西
+
+- 不引入积分器基类、虚函数层次、policy 矩阵、plugin。
 - 不引入通用 Nordsieck 引擎或跨方法共享的差分历史。
-- 不引入表达式解析器：`ExpressionMaxStep`/`StepFunction` 收 `std::function<double(double)>`，解析属于模型层。
-- 不引入内置 Newton/AMG/稀疏矩阵；`Solve` 回调边界保留。
-- 不为未实现算法预留空选项；`alpha.hpp` 与 `AlphaSettings` 在 M4 与其数值实现同批提交。
-
-### 4.5 删除清单（45 项）
-
-配置：`StepPlacement`、`AutomaticStep`、`ManualStep`、`StepControl`、`FixedAbsoluteTolerance`、`ScaledAbsoluteTolerance`、`AbsoluteTolerance`、`StoreMode`、`Settings::{min_order,max_order,absolute_factor,first_step_fraction,max_step_fraction,min_step_fraction,init_step_fraction,store_mode,interpolate_end_time}`、`Settings::manual()`、`Settings::placement()`、`detail::reject_setting`。
-
-请求：`StepRequest::{absolute_tolerance_reference,previous,derivative_scratch_}`、`friend SecondOrderRequest`、`StepRequest` 的 10 参构造。
-
-内核：`TimeStepper::configure_norm`、`error_norm`、`Output` 结构、`RunReport::max_order`、`Controller::rejections/failures/error_controlled/largest_step`、`StepController::manual_`、`StepController::reject` 的手动分支、`StepErrors` 的旧命名。
-
-输出：`StepSchedule::Placement`、`boundary`、`landed_`、`landing_step`（并入 `snap`）。
-
-二阶：`Augmented::{size,operator[]}`、`ValueNorm`、`inner_norm`、`SecondOrderStepper::{step_size,order}`、`dense_`。
-
-文档/工具：`doc/research/comsol-time-dependent-solver.md` 的引文堆、三份重复公式、`test/reference/cases/`、`tools/comsol/cases/`。
+- 不引入表达式解析器：最大步表达式收 `std::function<double(double)>`，解析属模型层。
+- 不引入内置 Newton/AMG/稀疏装配。
+- 不为未实现算法预留空选项：广义 α 与其数值实现同批提交，否则整段砍掉。
+- 不追"总行数 < X"：可验收的是 §5 的删除项、每个 feature 的算例通过率、单场默认路径的逐位不变。
 
 ---
 
-## 5. Feature 清单与 COMSOL 回归算例
+## 4. 删除清单（可数，约 60 项）
 
-格式：**目标语义**（含 COMSOL 证据）→ **实现与删除** → **算例雏形**（模型/设置/记录/判据/落点）→ **依赖与风险**。
+**配置**：`Free`、`Intermediate`、`Strict`、`Interpolate`、`Closest`、`Steps`（六个空结构体）、`Placement` 变体、`Storage` 变体、`UnlimitedMaxStep`、`ErrorTest::scaled`（旧语义）、`ErrorTest::absolute_factor`（旧语义）、`ErrorTest::scale`（逐 dof 向量）、`Settings::min_order/max_order/first_step_fraction/max_step_fraction/min_step_fraction/init_step_fraction/store_mode/interpolate_end_time`（旧平铺字段，M1 已删）、`validate()` 的字符串拼装。
+
+**范数与请求**：`WeightedRmsNorm` 的公有数据成员、`configure_norm()`、`error_norm()` 的两处 `if constexpr` 特判、`StepRequest::absolute_tolerance_reference`、`StepRequest::previous`、`StepRequest::derivative_scratch_`、`friend class SecondOrderRequest`、`StepRequest` 的 10 参构造、`Augmented::size`、`Augmented::operator[]`、`ValueNorm`、`conditional_t`（二阶）、`inner_norm`、`SecondOrderStepper::step_size/order`、`dense_`、`StepRequest::order`。
+
+**控制器与输出**：`StepSchedule::Placement`、`boundary`、`landed_`、`landing_step`（并入 `snap`）、`resolve()` 的 `if constexpr` 阶梯、`Mode`/`Store` 内部枚举、`RunReport::max_order`（改名为 `highest_order` 并置 optional）、`StepController` 的诊断 getter（若确无使用者）。
+
+**文档/测试/工具/CI**：缩放容差公式的 5 处副本、"初始步是跨度 0.1%"的 5 处副本、"初始化是两次 BE"的 6 处副本、`doc/research/comsol-time-dependent-solver.md`（并入 `doc/comsol-alignment.md`）、`test_comsol_ode.cpp` 的 `logged_orders` 打印块、`examples/vector_state.cpp`、CI 的 `standards` 与 `consumer` 两个独立 job、CI 的 `windows-clangcl` job、4 个 Java 之间的模型样板、4 个 Python 之间的驱动样板。**生成的两份验收数据一行不删**（§1.4）。
 
 ---
 
-### F01 配置树：方法与步进来源的类型化（P0，M1）
+## 5. 功能清单与 COMSOL 取证
 
-**目标语义.** `Steps taken by solver` 是 COMSOL 的一张三选一 + Manual 的清单；BDF 的 `Maximum/Minimum BDF order` 只在 Free/Intermediate/Strict 下存在，`BDF order`（1–5，默认 2）只在 Manual 下存在；`Interpolate solution at end time` 在 Strict 下不提供。（6.4 Time-Dependent Solver）
+格式：目标语义（含 COMSOL 证据）→ 实现与删除 → 算例（模型/设置/记录/判据/落点）→ 风险。
 
-**实现与删除.** `AdaptiveSteps`/`ManualSteps` + `Free`/`Intermediate`/`Strict` + `AutomaticInitialStep`/`SpecifiedInitialStep` + `AutomaticMaxStep`/`ConstantMaxStep`/`ExpressionMaxStep`。删除 §4.5 配置组全部条目。`validate()` 只剩值域（`min_order∈[1,2]`、`order∈[1,5]`、正步长、单调序列、非空回调）。
+### F01 误差测试的三根容差轴（P0，M1）
 
-**算例.** 复用现有 21 组（映射 1:1）+ 新增负例：
+**目标语义.** COMSOL 的绝对容差是三根正交轴：全局方法（Scaled/Unscaled）、变量缩放方法（Automatic/Manual）、`Update scaled absolute tolerance`（on/off）。三根轴的差别已在 §1.2 **实测**（不是推断）：Automatic + update 是唯一走缩放容差的一格，权重 0.012 对 0.011。Manual 绝对容差（`atolglobalvaluemethod=manual`）当前不可表达。
+
+**实现与删除.** `ErrorTest{relative, absolute{kind,value}, scaled, update_scaled, include_algebraic, layout}`；删 §4 的 `ErrorTest` 旧成员。
+
+**算例 E01（容差轴）。** §1.2 的实验已经跑完，**结论已定**；剩下的工作是把探针变成仓库里的常驻工具与参考数据：
 
 ```text
-编译期负例（static_assert 或 requires 检查）：
-  ManualSteps{}.min_order 不存在；AdaptiveSteps{}.order 不存在；Strict{}.interpolate_end_time 不存在
-运行期负例：
-  min_order=3 拒绝；ManualSteps{order=0/6} 拒绝；StepSequence 非单调拒绝；StepFunction{} 拒绝
-判据：21 组 COMSOL 轨迹逐位不变（见 §7.1）；负例全部在构造/start 处失败，不进入步进热路径
+已有（本次实测）：
+  单 dof（Global Equations，u' + rate*u = 0，rate ∈ {0.1, 0.5, 1, 100}）
+    × {Automatic, Manual(1)} × {ewtrescale on, off} × {factor, manual atol}
+  多 dof（Coefficient Form PDE 场，6 / 26 / 101 dof，初值 1+x 或均匀 1）
+    × {Automatic(σ=2), Manual(1)} × {ewtrescale on, off}
+  记录：t、u、u'、求解器日志（含 "Scales for dependent variables" 与逐步表）
+  判据：首步由 0.5/ypnorm 反解出的 A_s 与 §1.2 的规则逐位一致（<= 1e-12 相对）
+        单 dof 的 Automatic 分支与库现有公式逐位一致（<= 1e-12）
+待补（唯一的缺口）：
+  beta_j 在 j > 0 时用最大范数还是均方根 —— 需要一个多 dof 的多步用例，
+  对比第 2 步起的 A_s；两种读法在 j=0 时不可分辨
+落点：tools/comsol/GeToleranceSweep.java（把本次的两支探针合并进去）
+      + tools/comsol/GePdeScale.java（多 dof 与网格加密）
+      + test/reference/comsol_tolerance.hpp（新，保存上述两组的样本与日志读回）
+      + test/reference/test_comsol_tolerance.cpp（消费它，判据即上面的反解）
 ```
 
-**风险.** 公开 API 一次破坏性变更。只保留一张"1.x → 2.0"迁移表，不保留兼容层。
+**风险.** `beta_j` 的两种读法若在 `j > 0` 给出不同的轨迹，库要选一个并写明；这是 P1 级的偏差，不影响 M2 的其余部分。
 
----
+### F02 按场加权的判据（P0，M2）
 
-### F02 误差范数按场加权 + DAE 掩码（P0，M2）
+**目标语义.** 判据按场加权（P0 §1.1 图片 07/08），实测已定（`doc/evidence/field-norm.md:293-309`），重放目标值已知（§1.5：`dt <= 1e-10`）。
 
-**目标语义.** 判据分母按场平均：`M` 个场、每场 `n_j` 个 DOF，先场内均方再场间平均（6.4 About 原文明确出现 `M` 与 `N_j` 的定义）。`Error estimation: Exclude algebraic` 把代数 DOF 移出范数。默认（无布局）退化为单场平铺 RMS。
+**实现与删除.** `Layout`/`Field` + 两层循环；删平铺 RMS。
 
-**实现与删除.** `Layout`/`Field`、`WeightedRms` 两层循环、`ErrorTest::{layout,include_algebraic}`。删除 `WeightedRmsNorm` 的公共数据成员与三参重载（改为 `configure` + 四参调用）。
-
-**算例 E01（场加权）.**
+**算例 E02（按场加权）.** 复用双场扫（`GeFieldNormSweep.java` + `run_twofield.py` 已存在，11 例）：
 
 ```text
-模型：Geometry 单方形，两个物理场
-      (a) Global Equations: g + gt = 0，g(0)=1          → 1 个 DOF
-      (b) Heat Transfer（或 Coefficient Form PDE）: 均匀初值 T0，绝热边界，无源
-          → 网格取 100 个 DOF（2D，二阶单元 5×5 或 1D 100 个单元）
-设置：BDF，maxorder=5，rtol=1e-2，默认 Scaled/Factor/Update-on，
-      tlist = range(0,0.05,2)，tout = tlist
-记录：逐步 (t, h, order)、error-test 拒绝数、失败解数、每步的 COMSOL 对数
-判据：库的两种分母（平铺 vs 按场）分别重放，只有一种能重现 COMSOL 的 h/order/拒绝序列
-      （两者理论上差 sqrt(n/2)/… 量级，不可能同时命中）
-反例保护：若 (b) 场误差恒为 0，则按场与平铺的差别仍体现在分母上，
-      必须确认两种分母给出的步长序列确实不同（先做敏感性检查，再判定）
-落点：tools/comsol/TwoFieldTransient.java（新）+ run_twofield.py + test/reference/comsol_twofield.hpp
-      C++ 侧：test/reference/test_comsol_twofield.cpp，Solve 回调复刻 COMSOL 的 Fully Coupled 策略
+判据：库按场分母重放 two_r100 / two_slow100 / two_r25 / two_r100_order5
+      → 接受步数、拒绝数、样本数与 COMSOL 记录完全相同，时间序列相对差 <= 1e-10
+      平铺分母必须给出明显不同的结果（作为反例保护，步数 37 vs 56）
+落点：新增 test/reference/test_comsol_twofield.cpp，消费已有的
+      test/reference/comsol_twofield.hpp（11 例），做上面的重放
 ```
 
-**实测结果（`doc/evidence/field-norm.md`）.** 取数用的是两个各自解析的场，而不是上面 (b) 的热传导：Coefficient
-Form PDE 给 26 或 101 个 DOF，Global Equation 给 1 个 DOF，两场的误差与权重按已知比例设定。答案是**按场平均**，
-三个独立判据都指向它：首步比值实测 1.380133024（按场预测 1.380133117，平铺 4.106137）；场 DOF 从 26 加密到
-101，步序列按场不变（4.6e-16 内）而平铺必变；换一个误差比后两种预测分开 3.3–5.1 倍。保护控制也做了——变量
-scale 必须手工钉成 1，否则 COMSOL 自选 13（26 DOF）/ 25（101 DOF），而 scale 本身就进绝对容差项。落点是
-`tools/comsol/GeFieldNormSweep.java` + `run_twofield.py` + `test/reference/comsol_twofield.hpp`（11 例、682 个
-样本）；C++ 侧的双分母重放不单独做，它随 F02 一起落地——库现在仍是平铺 RMS，还没有可重放的对象。
+**风险.** 单场路径必须逐位不变（硬门）。多场路径在库里首次可用，无 COMSOL 轨迹可回归之外的其它约束。
 
-**风险.** 需要构造"误差只落在小场"的驱动；若两场耦合太强会掩盖差异。备用驱动：给 g 一个 1e-3 量级的快速衰减（g' = -100 g），T 场用极慢的时间常数。
+### F03 配置形状改造（P0，M2）
 
----
+**目标语义.** §3.2 的形状；补齐"指定初始步""表达式最大步""每 N 步存储""手动启动 fraction/growth"，四者都有实测底料（`doc/evidence/stepping-sweep.md`）。
 
-### F03 绝对容差：三根轴 + Update 开关（P0，M2）
+**实现与删除.** §4 的配置删除项 + 新字段。
 
-**目标语义.** （6.4 Time-Dependent Solver + API）`Scaled|Unscaled` × `Factor|Manual` 两根正交轴 + `Update scaled absolute tolerance`（默认 on，API `ewtrescale`）；`Factor` 时 `A = R*factor`，`Manual` 时 `A` 为用户值；`Scaled` 时乘上逐变量 scale。`Unscaled + Manual` 与 `Scaled + Manual` 都是合法组合。
-
-**实现与删除.** `ErrorTest{relative, scaled, absolute, update_scaled}`。删除 `AbsoluteTolerance` 变体（现轴选错）与顶层的 `absolute_factor`。逐变量覆盖（`atol`/`atolmethod`）与导数容差（`atoludot`）**本轮不做**：新的 `ErrorContext` + 自定义范数已可表达；等有需求再加内置表，避免为 P2 功能造配置体系。
-
-**算例 E02（容差轴）.**
+**算例 E03（配置形状）.** 直接消费 `test/reference/comsol_stepping.hpp` 里现在还没有用例的那几组（该头留在原处，F03 落地时接上测试）：
 
 ```text
-模型：1D 场，5 个单元，初值 T(x)=1+x（与 E01 的 (b) 同族但网格更粗，使各 DOF 量级不同）
-设置（6 个 case）：
-  (1) scaled + factor 0.1 + update on      （默认）
-  (2) scaled + factor 0.1 + update off     （ewtrescale off）
-  (3) scaled + manual 1e-4 + update on
-  (4) unscaled + factor 0.1
-  (5) unscaled + manual 1e-4
-  (6) 同 (1) 但 tspan = [2,12]（E02b：初始步用 end time 还是 span）
-参数：BDF，maxorder=5，rtol=1e-2，tout=tsteps
-记录：前 15 个接受步的 h、order、每步误差范数（COMSOL 日志里打印的 error 列）、拒绝数
-判据：(2)/(3)/(4)/(5) 的 h 序列互不相同且都能被库的对应配置重现；
-      (1) 的前 10 步相对差 < 1e-12；
-      E02b 用来在 `0.1%*end` 与 `0.1%*span` 之间二选一（当前实现是 span）
-落点：tools/comsol/GeDecayTransient.java 增 case（单 DOF 只能测 Factor/Manual 与 update）
-      + tools/comsol/FieldTransient.java（1D 场，测 Scaled 的多 DOF 形式，见 Q01）
+(a) maxstepconstraintbdf=expr, 0.05*(1+0.5 sin t) → 库用 ExpressionMaxStep，h 序列逐位一致
+(b) initialstepbdfactive=on, initialstepbdf=0.02 → 库用 initial_step=0.02
+(c) tstepsstore=3 → 库用 storage=steps, store_every=3，样本索引序列一致
+(d) bdforder=3/5 + initialstepfractionbdf-3/5 + initialstepgrowthratebdf-3/5
+    → 库用 startup_fraction/startup_growth，h 序列逐位一致
 ```
 
-**风险.** 多 DOF 的自动 scale 公式（`||U||₂` 与 `||U||∞` 如何进入，见 Q01）在在线文档里是图片。若 E02 无法唯一确定，则库只承诺"Factor/Manual × Scaled/Unscaled × Update"四轴语义，**不承诺**与 COMSOL 的多 DOF 自动 scale 数值一致，并在 README 明写。
-
----
-
-### F04 一致性初始化 Off / Backward Euler / On（P0，M2）
-
-**目标语义.** `consistent` 默认 `bweuler`：一个"初始步的 0.1%"的人造 BE 步（`bwinitstepfrac`），代数终止用 `bwinitfactor`（默认 20）作安全因子，可选 `Rescale after initialization`；`off` 不动初始值；`on` 面向 index-1 的一致性求解。仓库的既有证据（COMSOL 轨迹的前两个样本）显示**实际发生两次** 1e-5 的 BE 步，且 t=0 存储的是初始化后的状态 —— 这是"实测压过文档措辞"的地方，必须钉住。
-
-**实现与删除.** `variant<BackwardEuler, AssumeConsistent>`；`start(t0,y0,end)` 用于 BE，`start(t0,y0,yp0,end)` 用于 Off（Off 不提供导数就无法构造 `phi[1]`，必须由调用者给）。删除 `start()` 里"手动×first_step_fraction×init_step_fraction"的乘积语义与 `init_step_fraction` 字段。`Initialization only`（M06）不新增方法枚举：`start()` 之后不调用 `advance/run` 即是"仅初始化"，`time()/state()/interpolate_derivative()` 已能读出初始化结果；文档写明这一等价关系即可。
-
-**算例 E05（初始化三态 + DAE 掩码）.**
+**单位改造的连带清单**（C03，不改任何 COMSOL 跑出来的数）：
 
 ```text
-模型：Global Equations 两变量，index-1 DAE
-      u + ut - v = 0        （微分）
-      v - u^2 = 0           （代数约束）
-      初值 u=1, v=0（与约束不一致，v 应为 1）
-设置：
-  (a) consistent=off       → v 保持 0，首步代数残差非零
-  (b) consistent=bweuler, bwinitstepfrac=1e-3, bwinitfactor=20 → v 被拉向 1
-  (c) consistent=bweuler 且 bwinitstepfrac=1e-5        → 拉动的程度不同
-  (d) consistent=on        → 识别 u 微分 / v 代数
-  (e) 在 (b) 上叠加 estrat=exclude，看拒绝数与 h 序列
-记录：t=0 存储的 (u,v)、初始导数、前 10 步 (h, order)、拒绝数、失败解数
-判据：(a) 状态与初值逐位相同；(b)(c)(d) 的首个存储样本与 COMSOL 差 < 1e-10，
-      且 h/order 序列一致；(e) 只在"代数 DOF 的误差是否计数"上产生差异
-落点：tools/comsol/DaeInitTransient.java（新）+ run_dae.py + reference/comsol_dae.hpp
+tools/comsol/GeDecayTransient.java  算例表的 maxStep 列改成存秒；删掉 10.0 *；
+                                     "0.1 表示自动"的哨兵改成显式 kind 字段
+test/reference/comsol_trajectories.hpp   max_step_fraction → max_step_seconds（0.005 → 0.05）
+test/reference/comsol_stepping.hpp        不改：它已经存绝对值（max_step_value = "0.05"）
+test/reference/test_comsol_ode.cpp:115    ConstantMaxStep {reference.max_step_seconds}
+include/atstep/detail/controller.hpp:194  不再乘 span
 ```
 
-**风险.** `On` 需要微分/代数划分与质量矩阵结构。库侧只接受调用者声明的 `Layout`（对应 COMSOL 的 "Singular mass matrix: Maybe/Yes" 检测结果）；若调用者未声明却选了 `On`，在 `start` 处明确拒绝——不静默退化。
+**风险.** 公开 API 一次破坏性变更；只留一张 2.0 迁移表，不保留兼容层。
+
+### F04 一致性初始化 Off / BE / On（P1，M3）
+
+**目标语义.** COMSOL `consistent` = off / bweuler（默认）/ on；`bwinitstepfrac` = 0.001；`bwinitfactor` = 20（代数终止，属调用方）；`Rescale after initialization`（属调用方）。
+
+**实现与删除.** `variant<BackwardEuler, AssumeConsistent>`；`start(t0, y0, end)` 用于 BE，`start(t0, y0, yp0, end)` 用于 Off（Off 不改初值，调用方必须给初导数，否则无法构造 `phi[1]`）。
+
+**算例 E04（初始化三态）.** Global Equations 两变量 index-1 DAE（`u + ut - v = 0`、`v - u^2 = 0`，初值不一致），三态各一例 + `bwinitstepfrac` 两档。
+
+**风险.** `On` 需要微分/代数划分，属模型层；库只接受调用者声明的 `Layout`。未声明却选 `On` → 在 `start` 处明确拒绝，不静默退化。
+
+### F05 二阶路径的 COMSOL 依据（P1，M3）
+
+**目标语义.** COMSOL 的 IDA 路径：二阶方程内部增广出速度、凝聚回原规模；**误差测试排除辅助速度，除非一致性初始化为 On**。
+
+**实现与删除.** 位移范数显式包装；删 `Augmented::size/operator[]`、`ValueNorm`、`conditional_t`、`inner_norm`、转发 getter、`dense_`。
+
+**算例 E05（二阶 COMSOL 记录）.** 单自由度质量-弹簧-阻尼，`u'' + 0.1 u' + u = 0`，`u(0)=1, u'(0)=0`，[0,5]；Solid Mechanics 强制 BDF（并断言 `getString("timemethod") == "bdf"`），或 Global Equations 写成一阶方程组。记录逐步 (t, h, order) 与每个存储样本的 (u, u')。
+
+**风险.** 若 Solid Mechanics 默认走广义 α，必须显式改 BDF 并在脚本里断言，否则测的是别的方法。
+
+### F06 手动启动曲线（P1，M2）
+
+**目标语义.** `h_k = min(fraction * H * growth^(k-1), H)`，逐阶默认 fraction/growth = 1/1.5、1/1.5、0.1/1.2、0.01/1.15、0.001/1.1（实测，`doc/evidence/stepping-sweep.md:179-185`）。
+
+**实现与删除.** `ManualSteps::startup_fraction/startup_growth`（`optional`，未设=按阶默认）；控制器在手动分支实现 ramp，不再"步长恒定"。
+
+**算例.** 直接用 `test/reference/comsol_stepping.hpp` 的 `manual_order3/5` 与四个 fraction/growth 变体（10 例，全部已有实测）。
+
+### F07 会话状态与终点（P1，M2）
+
+**目标语义.** 一个 run 只有一个权威状态：`fresh → running → finished`。`advance()` 与 `run()` 共用同一条"算下一步时间"的路径，都不得越过终点；`end_time()` 与 `finished()` 是公开的。
+
+**实现与删除.** `enum class Session`；删 `run` 的"必须新 start"判据；`advance` 增加终点截断。
+
+**算例.** 现有 21 组轨迹 + 两条新增：`advance` 驱动的循环与 `run` 驱动的循环在同一模型上给出逐位相同的样本序列。
+
+### F08 广义 α（P2，可整段砍掉）
+
+**目标语义.** ρ∞∈[0,1]、Predictor Linear/Constant、`Time step increase delay`、按变量检测一阶/二阶。
+
+**为什么必须是新内核.** BDF 的请求语义是"`y' = cj*y + known`，与阶无关"；广义 α 的语义是"在某个阶段上，`u`、`v`、`a` 各是关于 `u_{n+1}` 的仿射式"。共用 `derivative_weight()` 会把方法假设泄漏到方法无关层。
+
+**建议.** 独立里程碑；是唯一允许整段砍掉的功能。COMSOL 的广义 α 误差估计器未公开，第一层判据（二阶收敛率、ρ∞=0 时最高频一步衰减、ρ∞=1 时无人工阻尼）必须过；第二层（逐步 h 序列一致）做不到时 README 只写 "COMSOL-style generalized-alpha"。
+
+### F09 事件与重初始化（P2，不在本轮）
+
+**目标语义.** 显式事件、隐式事件（`eventtol` 默认 0.01，Krawczyk + 二分 + 简化 Newton）、事件后重建历史。**结论：本轮不做**，但 F04/F07 的会话状态设计必须预留"从当前层重建历史"的内部函数。
 
 ---
 
-### F05 手动 BDF 的完整语义（P0，M2）
-
-**目标语义.** Manual 覆盖每步的局部误差估计（6.4 原文 "overrides the local error estimation made in each time step"），但仍受代数终止与失败减步影响（"the requested time step will be reduced if the algebraic solver does not converge"）。启动阶段：`Initial step fraction` × `Initial step growth rate` 让步长从"第一步的一部分"指数增长到目标步长，**默认值取决于所选 BDF 阶**；`Time step` 可为标量 / 时间向量 / 表达式。
-
-**实现与删除.** `ManualSteps{step(variant), order, startup_fraction, startup_growth}`；`ManualControl` 只负责"固定步/阶 + 失败减步"。删除：`StepController::reject` 的手动死分支、`manual_` optional、`begin_attempt` 在手动分支的 clamp。
-
-**算例 E03（手动启动曲线）.**
-
-```text
-模型：Global Equations，u + ut = 0，u(0)=1，[0,10]
-设置：tstepsbdf=manual；bdforder ∈ {1,2,3,5}；timestepbdf=0.1；
-      Initial step fraction ∈ {默认, 1e-4, 1e-2}；Initial step growth rate ∈ {默认, 1.5, 3}
-      （API 属性名先用 feature.properties() 读回，不猜）
-记录：前 20 个接受步的 (t, h, order)、rejected、failed、t=0 存储值
-判据：h 序列相对差 < 1e-12；order 序列完全一致
-      —— 这一条同时回答 Q03："手动启动是否也升阶"（当前实现取阶 1,1,2,3,4,5）
-落点：tools/comsol/GeDecayTransient.java 增 case + manifest 增字段
-```
-
-**风险.** 已记录的 `manual_default` 日志给出 1→2 的升阶，说明手动启动确实升阶，当前实现的方向正确；E03 只需回答 bdforder 3–5 时升阶的形状（几阶、几步）与启动曲线系数（Q03）。
-
----
-
-### F06 初始步与最大步（P1，M2）
-
-**目标语义.** BDF 自动初始步："less than 0.1% of the end time but also fulfills `DT·ypnorm ≤ 1/2`"；可手动指定。最大步约束三选一：Automatic（求解器内部决定，公式未公开）、Constant（进入求解器前求值的正标量）、Expression（求解期间求值，取绝对值）。
-
-**实现与删除.** `initial_step`、`max_step` 三态。删除 `first_step_fraction`/`max_step_fraction` 与"`≤0` 表示关闭"。
-
-**算例 E04（最大步与初始步）.**
-
-```text
-模型：Global Equations 衰减，[0,10] 与 [0,100] 两个 span，以及 t0∈{0,2}
-设置：
-  (a) maxstepconstraintbdf=automatic（默认）       → 反推是否 0.1*span / 0.1*end
-  (b) const, maxstepbdf=0.05                       → 库用 Constant{0.05}
-  (c) expression, maxstepbdf="0.05*(1+0.5*sin(t))" → 库用 Expression{...}
-  (d) Initial step 复选框，填 0.02（属性名读回）  → 库用 SpecifiedInitialStep{0.02}
-  (e) t0=2,end=12，automatic 初始步                → 区分 end 与 span（E02b 合入）
-记录：第一步大小、前 20 步 h、步数
-判据：(d)(e) 的首次步长差 < 1e-12；(b)(c) 的 h 序列一致；
-      (a) 若三个 span/t0 组合都符合 0.1*span，则把"Automatic"实现为 0.1*span，
-      否则把 Automatic 实现为"未公开规则"并在 README 明确"不等价于 COMSOL 的 Automatic"
-落点：GeDecayTransient.java 增 case
-```
-
-**风险.** Automatic 可能不可复现（Q04）。此时库的 `AutomaticMaxStep` 保留为"本库规则"，文档不得声称等价，并且**必须**让用户能选 `Constant` 精确复现 COMSOL —— 这也是把 `≤0 关闭` 换成三态的实际收益。
-
----
-
-### F07 输出调度：三模式 + 每 N 步 + Strict 不插值终点（P1，M2）
-
-**目标语义.** `Times to store` = Output times by interpolation / Steps taken by solver closest to output times / Steps taken by solver（可 `Store every Nth step`，默认 1）；`Interpolate solution at end time` 默认 on，Strict 下不提供。
-
-**实现与删除.** `variant<Interpolate, Closest, StepsEvery>`；`free`/`intermediate` 的分支各自携带能否插值终点；删除 `StoreMode`/`interpolate_end_time`/`boundary`/`landed_`/`landing_step`，落点逻辑统一为 `snap(from, proposed_time) -> next_time`（`step = next_time - from`，精确落在输出时刻，不再回填 `trial.time`）。
-
-**算例 E08（存储模式与第 N 步）.**
-
-```text
-模型：Global Equations 衰减，[0,10]，rtol=1e-2
-设置：
-  (a) tout=tsteps，第 N 步字段=1（属性名读回）→ 应与现行 37 步用例一致（初值算第 0 步）
-  (b) tout=tsteps，第 N 步字段=3            → 只存 0, 3, 6, ... 步
-  (c) tout=tlist                → 输出时刻全存
-  (d) tout=tstepsclosest        → 每个输出时刻取"已越过该时刻的第一个步"
-  (e) strict + endtimeinterpolation 尝试设置 → 期望 COMSOL 忽略/不提供
-记录：样本数、每个样本的 t、相邻样本跨越的步数
-判据：(b) 的样本索引序列完全一致；(d) 与 (a) 的差异模式一致；(e) 证明该组合不存在
-落点：GeDecayTransient.java 增 case（第 N 步字段）+ 现有 store 两例
-```
-
-**风险.** "初值是否算第 0 步、从而被 Nth 规则命中"必须由 (b) 定；当前实现是"初值总存"。
-
----
-
-### F08 请求收窄与范数上下文（P0，M1，纯内部）
-
-**目标语义.** 请求只暴露求解需要的东西；误差与代数终止用**同一个**加权范数（COMSOL 的非线性终止就是用同一个权重，`ntolfact`/`bwinitfactor` 都是它的倍数），且该范数对自定义实现同样可用。
-
-**实现与删除.** `request.error_norm(e)`；`out` 不得与 `y` 别名；删 D20–D22。范数签名四参 + `configure` 检测（见 §4.3）。
-
-**算例（无新 COMSOL 数据，用现有 21 组做硬门）.**
-
-```text
-把 test_comsol_ode.cpp 的 ComsolDecaySolve 从
-    norm(correction, request.previous(), request.absolute_tolerance_reference())
-改为
-    request.error_norm(correction)
-判据：21 组轨迹逐位不变（rejected / failed_solves / 每步 order / 每个样本 1e-8）
-理由：request.step_index == controller.steps() 在求解时刻恒等，
-      configure 后的范数与测试里现搭的范数同参，替换是严格等价的；
-      若有任何一位不同，说明范数的上下文值有偏差，必须查清而不是调阈值
-```
-
----
-
-### F09 二阶适配瘦身 + 速度的条件性误差权重（P1，M3）
-
-**目标语义.** COMSOL 的 IDA 路径：二阶方程内部增广出速度、线性化系统凝聚回原规模；**误差测试排除辅助速度，除非 consistent initialization = On**（此时微分速度变量进入误差测试）。
-
-**实现与删除.** `DisplacementNorm{inner}` 显式包装；删除 `Augmented::{size,operator[]}`、`ValueNorm`、`conditional_norm`、`inner_norm`、`step_size/order` 转发、`dense_`（改为适配器持有一个 `Augmented` 供 `interpolate` 写入后取 `.value`，或让 `interpolate` 直接写 `u` 并另给 `velocity(t)`）。`On` 时把速度块加入 `Layout` 的场划分。
-
-**算例 E09（二阶 BDF 的 COMSOL 参考）.**
-
-```text
-模型：单自由度质量-弹簧-阻尼，u'' + 0.1 u' + u = 0，u(0)=1，u'(0)=0，[0,5]
-      实现方式二选一并记录所选：1D Solid Mechanics（需强制 method=BDF, maxorder=2/5）
-      或 Global Equations 写成一阶方程组（后者退化为 F01–F07 的已有路径）
-设置：(a) BDF, maxorder=2；(b) BDF, maxorder=5；(c) 同上 + consistent=on
-记录：逐步 (t, h, order)、u 与 u' 的每个存储样本、rejected、failed
-判据：库的凝聚路径与 COMSOL 的增广路径在 (a)(b) 上：步数相等、t/h 相对差 < 1e-10、
-      u/u' 差 < 1e-8；(c) 用来判定速度是否进入误差测试（与 (b) 的 h 序列对比）
-落点：tools/comsol/SecondOrderTransient.java（新）+ run_second_order.py + reference/comsol_second_order.hpp
-```
-
-**风险.** 若 COMSOL 的 Solid Mechanics 默认用广义 α，必须显式改成 BDF 并核对 `getString("timemethod")`；否则算例测的是别的方法。这一点写进脚本的断言里。
-
----
-
-### F10 广义 α 内核（P1，M4，可整段砍掉）
-
-**目标语义.** ρ∞∈[0,1] 控制高频阻尼（1 = 无阻尼、等价中点法则；0 = 一步消灭最高频）；`Predictor` = Linear/Constant；自适应/手动；`Time step increase delay`（整数步，0 等价关闭，API 默认 15 且默认关闭）；**按变量检测一阶/二阶并各用正确公式**；需要 Fully Coupled/Segregated（即模型自己提供残差/雅可比）。
-
-**为什么必须是新内核.** BDF 的请求语义是"`y' = cj y + known`，与阶无关"；广义 α 的语义是"在 `t_{n+1-α_f}` 的某个阶段上，`u`、`v`、`a` 各是一个关于未知量 `u_{n+1}` 的仿射式，系数由 α_m/α_f/β/γ 决定"。共用 `derivative_weight()` 会把方法假设泄漏到方法无关层。
-
-**接口雏形（与 BDF 平行、不共用）.**
-
-```cpp
-template <class State> class AlphaRequest {
-public:
-  const double time;        // t_{n+1-alpha_f}
-  const double step;
-  const int stage;
-  const bool initializing;
-  double weight(int derivative, int block) const;      // d(stage_x)/d(u_{n+1})
-  const State& history(int derivative, int block) const;
-  void stage_value(int derivative, int block, const State& u, State& out) const;
-};
-```
-
-调用者按块装配 `F(u) = Σ_blocks [M a(u) + C v(u) + K u_stage(u)] - f(t)`，其中每个量都是 `weight*u + history`；这与 BDF 请求是同一种"仿射装配"思路，但权重/历史按导数阶与块查询，不做状态增广。
-
-**算例 E06（广义 α）.**
-
-```text
-模型：
-  (a) 一阶：Global Equations u' + u = 0
-  (b) 二阶：E09 的单自由度振子（无阻尼与 0.1 阻尼两组）
-  (c) 混合：振子 + 一个热方程（一阶 + 二阶同模型）
-设置：rhoinf ∈ {0, 0.5, 0.75, 1}；predictor ∈ {linear, constant}；
-      tstepping ∈ {free, strict}；incrdelay ∈ {off, 5}；
-      时间步字段（属性名读回）一档用于手动模式
-记录：逐步 (t, h)、每步拒绝、存储的 u/u'/u''、以及每步的"高频衰减"指标
-判据（分两层，必须都写进文档）：
-  第一层（必须）：二阶收敛率、ρ∞=0 时最高频一步衰减、ρ∞=1 时无人工阻尼、
-                步长趋势与 COMSOL 一致
-  第二层（尽力）：与 COMSOL 的 h 序列逐步一致
-  —— COMSOL 的广义 α 误差估计器未公开；若第二层做不到，
-     README 只写 "COMSOL-style generalized-alpha"，禁止写"与 COMSOL 一致"
-落点：tools/comsol/AlphaTransient.java（新）+ run_alpha.py + reference/comsol_alpha.hpp
-```
-
-**风险.** 工作量约等于现有 BDF 内核的 60%；且第二层判据可能不可达。**建议：F10 独立里程碑，且是唯一允许整段砍掉的功能。**
-
----
-
-### F11 事件与重初始化（P2，不在本轮）
-
-**目标语义.** 显式事件（指定时刻停步）、隐式事件（零点定位，`eventtol` 默认 0.01，Krawczyk 存在性判定 + 二分 + 简化 Newton）、事件后依次重置变量/一致性修正/重启积分。仓库已有 `EventTransient` 的雏形设计价值在于：**它同时是"BDF 历史重建"接口的唯一真实用例**。
-
-**实现要点（若做）.** `Event{ time | g(state,t), action }`；命中时把状态与导数交给调用者重写，然后**以该时刻为新 t0 重建 `phi/psi`**（而不是修补）。这正是当前 `start()` 唯一能提供的语义，也是为什么事件功能不能靠"用户自己重新 start"近似：`start` 会重跑两次 BE 探测并平移时间。
-
-**算例 E07（事件）.**
-
-```text
-模型：Global Equations，u' = -u，在 t=3 时把 u 重置为 2（显式事件），
-      以及在 u=0.5 时触发隐式事件
-设置：eventtol=0.01；BDF；tout=tlist
-记录：事件前后各一个存储样本、事件后第一步的 h 与 order、事件前后 accepted 计数
-判据：事件时刻精确（显式 < 1e-12，隐式 < eventtol·尺度）、事件后轨迹与"从该点重新
-      起算的独立 COMSOL run"一致
-落点：tools/comsol/EventTransient.java（新）
-```
-
-**结论：本轮不做；但 F04/F07 的会话状态设计必须预留"从当前层重建历史"的内部函数，否则将来要重写 `start`。**
-
----
-
-## 6. 里程碑、PR 序列与验收门
-
-### M0 冻结基线（不改变行为，1 个 PR）
-
-1. 记录基线数字：单 TU 编译 0.77 s / 78 035 预处理行；`ctest` 5/5。
-2. 建立 §9 的 COMSOL 取证队列并跑出第一轮数据（不实现任何新功能）。
-
-逐位轨迹基线与分配门经裁定不入库，理由与替代判据见 §7.1。
-
-**门：** 基线数字记录在案；第一轮取证数据入库；`ctest` 全绿。
-
-### M1 配置与请求（数值必须完全不变，1–2 个 PR）
-
-F01 + F08 + §4.5 的配置/请求删除项。命名一次到位：`Settings→BdfSettings`、`TimeStepper→BdfStepper`、`SecondOrderStepper→SecondOrderBdfStepper`、`interpolate(t,out,1)→interpolate_derivative(t,out)`。
-
-**门：** 21 组 COMSOL 不变；负例齐备；README 迁移表落地；**不保留任何兼容别名**。
-
-### M2 COMSOL 语义层（数值可变，逐 feature 取证，4–6 个 PR）
-
-顺序：F02 → F03 → F04 → F05 → F06 → F07。**每个 PR 先在 COMSOL 里跑出对应算例并入库参考数据，再改代码。**
-
-**门（每个 PR）：** 新算例通过；单场默认配置的 COMSOL 21 组保持不变；任何数值变化都必须能用手算或解析解解释——没有逐位基线可依赖（§7.1）。
-
-### M3 二阶与 DAE（1–2 个 PR）
-
-F09 + E09 + E05 的完整 DAE 分类。**门：** E09 的门 + 现有 `test_second_order` 全部改写为使用公开 API（不再借 `Augmented`）。
-
-### M4 广义 α（可整段砍掉，2–3 个 PR）
-
-F10。**门：** E06 第一层判据必须过；第二层若不过，README 降级表述。BDF 路径零改动。
-
-### M5 可选扩展（按需）
-
-F11（事件）、STAB/非线性控制器、`atoludot`、逐变量容差、`Initialization only` 的显式文档化。
+## 6. 里程碑与验收门
+
+| 里程碑 | 内容 | 门 |
+| --- | --- | --- |
+| **M0 修剪**（零数值风险） | 删死代码与死文档；修 CI；删 `examples/vector_state.cpp`；修 §2.7 的 D01–D07、D14–D16。**不碰两份验收数据** | `ctest` 5/5 绿；21 组 COMSOL 轨迹**逐位**不变；`consumer` job 能编译 |
+| **M1 取证** | 把本次的容差轴探针（`.cache/pde-scale/`、`.cache/ge-scale/`）落成 `tools/comsol/` 的常驻工具 + `test/reference/comsol_tolerance.hpp`；补 E01 剩下的 `beta_j`（j>0，多 dof 多步）用例；两份验收头（`comsol_stepping.hpp`、`comsol_twofield.hpp`）已就位 | 新算例入库并可重生成；`ctest` 绿 |
+| **M2 语义** | F01（三根容差轴）、F02（按场加权）、F03（配置形状）、F06（手动 ramp）、F07（会话状态）；**两份验收头按 feature 接进套件**（双场重放 + 步进设置扫描） | 单场默认路径**逐位**不变（21 组）；E01 的 4 格比值 = 12/11；E02 的双场重放 `dt <= 1e-10`；`comsol_stepping.hpp` 的每 N 步存储、指定初始步、表达式最大步、手动启动四组用例逐位一致 |
+| **M3 二阶与 DAE** | F04、F05 | E05 的门；现有二阶测试改用公开 API |
+| **M4 内部瘦身** | §3.4 的请求/范数收窄；`snap()`；删 §4 的剩余项 | 数值不变；单 TU 预处理行数不增 |
+| **M5 广义 α** | F08，可整段砍掉 | 第一层判据必须过；BDF 路径零改动 |
+
+**"数值不变"的判据**（沿用 v1 §7.1 的裁定，不引入逐位轨迹基线与分配门）：
+
+- 21 组 COMSOL 标量回归（1e-8）与热弹回归；
+- `test/unit/test_stepper.cpp` 里若干 `CHECK_NEAR(..., 0.0)` 的逐位断言；
+- 四个 example 的物理量判据（稳态误差、功率平衡、能量单调）。
+
+M2 额外加一条：**单场默认配置（1 个场、1 个 dof、σ=1）的 21 组轨迹逐位不变**——这是"按场实现不得改变单场语义"的硬门。
 
 ---
 
 ## 7. 测试体系
 
-### 7.1 "数值不变"的判据（逐位基线与分配门已裁掉）
+### 7.1 单元测试的增删
 
-原计划用一个入库的逐位轨迹文件加一个自定义 `operator new` 计数的分配门来钉住"重构不改变数值"。两者经裁定不实现、不入库：约 500 行测试程序与一个新的基线文件，换来的正是下面三层已有检查大部分已覆盖的能力。
+**删除/合并**（约 520 行）：
 
-现在由三层已有检查承担：
+- `test_stepper.cpp:179-229`（凝聚 ≡ 增广，与 `test_second_order.cpp:127-153` 重复，后者更强）；
+- `test_stepper.cpp:230-266`（"自适应 run 的误差跟随容差"，阈值放行 10×/100×，21 组 COMSOL 轨迹在 1e-8 上更强地覆盖）；
+- `test_stepper.cpp:329-353`、`:380-401`、`:403-424`（strict/free/storage 的行为，三条 COMSOL 轨迹逐样本覆盖）；
+- `test_stepper.cpp:640-651`（`static_assert` 复述 `= delete`）；
+- `test_stepper.cpp:586-626` 合并进 `:537-585`（首步被拒是普通步被拒的特例，保留初始化层稠密输出那条独有断言）；
+- `test_stepper.cpp:495-508`、`:628-638`、`:741-747`、`:801-821` 合并成一条"run 拒绝它做不到的事"；
+- `test_stepper.cpp:268-297` 并入 `test_controller.cpp:65-87`，**删掉 `:296` 的 0.012 魔数与 `:294` 的损坏注释**；
+- `test_controller.cpp:285-403` 的三例 validate 合并成表驱动的两例；
+- `test_second_order.cpp:333-355` 合并进 `:292-331`；`:357-395` 拆成"空 solve 被拒"与"自定义 state + 自定义 norm"两例（后者与 `test_stepper.cpp:465-493` 合并）；
+- `test_comsol_ode.cpp:198-203`（`logged_orders` 的诊断打印，已证明不可复现）。
 
-- 21 组 COMSOL 标量回归（判据 1e-8）与热弹回归：结构改动、步长或阶序列错误、拒绝计数变化都会失败；
-- `test/unit/test_stepper.cpp` 里若干 `CHECK_NEAR(..., 0.0)` 的逐位断言：重启复现整条轨迹、被拒步不污染历史、接受后 dense output 与层一致；
-- 四个 example 的物理量判据：稳态误差、功率平衡、能量单调。
+**改写**（不是删除）：
 
-### 7.2 单元测试的增删
+- `test_controller.cpp:144-145`、`:166-169`：把逐字复述实现公式的同义反复换成性质断言（因子落在 `[0.5, 0.9]`、落在 `[step, 2*step]`、等于 step）。
+- `test_norm.cpp:23-28` 的 `scaled_limit` helper 及其 6 处使用者：换成独立写出的常量或性质断言。保留 `:32-48`、`:50-64`、`:117-139`、`:216-224`（独立真值）。
+- `test_stepper.cpp:296`、`test_norm.cpp:87-115`：按 §1.2 降级为关系断言。
 
-保留并强化：控制律（`test_controller.cpp` 的规则级测试是最好的资产）、二阶凝聚等价、失败重解不污染历史、start 失败不可读、范数的数学性质。
+**新增**：
 
-删除/改写：
-
-- `derivative(y,y)` 原地别名（D20）→ 删除，改为"`out` 与 `y` 别名是未定义行为"的文档 + 不再测试；
-- `interpolate` 外推（D33）→ 改为两条：区间内插值插值多项式复现；区间外 `throw`；
-- `&request.previous()` 的注入式破坏测试（`test_stepper.cpp:722`）→ 改用"第 N 次赋值抛异常"的 state，保留同一个不变量；
-- `test_comsol_ode.cpp` 的范数自搭 → `request.error_norm`（F08）。
-
-新增：
-
-- 配置负例（每个变体一个）；
-- `Layout` 的场加权公式级测试（1 个场 / 2 个场 / 1:100 DOF / 排除代数）；
-- 每 N 步存储的索引测试；
+- **`test/reference/test_comsol_twofield.cpp`**：消费已有的 `comsol_twofield.hpp`（11 例），按场重放，判据 `dt <= 1e-10`（F02 / E02）；
+- **`test/reference/test_comsol_stepping.cpp`**：消费已有的 `comsol_stepping.hpp`，覆盖表达式最大步、指定初始步、每 N 步存储、手动启动 curve（F03 / F06 / E03）；
+- 配置负例（每个枚举与每个非法值域一个）；
+- 按场加权公式级测试（1 场 / 2 场 / 1:100 dof / 排除代数 / 逐变量 scaled-unscaled）；
+- 三根容差轴的组合测试（含 `ewtrescale` 关与 Manual 变量缩放）；
+- 每 N 步存储的索引测试（初值是第 0 步、取模锚定在它上面）；
 - 终点截断与 `finished()`；
-- `ExpressionMaxStep` 的 |expr| 与随 t 求值。
+- 表达式最大步的 `abs(expr)` 与随 t 求值；
+- 二阶路径的 COMSOL 回归（E05）。
 
-### 7.3 COMSOL 数据生产线
+**已入库（红灯是设计好的）**：`test/reference/test_comsol_stepping.cpp` 与
+`test/reference/test_comsol_twofield.cpp` 已按 [doc/target-api.md](target-api.md)
+写好并接进套件，现在**故意是红的**：8 个用例组对应 8 项尚未落地的行为
+（自动初始步的剩余区间、常数最大步的绝对秒数、表达式最大步、指定初始步、
+每 N 步存储、手动启动曲线、按场加权、关闭一致性初始化），失败信息逐条写明
+缺哪一项以及 COMSOL 测得多少。同一文件里**已经绿**的用例是重写不许弄坏的
+回归：扫描的 5 个自动例（37 步 / 1 次拒绝 / 落点差 2.4e-11 s）、4 个平凡启动
+曲线的手动例（100 步 / 落点逐位相同）、双场扫描的 Global Equation 例
+（60 步 / 落点差 4.0e-11 s）。代数求解策略抽到
+`test/support/comsol_decay_solve.hpp` 共用：库的误差估计取的是牛顿改正量
+（`TimeStepper::estimate`），求解策略一变步序就变，步序比对必须连求解一起复现。
 
-现状：1 个 Java（`GeDecayTransient`，21 case）+ 1 个 Python + 1 个生成头文件；`run_decay.py` 硬编码 case 数与区间。
+**公开字段的覆盖缺口**（当前无人读）：`Settings::error.scale` 的端到端接线零覆盖、`RunReport::max_order`、`StepRequest::order`、`SecondOrderStepper::step_size/order`。
 
-目标：
+### 7.2 COMSOL 数据生产线
 
-- `tools/comsol/cases/*.json`（或一个 `cases.py`）声明每个算例的模型、设置、期望检查（解析解/单调性/样本数），Python 只做驱动与校验 → 删掉 `len(cases)!=21` 这类硬编码（D53）；
-- 每个模型族一个 Java 类 + 一个 `run_*.py` + 一个 `test/reference/comsol_*.hpp`；
-- 生成的头文件头两行必须写清 COMSOL 版本、Java 源、生成脚本（现有做法正确，保留）；
-- 新增算例时同步更新 `doc/comsol-alignment.md` 的配置表。
+- **算例表数据化**：每个模型族一个 `cases.csv`（模型、设置、期望检查），Java 与 Python 都读它 → 删掉 `run_decay.py:41` 的 `len(cases) != 21`、`run_stepping.py:25` 的 `CASES = 23`、`run_twofield.py:25` 的 `CASES = 11` 这类硬编码（D09）。
+- **模型样板去重**：4 个 Java 合并成 2 个模型族（标量衰减族、场族），共享一份 `build()`、导出/日志块与 `num()`/`csv()` 辅助（≈120 行）。
+- **驱动共用模块**：4 个 Python 共享版本读取、日志行正则、`cpp_string()`、头文件生成与"拒绝覆盖"守卫（≈200 行）。
+- **生成头的归属**：两份验收数据留在 `test/reference/` 原处，**按 feature 分批接测试**——F02 接双场重放，F03/F06 接步进设置扫描（§1.4）。新生成的头在有对应测试之前不应再产生（这是本轮之后的一条纪律：取证头必须配一个消费者）。
+- 生成的头的头两行必须写清 COMSOL 版本、Java 源、生成脚本（现有做法正确，保留）。
 
-### 7.4 资源门
+### 7.3 资源门
 
-| 门           | 当前基线                 | 阈值         |
-| ------------ | ------------------------ | ------------ |
-| 单 TU 编译   | 0.77 s / 78 035 预处理行 | 不超过 1.25× |
-| `ctest` 时长 | 0.05 s                   | 不超过 5×    |
-| 二进制大小   | 未测                     | 记录增长     |
-
-### 7.5 CI 精简（非阻塞）
-
-`linux-gcc` 只留 gcc-13、`linux-clang` 只留 clang-18（Debug + sanitizer）；`standards` 与 `consumer` 合为一个 job；macOS 只留 arm64 Release + x86_64 Debug。理由：跨 8 个 job × 2 构建类型验证一个 2 千行 header-only 库，收益递减。
-
----
-
-## 8. 文档与注释整改
-
-| 文件                                           | 动作                                                                                                                                                                                                                                                 |
-| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `README.md`                                    | 重写"Settings and output"整节（表格 → 4 个配置组）；删除重复公式，改为指向头文件；"Why the default maximum order is 5" 保留（有取证价值）；删掉 1.x 版本沿革，只留一张迁移表；明写三处"不等价"：多 DOF 自动 scale、Automatic 最大步、广义 α 步长序列 |
-| `doc/design.md`                                | 252 → 约 150 行：只留所有权、历史提交、请求借用、二阶凝聚四节；删除与头文件注释重复的自然语言                                                                                                                                                        |
-| `doc/comsol-alignment.md`                      | 保留（这是证据文档），但把公式段改成"见 `detail/norm.hpp`"，把二阶那段改成"待 E09"                                                                                                                                                                   |
-| `doc/multiphysics.md`                          | 保留                                                                                                                                                                                                                                                 |
-| `doc/research/comsol-time-dependent-solver.md` | 412 → ≤80 行：一张"结论 / 出处 / 现状（成立/被推翻/未证）"表，删掉引文堆                                                                                                                                                                             |
-| 头文件注释                                     | 把 §4.3 的两条公式各自只写在实现处一次；`prepare()/estimate()` 补 IDA 出处与推导要点（不是评论散文）                                                                                                                                                 |
+| 门 | 当前基线 | 阈值 |
+| --- | --- | --- |
+| 单 TU 编译 | 0.77 s / 78 035 预处理行 | 不超过 1.25× |
+| `ctest` 时长 | 0.49 s（实测，v1 的 0.05 s 已过时） | 不超过 5× |
+| 二进制大小 | 未测 | 记录增长 |
 
 ---
 
-## 9. 未决问题（需要 COMSOL 取证，按阻塞程度排序）
+## 8. 文档、工具与 CI 整改
 
-| ID  | 问题                                                                                                                               | 需要的实验                                                                                                               | 阻塞谁                                |
-| --- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------- |
-| Q01 | Scaled 绝对容差在**多 DOF 变量**上的自动 scale：norm2(U)、norminf(U) 如何进入（6.4 提到两者与 α=1/5、j），以及"逐变量"还是"逐 DOF" | E02 的 1D 场算例，逐个候选公式重放                                                                                       | F03 的数值部分                        |
-| Q02 | `accept()` 只缩放 `phi[1..k]`：升阶到曾达到过的阶时，高列属于旧步长基准。是 bug 还是 IDA 同构？                                    | 构造"阶降后回升"的算例（`maxorder=5`，rtol 使阶降到 2 再升），与 COMSOL 逐步比对；必要时读 IDA `cvStep`/`cvCompleteStep` | M1 的"数值不变"声明，以及任何内核重构 |
-| Q03 | 已答（§12.3）：阶序 `1,1,2,…,bdforder`，阶 1 走两步，与库的现状一致。剩余：F05 的启动曲线系数                                      | 已跑完，见 `doc/evidence/stepping-sweep.md`                                                                              | M2/F05                                |
-| Q04 | 已答（§12.3）：是，0.1 × span，三个 span/t0 组合一致                                                                               | —                                                                                                                        | 已解除                                |
-| Q05 | 已答（§12.3）：span，不是 end time                                                                                                 | —                                                                                                                        | 已解除                                |
-| Q06 | 一致性初始化是两步 BE 还是一步？（文档说"a small step"，轨迹数据是两步）                                                           | 已有记录已证两步；再以 `bwinitstepfrac=1e-2` 放大观察 t=0 存储值                                                         | F04 的默认值                          |
-| Q07 | 已答（§12.3）：初值即第 0 步，取模锚定在它上面。未定：被拒尝试是否计数                                                             | 补一例"先被拒再存储"                                                                                                     | M2/F07                                |
-| Q08 | 二阶模型在 COMSOL 里应以哪种方式构造（Solid Mechanics 强制 BDF，或 Global Equations 一阶化）才能与库的凝聚路径可比？               | E09 构造阶段                                                                                                             | F09                                   |
-| Q09 | 广义 α 的误差估计器（COMSOL 未公开）。第一层判据是否足够构成"COMSOL-style"的诚实表述？                                             | E06 + 文档评审                                                                                                           | F10                                   |
+| 文件 | 动作 |
+| --- | --- |
+| `README.md` | 重写"Settings and output"（表格 → 配置组）；公式只留一处并指向头文件；删 1.3 沿革，只留一张 2.0 迁移表；明写三处"不等价"：多 dof 的自动 scale、Automatic 最大步、广义 α 的 h 序列 |
+| `doc/design.md` | 252 → 约 150 行：只留所有权、历史提交、请求借用、二阶凝聚四节；删与头文件注释重复的自然语言；`:242-244` 的"比较日志阶数"改正 |
+| `doc/comsol-alignment.md` | 保留（证据文档），但吸收 `doc/research/comsol-time-dependent-solver.md` 的"结论/出处/现状"表；公式段改成"见 `detail/errortest.hpp`"；`:5-6`、`:130`、`:144-147` 改正 |
+| `doc/research/comsol-time-dependent-solver.md` | 删除（并入上表），其 6 处失效代码引用随之消失 |
+| `doc/multiphysics.md` | 保留 |
+| `doc/evidence/stepping-sweep.md` | 保留表格，压缩复述；`:148-152` 的过时断言改正 |
+| `doc/evidence/field-norm.md` | 保留表格，压缩复述；`:14`、`:302` 的失效路径改正；补 §1.2 的"12/11"结论 |
+| `doc/evidence/data/` | 不新增：两份验收数据留在 `test/reference/`（§1.4） |
+| 头文件注释 | 524 行注释 → 约 350 行：每条公式只写在实现处一次；`prepare()/estimate()` 补 IDA 出处与推导要点（不是评论散文） |
+| `tools/comsol/` | 见 §7.2 |
+| `.github/workflows/ci.yml` | 修 `:309`；`standards` 与 `consumer` 并入一个 `linux-gcc` 运行；删 `windows-clangcl`；`macos` 只留 Release；18 次运行 → 10 |
+
+---
+
+## 9. 未决问题（按阻塞程度排序）
+
+| ID | 问题 | 需要的实验 | 阻塞谁 |
+| --- | --- | --- | --- |
+| Q01 | **已答大半。** COMSOL 的缩放容差实测为 `A_s,k = A_entered,k * (beta_k + rms_k)`，`rms_k = sqrt((1/N_k)·Σ(U_i/σ_k)²)`（**不是 2-范数**，§1.2 的网格加密三档把它排除），`Y_i = U_i/σ_k`，误差与相对项都在缩放变量上比较；三条分支（Manual 缩放 / `ewtrescale` 关 / Automatic+update）的 `A_s` 分别为 `A_entered`、`A_entered`、`A_entered·(1+rms)`，实测残差 ≤ 2.6e-15。**仍未定**：`beta_k` 在 `j > 0` 时用最大范数还是均方根（j=0 时不可分辨）；σ 的来源（COMSOL 从模型分析得出，库只能由调用方给出） | E01 补一个多 dof 的多步用例（对比第 2 步起的 `A_s`） | 只影响 `j > 0` 的多 dof 轨迹 |
+| Q02 | `accept()` 只缩放 `phi[1..k]`（`stepper.hpp:606-608`）：阶降后回升时，高列属于旧步长基准。是缺陷还是与 IDA 同构？ | 构造"阶降后回升"的算例（maxorder=5，容差使阶降到 2 再升），与 COMSOL 逐步比对；必要时读 IDA 的 `cvStep`/`cvCompleteStep` | 任何内核重构的"数值不变"声明 |
+| Q03 | 二阶模型在 COMSOL 里应以哪种方式构造（Solid Mechanics 强制 BDF，还是 Global Equations 一阶化）才能与库的凝聚路径可比？ | E05 构造阶段 | F05 |
+| Q04 | 广义 α 的误差估计器（COMSOL 未公开）。第一层判据是否足以构成"COMSOL-style"的诚实表述？ | E06 + 文档评审 | F08 |
+| Q05 | "Store every Nth step"下，被拒尝试是否参与取模？（`doc/evidence/stepping-sweep.md:247-250` 已标未决） | E03 的 (c) 补一例"先被拒再存储" | F03 |
+| Q06 | `Closest` 存储模式：官方文档说"在越过的步里取最近的一个"，而 `doc/comsol-alignment.md:159-162` 记录"COMSOL 会选更晚的点，即使前一个更近"。二者措辞冲突，但现行实现与实测一致。 | 用非均匀输出时刻重测一次 | 无（仅澄清文档） |
 
 ---
 
 ## 10. 明确不做
 
-1. **不写通用积分器框架**：无基类、无虚函数、无 policy 矩阵、无 plugin。
-2. **不做方程通用层**：无 Newton、AMG、稀疏装配、表达式解析、单位系统。`Solve` 回调就是边界。
-3. **不复制 COMSOL 的非线性求解器策略**（Fully Coupled 的 Jacobian 复用、阻尼、`ntolfact`）——那是模型层的，测试里只允许有一个"复刻 COMSOL 代数策略"的回调，且必须由日志参数说明。
-4. **不做显式方法**（RK34/Cash–Karp/DP5/AB3/Verlet）、局部时间步进、网格重划分与状态迁移。
-5. **不为"将来可能的第二条路径"预留字段**：每个 `variant` 分支都必须有实现、测试和 COMSOL 算例，否则不合并。
-6. **不用 try-catch 伪装恢复**被用户 state 操作破坏的历史；保持 fail-fast + 必须重新 `start`。
-7. **不追求"总行数 < X"**。可验收的是：§4.5 的 45 个删除项、§5 的每个 feature 的算例通过率、单场默认路径的逐位不变。
+1. 不写通用积分器框架：无基类、无虚函数、无 policy 矩阵、无 plugin。
+2. 不做方程通用层：无 Newton、AMG、稀疏装配、表达式解析、单位系统。`Solve` 回调就是边界。
+3. 不复制 COMSOL 的非线性求解器策略（Fully Coupled 的 Jacobian 复用、阻尼、`ntolfact`）——那是模型层的。
+4. 不做显式方法（RK34/Cash–Karp/DP5/AB3/Verlet）、局部时间步进、网格重划分。
+5. 不为"将来可能的第二条路径"预留字段：每个分支都必须有实现、测试和 COMSOL 算例，否则不合并。
+6. 不用 try-catch 伪装恢复被用户 state 操作破坏的历史；保持 fail-fast + 必须重新 `start`。
+7. 不追求"总行数 < X"。
 
 ---
 
 ## 11. 立即可以开始的三件事
 
-1. **M0.1**：跑出第一轮 COMSOL 取证数据（半天）。这是 M2 每个 feature 的前置条件。
-2. **M0.2**：把 `GeDecayTransient.java` 的算例表抽成数据驱动，并加"每 N 步""时间跨度""指定初始步"三类 case（半天）。这决定 Q04/Q05/Q07。
-3. **M1.1**：`BdfSettings` 的配置组 + 负例（一天），只做类型与验证，不动内核任何一行。
+1. **M0.1**：修 CI 的 `consumer`（`ci.yml:309`）+ 删 `examples/vector_state.cpp` + 修 D01–D07 的文档矛盾。半天，零数值风险。
+2. **M0.2**：把本次的容差轴探针（`.cache/pde-scale/`、`.cache/ge-scale/`）整理成 `tools/comsol/GeToleranceSweep.java` + `GePdeScale.java`，生成 `test/reference/comsol_tolerance.hpp`，并补 E01 剩下的 `beta_j`（j>0，多 dof 多步）用例（COMSOL 侧约 10 分钟）。它把 §1.2 的实测变成仓库里可重生成的常驻证据。
+3. **M2.1**：给已有的 `test/reference/comsol_twofield.hpp` 写"按场 vs 平铺"的重放测试（用 §1.5 的目标值 `dt <= 1e-10`）。它会在当前实现上失败——那是正确的红灯。
 
 ---
 
-## 12. 执行记录（偏离与本轮新增事实）
+## 12. 执行记录
 
-### 12.1 偏离计划的决定
+### 12.1 v1 计划里被本次审计推翻的结论
 
-| 计划原文                                                                          | 实际做法                                                                                                                                                 | 理由                                                                                                                                                                                     |
-| --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| §4.1 要两个控制器类型 `AdaptiveControl` 与 `ManualControl`，用一个 `variant` 成员 | 保留单一 `StepController`，用 `is_manual` 加普通字段替代 `optional<ManualStep>`                                                                          | 拆两个类型要么在 6 个调用点各写一次 `std::visit`，要么再造一个转发门面；实际收益只是删掉 `optional` 与 `reject()` 的死分支，单类型就能达到，代码更少                                     |
-| §5 F06 要删掉 `max_step_fraction`，换成 Automatic/Constant/Expression             | M1 先用 `variant<AutomaticMaxStep, ConstantMaxStep, UnlimitedMaxStep>`，单位仍是 span 的比例                                                             | "≤0 表示关闭"这个魔法值必须立刻消失，但单位从比例改成绝对步长要等 E04 的实测。`UnlimitedMaxStep` 是过渡分支，F06 会删掉它：**这是唯一一个 COMSOL 无对应项的 variant 分支，单独记录在此** |
-| §3.2、§4.2 画出完整配置树                                                         | M1 只引入今天已实现的分支：`ErrorTest::absolute_factor` 仍是 `double`，`initialization` 仍是 `BackwardEuler`，`Storage` 只有 `Interpolate/Closest/Steps` | 遵守"每个 variant 分支必须有实现与测试"的规则；F03、F04、F07 各自带着实现补上其余分支，不预留空分支                                                                                      |
-| §7.1 trace 由 CTest 逐字节比较                                                    | 比较测试挂在 `ATSTEP_ENABLE_TRACE` 选项之后（默认 OFF），CI 不开启                                                                                       | trace 钉死了编译器与构建类型；CI 覆盖 8 个工具链，跨工具链逐字节比较必然失败。CI 的可移植门仍是 21 组 COMSOL（1e-8）加逐位 trace 的本地门                                                |
-| §6 的顺序：M0（基线）→ M1（配置）→ M2（语义）                                     | M0 内部把 COMSOL 取证提到最前，与文档整改并行                                                                                                            | 本机确认有 COMSOL 6.2（`D:\Program Files\COMSOL\COMSOL62`），证据可以先于代码取到；M2 的每个 feature 才能"先证据、后实现"                                                                |
-| §7.1 的入库逐位轨迹基线、§7.4 的分配门                                            | 两者都不实现、不入库                                                                                                                                     | 维护者裁定：约 500 行测试程序加一个全局 `operator new` 计数不值这个成本。"数值不变"改由 21 组 COMSOL（1e-8）、若干 `CHECK_NEAR(..., 0.0)` 与 example 判据承担；残余风险见 §7.1           |
+| v1 说法 | 现状 |
+| --- | --- |
+| "库本体 2 024 行 / 测试 3 799 行 / 文档 1 283 行" | 树已前进：2 092 / 6 627 / 2 115 |
+| "同一公式 4 份文字版本"（D18） | **6 份**（多出 `doc/research/…:14` 与 `test/unit/test_norm.cpp:87`） |
+| "配置用 `variant<AbsoluteTolerance>` 是嵌套错了，改成 `bool scaled` + `variant<ToleranceFactor, ToleranceValue>`" | 方向对但不够：COMSOL 是**三根正交轴**，且缺"逐场"维度（§1.1） |
+| "§9 Q01：多 dof 的自动 scale 怎么进入" | 已推进：公式图片取回，Automatic/Manual 两条路已被两份现成记录区分（§1.2） |
+| "§6 M2 每个 PR 先跑 COMSOL 算例" | 保留；但 M0（修剪）应排在最前，先减面 |
+| "§7.1 不做逐位轨迹基线与分配门" | 保留；M2 追加"单场默认路径逐位不变"作为硬门 |
+| "`doc/research/…` 412 行 → ≤80 行" | 已完成（现 46 行），但内容与代码脱节；本次并入 `doc/comsol-alignment.md` |
+| "CI 8 个 job" | 现为 7 个 job 定义 / 18 次运行，其中 `consumer` 是红的 |
+| "`ctest` 0.05 s" | 实测 0.49 s |
 
-### 12.2 新增事实：参考数据里的阶序列不可复现
+### 12.2 本次新增的事实
 
-同一台机器、同一版本（COMSOL 6.2.0.290）、同一输入，连续三次生成的 `test/reference/comsol_trajectories.hpp`：
-
-- 21 个用例的 `samples`（时间、状态、导数）、全部结构字段与接受/拒绝/失败计数**逐位相同**；
-- 21 个用例的 `logged_orders` **每次都不同**：`default` 三次分别为 28、38、32 对，打印的步号集合也不同（不是重排）；
-- 求解器日志的列布局不变（11 列），变的是**打印了哪些行**：COMSOL 按 `logsampling`（读回默认 0.005）采样日志行，采样随墙钟漂移。
-
-结论：
-
-1. 阶序列是**日志采样**的产物，不是可移植的参考数据；`samples` 与计数才是。
-2. `test/reference/test_comsol_ode.cpp` 逐条断言 `logged_orders`，等于把机器本地的采样结果写进契约：这些断言既不能被重新生成，也不能被证伪。
-3. Q10 的答案：不是格式问题。修法是"日志只用于取证，参考数据只存 samples 与计数"；若某个算例确实需要逐步阶序列，就在该算例里把 `logsampling` 设到最小，并连跑两次确认确定。
-
-处置（M2 之前）：头文件保持已提交版本；`run_decay.py` 与新增的 `run_stepping.py` 在目标文件已存在且内容不同时拒绝覆盖；`logged_orders` 的断言降级为诊断输出（保留解析，不参与 CHECK）。
-
-### 12.3 stepping sweep 的结论（`doc/evidence/stepping-sweep.md`）
-
-23 例、1904 个原始样本，COMSOL 6.2.0.290，由脚本生成、两次重跑字节一致。它回答了 §9 的四个问题：
-
-| 问题             | 答案                                                                                                                                                                                              | 证据                                            |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| Q04 自动最大步长 | **0.1 × span**（不是 end time）：span 10 的最大步 1.0、span 100 为 10.0（连续 6 步）、t0=2/end=12 为 1.0 而非 1.2                                                                                 | `auto_span10`、`auto_span100`、`rtol1_t0_2`     |
-| Q05 自动初始步   | **0.1% × span**：t0=2 时初始化探测推进 2.0e-5 s（按 end time 应为 2.4e-5）；`rtol=1` 时另有一次独立测量                                                                                           | `t0_2_span10`、`rtol1_t0_2`、`rtol1_span10/100` |
-| Q03 手动启动     | 阶序 `1,1,2,…,bdforder`（阶 1 走两步），与库的 `min(order, max(1, accepted_steps))` 完全一致；逐阶默认 fraction/growth = 1/1.5、1/1.5、0.1/1.2、0.01/1.15、0.001/1.1；`h_k = min(f*H*g^(k-1), H)` | `manual_order1/2/3/5` 及其 fraction/growth 变体 |
-| Q07 每 N 步      | 初值即第 0 步，取模锚定在它上面；终点另以插值存入                                                                                                                                                 | `store_every1/3`                                |
-
-两条连带结论：
-
-1. **库的这两条规则本来就是对的**：`first_step_fraction * span` 与 `0.1 * span`。此前判为"未证实、证据过度外推"的地方现在有实测；6.2 手册的 "end time" 措辞只在 t0 = 0 时成立。
-2. **一致性初始化探测**在三条分支上都是两步，手动分支的探测是 `manual_step × 1e-3 × 1e-3`（手动步 0.1 → 1e-7 s），所以 `start()` 里那个"两个分数相乘"的乘积是 COMSOL 自己的算术，不是历史包袱 —— D26 结案为"保持"。
-
-仍未定：被拒尝试是否参与每 N 步的取模；`intermediate`/`strict` 与其它物理接口未覆盖（见证据文档的 limits 一节）。
-
-### 12.4 M1 的落地记录
-
-- **F01 配置树**：验收不是"测试通过"，而是在 `HEAD` 的独立 worktree 里重建基线，逐行比对 22 条 COMSOL 诊断输出——23 位数字全同，不是 1e-8；`ctest` 5/5；`-DATSTEP_WARNINGS_AS_ERRORS=ON` 零警告；删除符号在 `include/`、`test/`、`examples/` 里零命中（README 的 14 处都在迁移表内）。
-- **类名重命名推迟到 M4**：`Settings→BdfSettings`、`TimeStepper→BdfStepper`、`SecondOrderStepper→SecondOrderBdfStepper` 不在 M1 做。理由：现在只有一种方法，这三个名字不产生歧义；重命名会把迁移表、README 与全部示例再洗一遍而没有语义收益。等 `AlphaStepper` 真正落地时，同一次破坏性变更里一并改名，成本相同、噪声更少。
-- **F01 实施中打回的两点**（均已修）：清洗 `phi` 的循环一度改成 `j < max_levels`，与 `doc/design.md` 的"未用到的更高列保持空"冲突（`max_order = 2` 时白占 4 列），改为 `controller_->order_limit() + 1`；三处注释与 sweep 的实测冲突（初始步的 end time、自动最大步、手动探测），改为引用 `doc/evidence/stepping-sweep.md`。
-- **留给后续 PR**：`RunReport` 字段与计数器归一、`interpolate` 拆成两个方法、输出落点去掉 `boundary` 回填（P3）；二阶适配瘦身（P4）。
+- COMSOL 6.4 的判据公式与缩放容差公式**首次以图片形式取回并读出**（§1.1）。
+- **COMSOL 的缩放容差语义已由本机 COMSOL 6.2 实测确定**（§1.2）：三条分支的 `A_s` 拟合残差 ≤ 2.6e-15；文档里的"2-范数"实测是**均方根**（网格加密三档：RMS 读法精确到机器精度，2-范数读法偏 +12%/+34%/+74%）；原先靠两份记录推断的 9% 差异，现在有同模型同阶的**受控对照**（`.cache/comsol-tolerance/` 的五个 decay 例）。
+- **库现有的缩放容差公式被证明正是 COMSOL 规则在"单 dof + σ=1"下的特例**（可证亦可测）：这解释了 21 组回归为什么在 1e-8 上全绿——它们恰好落在那一格。
+- **COMSOL 的单位规则已确定**：自动启发式是跨度相对的（自动最大步 0.1×跨度；自动初始步 = 比例 × 剩余区间，均实测），用户填的数是绝对的（`maxstepbdf`、`initialstepbdf`）。库的"Constant 最大步"是这条规则唯一的例外（C03）。该缺陷没被 21 组回归发现，是因为同一个量在 Java 侧（×10）与库侧（×span）各换算一次、互相抵消。
+- **自动初始步的精确规则被 `rtol=1` 三例钉死**（§1.2 的 (4c)）：是"比例 × 剩余区间"，不是 × 跨度；COMSOL 文档的"0.1% of the end time"被 `rtol1_t0_2` 证伪。库的 `first_step` 少一次初始化推进的折算（span 10 差 2e-8、span 100 差 2e-7），C13 记录了它。
+- `consumer` CI job 自 M1 起一直红（§1.3）。
+- 两份生成参考数据共 2 708 行当前还没有测试消费；它们是待修行为的验收记录，**保留原位**，按 feature 分批接测试（§1.4）。
+- 陈旧构建产物里残留的 `REPLAY` 测试给出了按场实现的目标值 `dt <= 1e-10`（§1.5）。
+- 本次新增的探针与数据在 `.cache/pde-scale/`（多 dof、网格加密）与 `.cache/ge-scale/`（单 dof、多种速率），分析脚本在 `.cache/tol-analysis/` 与 `.cache/pde-scale/*.py`；它们是 §6 F01 落成仓库常驻工具的素材。
