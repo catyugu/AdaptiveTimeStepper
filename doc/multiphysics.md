@@ -82,7 +82,8 @@ To rebuild the header from the same raw evidence without running COMSOL:
 python tools/comsol/run_thermoelastic.py --header-only --directory .cache/comsol-thermoelastic
 ```
 
-The scalar decay reference has its own entrypoint, `tools/comsol/run_decay.py`.
+The scalar decay reference has its own entrypoint, `tools/comsol/run_stepping.py`,
+and the second-order one `tools/comsol/run_second_order.py`.
 Both scripts use `tools/comsol/common.py` only for tool discovery, compilation
 and batch execution; their model configuration and export checks are independent.
 Normal CTest runs use the committed reference and require no COMSOL installation.

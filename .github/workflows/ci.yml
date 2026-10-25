@@ -1,4 +1,4 @@
-﻿name: CI
+name: CI
 
 on:
   push:
@@ -301,12 +301,13 @@ jobs:
 
           #include <cmath>
           #include <cstdio>
+          #include <variant>
           #include <vector>
 
           int main()
           {
               atstep::Settings settings;
-              settings.max_order = 2;
+              std::get<atstep::AdaptiveSteps>(settings.steps).max_order = 2;
               atstep::validate(settings);
 
               using State = std::vector<double>;
@@ -314,7 +315,7 @@ jobs:
                   [](const atstep::StepRequest<State>& request, State& y) {
                       const State& known = request.derivative_history();
                       y[0] = -known[0] / (request.derivative_weight() + 1.0);
-                      return atstep::SolveOutcome {true, 1};
+                      return true;
                   });
               stepper.start(0.0, State {1.0}, 1.0);
 

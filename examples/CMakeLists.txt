@@ -7,8 +7,7 @@
 set(ATSTEP_EXAMPLE_SOURCES
     heat_equation.cpp
     second_order.cpp
-    coupled_motor.cpp
-    vector_state.cpp)
+    coupled_motor.cpp)
 
 foreach(source IN LISTS ATSTEP_EXAMPLE_SOURCES)
     get_filename_component(stem ${source} NAME_WE)

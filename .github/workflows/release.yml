@@ -14,13 +14,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check that the tagged tree configures and builds
+      - name: Check that the tag names the project version
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          declared=$(awk '$1 == "VERSION" { print $2; exit }' CMakeLists.txt)
+          echo "tag ${GITHUB_REF_NAME}, declared version ${declared}"
+          if [ "${version}" != "${declared}" ]; then
+            echo "::error::the tag ${GITHUB_REF_NAME} does not match the declared version ${declared}"
+            exit 1
+          fi
+
+      - name: Check that the tagged tree builds and its tests pass
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DATSTEP_BUILD_TESTS=OFF \
-            -DATSTEP_BUILD_EXAMPLES=OFF
-          cmake --build build
+            -DATSTEP_WARNINGS_AS_ERRORS=ON
+          cmake --build build --parallel
+          ctest --test-dir build --output-on-failure
 
       - name: Build the archives
         run: |

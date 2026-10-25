@@ -12,7 +12,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(AdaptiveTimeStepper
-    VERSION 1.3.0
+    VERSION 2.0.0
     DESCRIPTION "COMSOL-style adaptive BDF time stepping, header-only C++20"
     LANGUAGES CXX)
 

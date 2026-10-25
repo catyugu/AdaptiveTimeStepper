@@ -1,8 +1,8 @@
 // A second-order equation in time, handed to the library as it is:
-// `M u'' + C u' + K u = f`. `SecondOrderStepper` introduces the velocity the
-// first-order BDF kernel needs, keeps it consistent with the displacement, and
-// gives the solve the condensed system of the displacement alone — the state
-// augmentation and linear-system reduction COMSOL's IDA path performs.
+// `M u'' + C u' + K u = f`. `SecondOrderStepper` expands it into the first-order
+// pair `(u, u')` the BDF kernel integrates — the state augmentation COMSOL's IDA
+// path performs — and hands the solve both rows, so the velocity is a solved
+// unknown rather than something recovered from the displacement.
 #include <atstep/atstep.hpp>
 
 #include <cmath>
@@ -34,22 +34,26 @@ namespace {
       }
     };
 
-    /// The condensed step: `u' = cj u + known(1)` and `u'' = cj^2 u + known(2)`
-    /// leave
+    /// The pair's step. With `u' = cj u + known.value` and
+    /// `v' = cj v + known.derivative`, the two rows are
     ///
-    ///     (K + cj C + cj^2 M) u = -(M known(2) + C known(1)),
+    ///     cj u - v = -known.value
+    ///     (K + cj C + cj^2 M) u + (cj M + C) v = f - M known.derivative
     ///
-    /// one scalar equation in the displacement, at every order.
-    atstep::SolveOutcome solve(
-      const atstep::SecondOrderRequest<Displacement>& request,
-      Displacement& y) const
+    /// and the velocity is the second row's, so it keeps its own digits.
+    bool solve(const atstep::StepRequest<atstep::SecondOrderState<Displacement>>& request,
+      atstep::SecondOrderState<Displacement>& y) const
     {
       const double stiffness = frequency * frequency;
       const double viscosity = 2.0 * damping * frequency;
-      const double known2 = request.derivative_history(2)[0];
-      const double known1 = request.derivative_history()[0];
-      y.u = -(known2 + viscosity * known1) / (stiffness + viscosity * request.derivative_weight() + request.derivative_weight(2));
-      return atstep::SolveOutcome {true, 1};
+      const double cj = request.derivative_weight();
+      const auto& known = request.derivative_history();
+      const double first = known.value[0];
+      const double second = known.derivative[0];
+      const double determinant = cj * (cj + viscosity) + stiffness;
+      y.value.u = -(first * (cj + viscosity) + second) / determinant;
+      y.derivative.u = -(second + stiffness * y.value.u) / (cj + viscosity);
+      return true;
     }
 
     /// The solution from `u(0) = 1`, `u'(0) = 0`, and its velocity.
@@ -75,17 +79,19 @@ int main()
 {
   const Oscillator oscillator;
   atstep::Settings settings;
-  settings.relative_tolerance = 1e-6;
+  settings.error.relative = 1e-6;
 
   atstep::SecondOrderStepper<Oscillator::Displacement> stepper(
     settings,
-    [&oscillator](const atstep::SecondOrderRequest<Oscillator::Displacement>& request,
-      Oscillator::Displacement& y) { return oscillator.solve(request, y); });
+    [&oscillator](
+      const atstep::StepRequest<atstep::SecondOrderState<Oscillator::Displacement>>& request,
+      atstep::SecondOrderState<Oscillator::Displacement>& y) {
+      return oscillator.solve(request, y);
+    });
 
   const double end = 10.0;
   stepper.start(0.0,
-    Oscillator::Displacement {1.0},
-    Oscillator::Displacement {0.0},
+    atstep::SecondOrderState<Oscillator::Displacement> {{1.0}, {0.0}},
     end);
 
   std::vector<double> times;

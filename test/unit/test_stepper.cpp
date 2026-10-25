@@ -11,6 +11,7 @@
 #include <limits>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -41,11 +42,11 @@ namespace {
 
   /// The solve of a BDF step of y' = -y: `sum_j a[j] y_{n+1-j} + y_{n+1} =
   /// 0`.
-  atstep::SolveOutcome solve_decay(const atstep::StepRequest<Scalar>& request,
+  bool solve_decay(const atstep::StepRequest<Scalar>& request,
     Scalar& y)
   {
     y.value = -request.derivative_history().value / (request.derivative_weight() + 1.0);
-    return atstep::SolveOutcome {true, 1};
+    return true;
   }
 
   /// The same solve, but the first `prime` steps are set to the exact
@@ -58,7 +59,7 @@ namespace {
       if (prime > 0) {
         --prime;
         y.value = exact(request.time);
-        return atstep::SolveOutcome {true, 1};
+        return true;
       }
       return solve_decay(request, y);
     };
@@ -67,8 +68,14 @@ namespace {
   atstep::Settings manual_settings(int order, double step)
   {
     atstep::Settings settings;
-    settings.stepping = atstep::ManualStep {step, order};
+    settings.steps = atstep::ManualSteps {step, order};
     return settings;
+  }
+
+  /// The adaptive alternative of `settings`, whose fields a test tweaks.
+  atstep::AdaptiveSteps& adaptive_of(atstep::Settings& settings)
+  {
+    return std::get<atstep::AdaptiveSteps>(settings.steps);
   }
 
   /// Integrate y' = -y to or past `end` at a fixed order and step, priming the
@@ -108,36 +115,34 @@ namespace {
 
 TEST_CASE("request: the derivative is the affine form its weights define")
 {
-  // `derivative` evaluates `cj*y + known` in correction form, where the
-  // correction is small: the two are the same state, which is what a solve may
-  // rely on whichever form it reads. They differ by the round-off of the direct
-  // form's cancellation — a few units of `cj*|y|` in its last place, which the
-  // initialization step alone puts at 1e7 — so the comparison is against the
+  // `derivative` evaluates the level in correction form, around the predictor,
+  // and `derivative_history() + cj*y` is the same level in direct form: whichever
+  // a residual reads, it reads one equation. They differ by the round-off of the
+  // direct form's cancellation — a few units of `cj*|y|` in its last place, which
+  // the initialization step alone puts at 1e7 — so the comparison is against the
   // size of the terms, not against zero.
   atstep::Settings settings;
-  settings.max_order = 3;
+  adaptive_of(settings).max_order = 3;
   double worst = 0.0;
   int evaluated = 0;
   atstep::TimeStepper<Scalar> stepper(settings,
-    [&worst, &evaluated](const atstep::StepRequest<Scalar>& request,
-      Scalar& y) {
+    [&worst, &evaluated](const atstep::StepRequest<Scalar>& request, Scalar& y) {
       const double weight = request.derivative_weight();
       Scalar derivative;
       request.derivative(y, derivative);
       Scalar affine = request.derivative_history();
       const double terms = 1.0 + std::abs(affine.value) + std::abs(weight * y.value);
       atstep::detail::axpy(affine, weight, y);
-      worst = std::max(
-        worst, std::abs(derivative.value - affine.value) / terms);
+      worst = std::max(worst, std::abs(derivative.value - affine.value) / terms);
       ++evaluated;
       const Scalar& known = request.derivative_history();
       y.value = -known.value / (weight + 1.0);
       const Scalar solved = y;
       request.derivative(y, derivative);
-      request.derivative(y, y);
+      request.derivative(y, y); // the output may be the state itself
       CHECK_NEAR(y.value, derivative.value, 0.0);
       y = solved;
-      return atstep::SolveOutcome {true, 1};
+      return true;
     });
   stepper.start(0.0, Scalar {1.0}, 1.0);
   const std::vector<double> times {0.0, 0.5, 1.0};
@@ -175,8 +180,8 @@ TEST_CASE("stepper: the inertia of a second-order equation, as a first-order "
   // The same equation, written the way COMSOL writes it and the way IDA wants
   // it: a first-order system in `(u, v = u')`, whose state the caller owns.
   // The BDF weights are then the first derivative's, and the order is the
-  // scheme's own. `SecondOrderStepper` is this formulation with the pair and the
-  // condensation built in.
+  // scheme's own. `SecondOrderStepper` is this formulation with the pair named
+  // and the two halves reported as the state and its velocity.
   struct Block {
     double u = 0.0;
     double v = 0.0;
@@ -204,7 +209,7 @@ TEST_CASE("stepper: the inertia of a second-order equation, as a first-order "
     const double det = a0 * (a0 + 0.1) + 1.0;
     y.u = (ru * (a0 + 0.1) + rv) / det;
     y.v = (a0 * rv - ru) / det;
-    return atstep::SolveOutcome {true, 1};
+    return true;
   };
 
   const auto error = [&solve](double step) {
@@ -227,8 +232,8 @@ TEST_CASE(
   // small multiple of it, and a tighter tolerance costs more steps.
   const auto run = [](double tolerance) {
     atstep::Settings settings;
-    settings.relative_tolerance = tolerance;
-    settings.max_order = 2;
+    settings.error.relative = tolerance;
+    adaptive_of(settings).max_order = 2;
     atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
     stepper.start(0.0, Scalar {1.0}, 10.0);
     std::vector<double> times;
@@ -282,11 +287,15 @@ TEST_CASE(
   stepper.interpolate(stepper.time(), initialized_derivative, 1);
   CHECK_NEAR(initialized_derivative.value, -stepper.state().value, 2e-10);
   // The first step of the run is the one the derivative justifies: the
-  // weight of a dof of value one is `0.01 * (1 + 0.1)`, so the derivative is
-  // 90.9 and the step is 0.5 / 90.9, well below the 0.01 of the span rule.
-  // \\texttt0A = R * 0.1 * (1 + 1) = 0.002 at a state of one, so the weight
-  // is 0.012 and the step 0.5 / 83.3.
-  CHECK_NEAR(stepper.step_size(), 0.5 / (1.0 / 0.012), 1e-6);
+  // spring step 0.5 * weight / |y'|. The weight of a dof is its scaled
+  // absolute tolerance, A_k (|y| + sigma) at the first step with the default
+  // scale of one, plus the relative tolerance of the dof.
+  const double magnitude = std::abs(stepper.state().value);
+  const double weight = 1e-3 * (magnitude + 1.0) + 1e-2 * magnitude;
+  CHECK_NEAR(
+    stepper.step_size(),
+    0.5 * weight / std::abs(initialized_derivative.value),
+    1e-9);
 }
 
 TEST_CASE("stepper: the interpolation reproduces the polynomial through the "
@@ -302,7 +311,7 @@ TEST_CASE("stepper: the interpolation reproduces the polynomial through the "
     settings,
     [cubic](const atstep::StepRequest<Scalar>& request, Scalar& y) {
       y.value = cubic(request.time);
-      return atstep::SolveOutcome {true, 1};
+      return true;
     });
   stepper.start(0.0, Scalar {cubic(0.0)}, 1.0);
   while (stepper.time() < 1.0)
@@ -319,11 +328,35 @@ TEST_CASE("stepper: the interpolation reproduces the polynomial through the "
   }
 }
 
+TEST_CASE("stepper: advance lands on the end only when the end is not interpolated")
+{
+  // A caller driving the run itself gets the same end as a scheduled run: with
+  // the end-time interpolation on, a step may pass the end and the caller
+  // interpolates the value; with it off, every step is cut so that one lands on
+  // the end exactly. Nothing else in the suite reads that flag through advance,
+  // because run derives it from the schedule.
+  const auto reach = [](bool interpolate_end_time) {
+    atstep::Settings settings;
+    adaptive_of(settings).interpolate_end_time = interpolate_end_time;
+    adaptive_of(settings).max_order = 2;
+    settings.error.relative = 1e-1; // steps large enough to pass the end
+    atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
+    stepper.start(0.0, Scalar {1.0}, 10.0);
+    while (not stepper.finished())
+      stepper.advance();
+    return stepper.time();
+  };
+
+  CHECK_EQ(reach(false), 10.0);
+  CHECK(reach(true) != 10.0);
+  CHECK(reach(true) > 10.0);
+}
+
 TEST_CASE("stepper: the strict mode ends every step at an output time")
 {
   atstep::Settings settings;
-  settings.stepping = atstep::AutomaticStep {atstep::StepPlacement::strict};
-  settings.max_order = 2;
+  adaptive_of(settings).placement = atstep::Placement::strict;
+  adaptive_of(settings).max_order = 2;
   atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
   stepper.start(0.0, Scalar {1.0}, 1.0);
   std::vector<double> times {0.0, 0.1, 0.2, 0.35, 0.5, 0.75, 1.0};
@@ -350,9 +383,9 @@ TEST_CASE("stepper: the intermediate mode puts a step in every subinterval")
   // COMSOL's "Intermediate": at least one step in each interval between two
   // output times, whatever the tolerance would let the solver skip.
   atstep::Settings settings;
-  settings.stepping = atstep::AutomaticStep {atstep::StepPlacement::intermediate};
-  settings.max_order = 2;
-  settings.relative_tolerance = 1e-1; // steps large enough to jump an interval
+  adaptive_of(settings).placement = atstep::Placement::intermediate;
+  adaptive_of(settings).max_order = 2;
+  settings.error.relative = 1e-1; // steps large enough to jump an interval
   atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
   stepper.start(0.0, Scalar {1.0}, 10.0);
   const std::vector<double> times {0.0, 2.5, 5.0, 7.5, 10.0};
@@ -374,8 +407,8 @@ TEST_CASE(
   "stepper: the free mode steps over an output time and interpolates it")
 {
   atstep::Settings settings;
-  settings.max_order = 2;
-  settings.relative_tolerance = 1e-1;
+  adaptive_of(settings).max_order = 2;
+  settings.error.relative = 1e-1;
   atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
   stepper.start(0.0, Scalar {1.0}, 10.0);
   std::vector<double> times {0.0, 3.3, 6.6, 10.0};
@@ -397,36 +430,51 @@ TEST_CASE("stepper: the store modes choose what is reported")
 {
   std::vector<double> times {
     0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0};
-  const auto count = [&times](atstep::StoreMode mode) {
+  const auto count = [&times](atstep::Storage storage) {
     atstep::Settings settings;
-    settings.store_mode = mode;
-    settings.relative_tolerance = 1e-2;
+    settings.storage = storage;
+    settings.error.relative = 1e-2;
     atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
     stepper.start(0.0, Scalar {1.0}, 10.0);
     const auto report = stepper.run(times);
     return std::pair<int, int> {report.stored, report.steps};
   };
-  const auto interpolated = count(atstep::StoreMode::interpolate);
-  const auto closest = count(atstep::StoreMode::closest);
-  const auto steps = count(atstep::StoreMode::steps);
+  const auto interpolated = count(atstep::Storage::interpolate);
+  const auto closest = count(atstep::Storage::closest);
+  const auto steps = count(atstep::Storage::steps);
   CHECK_EQ(interpolated.first, 11);
   CHECK_EQ(closest.first, 11);
   // Stored as steps: the initial state and every accepted step.
   CHECK_EQ(steps.first, steps.second + 1);
   CHECK(steps.second > 11);
+
+  // A step that reaches several requested times stores one value, whatever the
+  // schedule asked for: the step of one second that crosses 1.5 also crosses
+  // 1.75. Interpolated output reports both.
+  const auto coarse = [](atstep::Storage storage) {
+    atstep::Settings settings;
+    settings.storage = storage;
+    settings.steps = atstep::ManualSteps {1.0, 1};
+    atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
+    stepper.start(0.0, Scalar {1.0}, 10.0);
+    const std::vector<double> schedule {0.0, 1.5, 1.75, 2.5, 10.0};
+    return stepper.run(schedule).stored;
+  };
+  CHECK_EQ(coarse(atstep::Storage::interpolate), 5);
+  CHECK_EQ(coarse(atstep::Storage::closest), 4);
 }
 
 TEST_CASE("stepper: a solve that does not converge is retried at a quarter")
 {
   atstep::Settings settings;
-  settings.max_order = 1;
+  adaptive_of(settings).max_order = 1;
   atstep::TimeStepper<Scalar> stepper(
     settings, [](const atstep::StepRequest<Scalar>& request, Scalar& y) {
       // The third attempt of the run fails, as a nonlinear solve whose
       // iteration exhausted would.
       static int calls = 0;
       if (++calls == 3)
-        return atstep::SolveOutcome {false, 40};
+        return false;
       return solve_decay(request, y);
     });
   stepper.start(0.0, Scalar {1.0}, 1.0);
@@ -466,16 +514,16 @@ TEST_CASE("stepper: a state and a norm of the caller's own")
       v += a * x.v;
     }
   };
-  const auto norm = [](const Own& error, const Own& reference) {
-    return std::abs(error.v) / (1e-3 + 0.01 * std::abs(reference.v));
+  const auto norm = [](const Own& error, const Own& accepted, const Own&, std::size_t) {
+    return std::abs(error.v) / (1e-3 + 0.01 * std::abs(accepted.v));
   };
   atstep::Settings settings;
-  settings.max_order = 2;
-  atstep::TimeStepper<Own, decltype(norm)> stepper(
+  adaptive_of(settings).max_order = 2;
+  atstep::TimeStepper<Own> stepper(
     settings,
     [](const atstep::StepRequest<Own>& request, Own& y) {
       y.v = -request.derivative_history().v / (request.derivative_weight() + 1.0);
-      return atstep::SolveOutcome {true, 1};
+      return true;
     },
     norm);
   stepper.start(0.0, Own {1.0}, 1.0);
@@ -537,7 +585,7 @@ TEST_CASE("stepper: a refused step leaves the accepted history and its dense out
   atstep::TimeStepper<Scalar> stepper(manual_settings(3, 0.25),
     [&failing](const atstep::StepRequest<Scalar>& request, Scalar& y) {
       if (failing)
-        return atstep::SolveOutcome {false, 40};
+        return false;
       return solve_decay(request, y);
     });
   stepper.start(0.0, Scalar {1.0}, 10.0);
@@ -587,7 +635,7 @@ TEST_CASE("stepper: a refused first step leaves the run at its initialized level
   atstep::TimeStepper<Scalar> stepper(manual_settings(1, 0.25),
     [&failing](const atstep::StepRequest<Scalar>& request, Scalar& y) {
       if (failing)
-        return atstep::SolveOutcome {false, 40};
+        return false;
       return solve_decay(request, y);
     });
   stepper.start(0.0, Scalar {1.0}, 10.0);
@@ -638,15 +686,15 @@ TEST_CASE("request: a step's request cannot be retained by value")
     not std::is_copy_constructible_v<atstep::StepRequest<Scalar>>);
   static_assert(
     not std::is_move_constructible_v<atstep::StepRequest<Scalar>>);
-  static_assert(
-    not std::is_copy_constructible_v<atstep::SecondOrderRequest<Scalar>>);
+  static_assert(not std::is_copy_constructible_v<
+    atstep::StepRequest<atstep::SecondOrderState<Scalar>>>);
   CHECK(true);
 }
 
 TEST_CASE("stepper: advance takes one acceptable step and moves the run")
 {
   atstep::Settings settings;
-  settings.max_order = 2;
+  adaptive_of(settings).max_order = 2;
   atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
   stepper.start(0.0, Scalar {1.0}, 1.0);
   const double start = stepper.time();
@@ -665,87 +713,6 @@ TEST_CASE("stepper: advance takes one acceptable step and moves the run")
     other.advance();
   CHECK(other.time() >= 1.0);
   CHECK(std::abs(other.state().value - exact(other.time())) < 1e-2);
-}
-
-TEST_CASE("stepper: a failed history update requires a restart")
-{
-  struct Failure {
-    const void* assignment_target = nullptr;
-    bool self_axpy = false;
-    bool triggered = false;
-  };
-  struct State {
-    double value = 0.0;
-    Failure* failure = nullptr;
-
-    State() = default;
-    State(double v, Failure& fault)
-      : value(v)
-      , failure(&fault)
-    {
-    }
-    State(const State&) = default;
-    State& operator=(const State& other)
-    {
-      value = other.value;
-      failure = other.failure;
-      if (failure and failure->assignment_target == this) {
-        failure->triggered = true;
-        throw std::runtime_error("state assignment failed");
-      }
-      return *this;
-    }
-    void axpy(double a, const State& x)
-    {
-      value += a * x.value;
-      if (failure and failure->self_axpy and this == &x) {
-        failure->triggered = true;
-        throw std::runtime_error("state rescaling failed");
-      }
-    }
-  };
-  const auto norm = [](const State& error, const State&) {
-    return std::abs(error.value);
-  };
-  for (bool assignment : {true, false}) {
-    Failure fault;
-    bool fail = false;
-    atstep::TimeStepper<State, decltype(norm)> stepper(
-      manual_settings(2, 0.1),
-      [&](const atstep::StepRequest<State>& request, State& y) {
-        y.value = -request.derivative_history().value
-          / (request.derivative_weight() + 1.0);
-        if (fail and not request.initializing) {
-          // Target the accepted level, or the in-place rescaling of a history
-          // column. Both failures occur after the solve returned successfully.
-          if (assignment)
-            fault.assignment_target = &request.previous();
-          else
-            fault.self_axpy = true;
-        }
-        return atstep::SolveOutcome {true, 1};
-      },
-      norm);
-    stepper.start(0.0, State {1.0, fault}, 1.0);
-    stepper.advance();
-    fail = true;
-    CHECK_THROWS(stepper.advance());
-    CHECK(fault.triggered);
-    CHECK_THROWS(stepper.time());
-    CHECK_THROWS(stepper.state());
-    CHECK_THROWS(stepper.step_size());
-    CHECK_THROWS(stepper.order());
-    State out;
-    CHECK_THROWS(stepper.interpolate(0.0, out));
-    CHECK_THROWS(stepper.advance());
-
-    fault = {};
-    fail = false;
-    stepper.start(0.0, State {1.0, fault}, 1.0);
-    const auto report = stepper.run(std::vector<double> {0.0, 1.0});
-    CHECK(report.steps > 0);
-    CHECK(std::abs(stepper.state().value - exact(stepper.time())) < 0.05);
-  }
 }
 
 TEST_CASE("stepper: a start time the run cannot integrate from is refused")
@@ -780,7 +747,7 @@ TEST_CASE("stepper: a start time the run cannot integrate from is refused")
   CHECK(stepper.advance().time > 0.0);
 
   atstep::Settings settings;
-  settings.init_step_fraction = 1e3;
+  settings.initialization_fraction = 1e3;
   int probe_calls = 0;
   atstep::TimeStepper<Scalar> oversized(settings,
     [&](const atstep::StepRequest<Scalar>& request, Scalar& y) {
