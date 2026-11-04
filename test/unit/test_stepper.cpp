@@ -779,3 +779,30 @@ TEST_CASE("stepper: a full schedule starts immediately after start")
   CHECK_THROWS(stepper.run(times, hooks));
   CHECK_EQ(stored, 3);
 }
+
+TEST_CASE("stepper owns settings including expression callbacks")
+{
+  for (int mode = 0; mode < 4; ++mode) {
+    atstep::Settings settings;
+    int calls = 0;
+    if (mode == 1)
+      adaptive_of(settings).max_step = atstep::ConstantMaxStep {0.02};
+    if (mode == 2)
+      adaptive_of(settings).max_step = atstep::ExpressionMaxStep {
+        [&calls](double) { ++calls; return 0.02; }};
+    if (mode == 3)
+      settings.steps = atstep::ManualSteps {0.02, 2};
+    atstep::TimeStepper<Scalar> copied(settings, solve_decay);
+    atstep::TimeStepper<Scalar> moved(std::move(settings), solve_decay);
+    // Both steppers retain independent settings after the caller replaces its own.
+    settings = {};
+    for (auto* stepper : {&copied, &moved}) {
+      stepper->start(0.0, Scalar {1.0}, 0.1);
+      while (stepper->time() < 0.1)
+        stepper->advance();
+      CHECK(std::abs(stepper->state().value - exact(stepper->time())) < 0.02);
+    }
+    if (mode == 2)
+      CHECK(calls > 0);
+  }
+}

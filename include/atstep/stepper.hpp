@@ -216,10 +216,33 @@ namespace atstep {
     explicit TimeStepper(const Settings& settings,
       Solve solve,
       Norm norm = {})
-      : settings_(settings)
+      : settings_ {}
       , solve_(std::move(solve))
       , norm_(resolve_norm(std::move(norm), settings.error))
     {
+      // Copy active alternatives directly. Copying the nested variants as one
+      // object triggers GCC 13/14's maybe-uninitialized diagnostic in optimized
+      // consumers, on the inactive std::function storage.
+      settings_.error = settings.error;
+      settings_.initialization_fraction = settings.initialization_fraction;
+      settings_.storage = settings.storage;
+      settings_.store_every = settings.store_every;
+      if (const auto* manual = std::get_if<ManualSteps>(&settings.steps))
+        settings_.steps.emplace<ManualSteps>(*manual);
+      else {
+        const auto& source = std::get<AdaptiveSteps>(settings.steps);
+        auto& target = std::get<AdaptiveSteps>(settings_.steps);
+        target.placement = source.placement;
+        target.interpolate_end_time = source.interpolate_end_time;
+        target.min_order = source.min_order;
+        target.max_order = source.max_order;
+        target.initial_step = source.initial_step;
+        target.min_step_fraction = source.min_step_fraction;
+        std::visit([&target](const auto& maximum) {
+          target.max_step.template emplace<std::decay_t<decltype(maximum)>>(maximum);
+        },
+          source.max_step);
+      }
       validate(settings_);
       if (not solve_)
         throw std::invalid_argument("atstep: a run needs a solve");
