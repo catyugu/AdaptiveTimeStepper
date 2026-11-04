@@ -91,8 +91,9 @@ An installed package provides the same target through
 
 States are default-constructible, copyable values with
 `void axpy(double a, const State& x)`, meaning `*this += a*x`.
-`std::vector<double>` is supported directly. Wrap other containers in a type
-with this member. State dimensions must remain constant during a run.
+`std::vector<double, Allocator>` is supported directly, including vectors with
+custom allocators. Wrap other containers in a type with this member. State
+dimensions must remain constant during a run.
 
 The default norm needs the state to expose `size()` and `operator[]`. A
 distributed or blocked state can provide its own; it receives the error, the
