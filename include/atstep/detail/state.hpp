@@ -13,10 +13,14 @@
 
 namespace atstep::detail {
 
-  /// The default arithmetic of a `std::vector<double>`, declared before the
-  /// concept so that a plain vector models a state without an adapter.
+  /// The default arithmetic of a `std::vector<double, Allocator>`, declared
+  /// before the concept so that vectors with custom allocators model a state
+  /// without an adapter.
+  template <class Allocator>
   inline void
-  axpy(std::vector<double>& y, double a, const std::vector<double>& x);
+  axpy(std::vector<double, Allocator>& y,
+    double a,
+    const std::vector<double, Allocator>& x);
 
   /// The customization point that makes a state a vector of the stepper:
   ///
@@ -59,8 +63,11 @@ namespace atstep::detail {
     { s[std::size_t {}] } -> std::convertible_to<double>;
   };
 
+  template <class Allocator>
   inline void
-  axpy(std::vector<double>& y, double a, const std::vector<double>& x)
+  axpy(std::vector<double, Allocator>& y,
+    double a,
+    const std::vector<double, Allocator>& x)
   {
     if (y.size() != x.size())
       throw std::invalid_argument("atstep: axpy state sizes differ");
