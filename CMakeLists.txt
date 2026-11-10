@@ -1,7 +1,7 @@
 # AdaptiveTimeStepper — COMSOL-style adaptive BDF time stepping
 # SPDX-License-Identifier: MIT
 #
-# A header-only C++20 library. It is used three ways:
+# A header-only C++17 library. It is used three ways:
 #
 #   add_subdirectory    add_subdirectory(AdaptiveTimeStepper) or FetchContent
 #   find_package        find_package(AdaptiveTimeStepper CONFIG REQUIRED)
@@ -13,12 +13,12 @@ cmake_minimum_required(VERSION 3.20)
 
 project(AdaptiveTimeStepper
     VERSION 2.1.1
-    DESCRIPTION "COMSOL-style adaptive BDF time stepping, header-only C++20"
+    DESCRIPTION "COMSOL-style adaptive BDF time stepping, header-only C++17"
     LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
@@ -53,7 +53,7 @@ add_library(AdaptiveTimeStepper INTERFACE)
 add_library(AdaptiveTimeStepper::AdaptiveTimeStepper
     ALIAS AdaptiveTimeStepper)
 
-target_compile_features(AdaptiveTimeStepper INTERFACE cxx_std_20)
+target_compile_features(AdaptiveTimeStepper INTERFACE cxx_std_17)
 target_include_directories(AdaptiveTimeStepper INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)

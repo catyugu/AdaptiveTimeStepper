@@ -3,7 +3,7 @@
 [![CI](https://github.com/catyugu/AdaptiveTimeStepper/actions/workflows/ci.yml/badge.svg)](https://github.com/catyugu/AdaptiveTimeStepper/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Header-only C++20 adaptive BDF integration, with variable order 1–5 and no
+Header-only C++17 adaptive BDF integration, with variable order 1–5 and no
 external dependencies. The caller solves the equations; the library manages
 prediction, history, error estimates, step size, order and output.
 First-order-in-time systems go to the stepper directly; a second-order-in-time
@@ -85,7 +85,7 @@ target_link_libraries(my_target PRIVATE AdaptiveTimeStepper::AdaptiveTimeStepper
 
 An installed package provides the same target through
 `find_package(AdaptiveTimeStepper CONFIG REQUIRED)`. Alternatively, add
-`include/` to your compiler's include path. The headers require C++20.
+`include/` to your compiler's include path. The headers require C++17.
 
 ## State and norm
 
@@ -202,8 +202,8 @@ Store modes, `settings.storage`:
 backward-Euler solves, so the first returned state can differ slightly from
 `initial`; a second-order run gives `start(t0, u0, du0, end)` its first derivative as the
 second initial value and advances the pair the same way. `run(times, hooks)`
-requires a fresh `start` and strictly increasing times starting at `t0` and ending
-at `end`; it copies them. Use either `run` for the complete schedule or `advance` for a
+takes output times as `const std::vector<double>&` and requires a fresh `start`
+and strictly increasing times starting at `t0` and ending at `end`; it copies them. Use either `run` for the complete schedule or `advance` for a
 caller-driven loop; call `start` before switching to a new run.
 
 `on_step` receives each accepted step's record and the state it left; `on_store`

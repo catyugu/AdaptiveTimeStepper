@@ -6,7 +6,7 @@
 # it is applied to the test and example executables, never to the interface
 # target that is exported.
 
-# The oldest compilers whose C++20 support covers what the headers use. The
+# Conservative compiler baselines retained for the C++17 build. The
 # comparison is against CMAKE_CXX_COMPILER_VERSION, a dotted version string on
 # every one of them; MSVC_VERSION is reported as 1929, not 19.29, and does not
 # compare against the bound.
@@ -55,7 +55,7 @@ function(atstep_require_compiler)
         message(WARNING
             "AdaptiveTimeStepper has not been tested with "
             "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}; "
-            "C++20 support is assumed.")
+            "C++17 support is assumed.")
     endif()
 endfunction()
 

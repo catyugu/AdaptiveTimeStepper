@@ -252,6 +252,24 @@ TEST_CASE("norm: std::vector is a state the stepper takes")
     }
   };
   static_assert(atstep::detail::StateVector<Member>);
+  static_assert(not atstep::detail::Indexable<Member>);
+  static_assert(atstep::detail::Indexable<std::vector<double>>);
+
+  struct NoArithmetic {};
+  struct NotCopyable {
+    NotCopyable() = default;
+    NotCopyable(const NotCopyable&) = delete;
+    void axpy(double, const NotCopyable&) {}
+  };
+  struct NotConvertible {
+    void size() const {}
+    void operator[](std::size_t) const {}
+  };
+  static_assert(not atstep::detail::StateVector<NoArithmetic>);
+  static_assert(not atstep::detail::StateVector<NotCopyable>);
+  static_assert(not atstep::detail::StateVector<int>);
+  static_assert(not atstep::detail::Indexable<NotConvertible>);
+  static_assert(not atstep::detail::Indexable<int>);
 }
 
 TEST_CASE("state: mismatched sizes are rejected before accessing elements")
