@@ -200,13 +200,12 @@ namespace atstep {
     /// the scales and the `A_s` branch the settings name.
     static Norm default_norm(const ErrorTest& error)
     {
-      detail::WeightedRmsNorm weights = detail::WeightedRmsNorm::from(error);
-      return [weights](const State& estimate,
+      return [weights = detail::WeightedRmsNorm::from(error)](
+               const State& estimate,
                const State& accepted,
                const State& returned,
-               std::size_t accepted_steps) mutable {
-        weights.accepted_steps = accepted_steps;
-        return weights(estimate, accepted, returned);
+               std::size_t accepted_steps) {
+        return weights(estimate, accepted, returned, accepted_steps);
       };
     }
 

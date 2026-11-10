@@ -1,6 +1,7 @@
 // The norm the error is measured in: COMSOL's weighted root mean square, and
 // the two methods of its absolute tolerance.
 #include "atstep/detail/state.hpp"
+#include "atstep/second_order.hpp"
 #include "support/check.hpp"
 
 #include <cmath>
@@ -20,9 +21,10 @@ namespace {
   /// is the case before anything is stored.
   double evaluate(const atstep::detail::WeightedRmsNorm& norm,
     const std::vector<double>& error,
-    const std::vector<double>& state)
+    const std::vector<double>& state,
+    std::size_t accepted_steps = 0)
   {
-    return norm(error, state, state);
+    return norm(error, state, state, accepted_steps);
   }
 
 } // namespace
@@ -182,11 +184,10 @@ TEST_CASE("norm: the scaled tolerance tightens with the accepted-step index")
          std::size_t {1},
          std::size_t {25},
          std::size_t {100}}) {
-    norm.accepted_steps = j;
     // The absolute tolerance of the scale falls from A_k (|y| + sigma) at
     // the first step towards 2 A_k |y|, so a fixed error weighs more and
     // more.
-    const double measured = evaluate(norm, of({error}), of({magnitude}));
+    const double measured = evaluate(norm, of({error}), of({magnitude}), j);
     if (j > 0)
       CHECK(measured > previous);
     previous = measured;
@@ -194,13 +195,45 @@ TEST_CASE("norm: the scaled tolerance tightens with the accepted-step index")
 
   // The scale replaces the floor the blend tends to, not the magnitude: a
   // larger scale loosens the tolerance.
-  norm.accepted_steps = 100;
-  const double unit_scale = evaluate(norm, of({error}), of({magnitude}));
+  const double unit_scale = evaluate(norm, of({error}), of({magnitude}), 100);
   norm.scale = {4.0};
-  CHECK(evaluate(norm, of({error}), of({magnitude})) < unit_scale);
+  CHECK(evaluate(norm, of({error}), of({magnitude}), 100) < unit_scale);
 
   norm.scaled = false;
   CHECK_NEAR(evaluate(norm, of({0.001001}), of({magnitude})), 1.0, 1e-12);
+}
+
+
+TEST_CASE("norm: default callbacks are independent of earlier accepted-step indices")
+{
+  const atstep::ErrorTest error;
+  const auto first = atstep::TimeStepper<std::vector<double>>::default_norm(error);
+  const auto second = atstep::SecondOrderStepper<std::vector<double>>::default_norm(error);
+
+  const auto estimate = of({1e-3});
+  const auto accepted = of({1e-4});
+  const auto returned = of({2e-4});
+  const auto weights = atstep::detail::WeightedRmsNorm::from(error);
+  const double early = weights(estimate, accepted, returned, 0);
+  const double late = weights(estimate, accepted, returned, 25);
+  CHECK(late > early);
+
+  // Interleave the indices on the same const callback: previous calls must
+  // never alter the weights used by the next one.
+  CHECK_EQ(first(estimate, accepted, returned, 0), early);
+  CHECK_EQ(first(estimate, accepted, returned, 25), late);
+  CHECK_EQ(first(estimate, accepted, returned, 0), early);
+
+  using Pair = atstep::SecondOrderState<std::vector<double>>;
+  const Pair pair_estimate {estimate, of({1.0})};
+  const Pair pair_accepted {accepted, of({1.0})};
+  const Pair pair_returned {returned, of({1.0})};
+  CHECK_EQ(second(pair_estimate, pair_accepted, pair_returned, 0),
+    std::sqrt(0.5) * early);
+  CHECK_EQ(second(pair_estimate, pair_accepted, pair_returned, 25),
+    std::sqrt(0.5) * late);
+  CHECK_EQ(second(pair_estimate, pair_accepted, pair_returned, 0),
+    std::sqrt(0.5) * early);
 }
 
 TEST_CASE("norm: an empty state is no error at all")
@@ -214,7 +247,6 @@ TEST_CASE("norm: interpolation changes the absolute scale but not the relative "
 {
   atstep::detail::WeightedRmsNorm norm;
   norm.scaled = true;
-  norm.accepted_steps = 25;
   const double internal = 0.2;
   const double returned = 0.3;
   const double error = 1e-3;
@@ -222,13 +254,13 @@ TEST_CASE("norm: interpolation changes the absolute scale but not the relative "
   // The absolute tolerance follows the solution returned to the caller, the
   // relative one the last accepted internal state: a larger returned value
   // loosens the absolute part and leaves the relative part alone.
-  const double with_returned = norm(of({error}), of({internal}), of({returned}));
-  const double with_internal = norm(of({error}), of({internal}), of({internal}));
+  const double with_returned = norm(of({error}), of({internal}), of({returned}), 25);
+  const double with_internal = norm(of({error}), of({internal}), of({internal}), 25);
   CHECK(with_returned < with_internal);
 
   // The relative part still uses the internal state: the same error against
   // a larger internal value weighs less.
-  const double larger_internal = norm(of({error}), of({2.0 * internal}), of({returned}));
+  const double larger_internal = norm(of({error}), of({2.0 * internal}), of({returned}), 25);
   CHECK(larger_internal < with_returned);
 }
 
@@ -278,8 +310,8 @@ TEST_CASE("state: mismatched sizes are rejected before accessing elements")
   CHECK_THROWS(atstep::detail::axpy(y, 1.0, of({3.0})));
   CHECK_NEAR(y[0], 1.0, 0.0);
   atstep::detail::WeightedRmsNorm norm;
-  CHECK_THROWS(norm(of({1.0}), y, y));
-  CHECK_THROWS(norm(y, y, of({1.0})));
+  CHECK_THROWS(norm(of({1.0}), y, y, 0));
+  CHECK_THROWS(norm(y, y, of({1.0}), 0));
 }
 
 TEST_CASE("norm: a zero weight cannot hide nonzero error")

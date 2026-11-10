@@ -65,7 +65,6 @@ namespace comsol_decay {
       norm.relative = settings.error.relative;
       norm.absolute = settings.error.relative * settings.error.absolute.value;
       norm.scaled = settings.error.scaled;
-      norm.accepted_steps = request.accepted_steps;
       double first_norm = 0.0;
       last_cj = cj;
       for (int iteration = 0; iteration < 4; ++iteration) {
@@ -75,7 +74,8 @@ namespace comsol_decay {
         y.u += correction;
         const double size = norm(State {correction},
           request.accepted_state(),
-          request.returned_state());
+          request.returned_state(),
+          request.accepted_steps);
         if (iteration == 0)
           first_norm = size;
         else {
