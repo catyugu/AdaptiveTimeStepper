@@ -5,10 +5,11 @@
 
 #include <cmath>
 #include <cstdio>
-#include <numbers>
 #include <vector>
 
 namespace {
+
+  constexpr double pi = 3.14159265358979323846;
 
   /// `M u' + K u = 0` on a rod of `n` nodes, with a Dirichlet condition of
   /// zero at both ends. The mass matrix is lumped, the stiffness is the usual
@@ -75,7 +76,7 @@ int main()
   std::vector<double> initial(nodes, 0.0);
   for (std::size_t i = 0; i < nodes; ++i) {
     const double x = static_cast<double>(i) * h;
-    initial[i] = std::sin(std::numbers::pi * x); // the first mode, held at zero at both ends
+    initial[i] = std::sin(pi * x); // the first mode, held at zero at both ends
   }
 
   atstep::Settings settings; // COMSOL's defaults: rtol 1e-2, orders 1 to 5
@@ -99,7 +100,7 @@ int main()
   hooks.on_store = [&](double time, const std::vector<double>& u, bool) {
     for (std::size_t i = 0; i < nodes; ++i) {
       const double x = static_cast<double>(i) * h;
-      const double exact = std::exp(-std::numbers::pi * std::numbers::pi * time) * std::sin(std::numbers::pi * x);
+      const double exact = std::exp(-pi * pi * time) * std::sin(pi * x);
       worst = std::max(worst, std::abs(u[i] - exact));
     }
   };

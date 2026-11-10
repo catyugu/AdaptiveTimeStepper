@@ -9,9 +9,9 @@
 #include <cmath>
 #include <cstddef>
 #include <functional>
-#include <span>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace atstep {
 
@@ -80,8 +80,10 @@ namespace atstep {
   ///
   /// The integrator is neither copyable nor movable.
   template <class State>
-    requires detail::StateVector<State>
   class SecondOrderStepper {
+    static_assert(detail::StateVector<State>,
+      "atstep: State must be default-constructible, copyable and support axpy");
+
     using Pair = SecondOrderState<State>;
     using Inner = TimeStepper<Pair>;
 
@@ -197,7 +199,7 @@ namespace atstep {
 
     /// Integrate the rest of the run, reporting the values the store mode asks
     /// for, with the derivative each of them pairs with.
-    RunReport run(std::span<const double> output_times,
+    RunReport run(const std::vector<double>& output_times,
       SecondOrderHooks<State> hooks = {})
     {
       RunHooks<Pair> inner_hooks;

@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <algorithm>
 #include <cmath>
-#include <concepts>
 #include <cstddef>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "../settings.hpp"
@@ -14,7 +16,7 @@
 namespace atstep::detail {
 
   /// The default arithmetic of a `std::vector<double, Allocator>`, declared
-  /// before the concept so that vectors with custom allocators model a state
+  /// before the state trait so that vectors with custom allocators model a state
   /// without an adapter.
   template <class Allocator>
   inline void
@@ -44,24 +46,39 @@ namespace atstep::detail {
   ///         void axpy(double a, const State& x);
   ///     };
   template <class State>
-    requires requires(State& y, const State& x, double a) { y.axpy(a, x); }
-  void axpy(State& y, double a, const State& x)
+  auto axpy(State& y, double a, const State& x) -> decltype(y.axpy(a, x), void())
   {
     y.axpy(a, x);
   }
 
   /// A default-constructible, copyable value with the arithmetic above.
   /// Assignment should reuse storage when dimensions are unchanged.
+  template <class State, class = void>
+  struct IsStateVector : std::false_type {};
+
   template <class State>
-  concept StateVector = std::is_copy_assignable_v<State> && std::is_copy_constructible_v<State> && std::is_default_constructible_v<State> && requires(State& y, const State& x, double a) { atstep::detail::axpy(y, a, x); };
+  struct IsStateVector<State, std::void_t<decltype(
+    atstep::detail::axpy(std::declval<State&>(), 0.0, std::declval<const State&>()))>>
+    : std::bool_constant<std::is_copy_assignable_v<State>
+        && std::is_copy_constructible_v<State>
+        && std::is_default_constructible_v<State>> {};
+
+  template <class State>
+  inline constexpr bool StateVector = IsStateVector<State>::value;
 
   /// A state whose dofs can be read one by one: what the default norm needs and
   /// a state of its own arithmetic may not have.
+  template <class State, class = void>
+  struct IsIndexable : std::false_type {};
+
   template <class State>
-  concept Indexable = requires(const State& s) {
-    { s.size() } -> std::convertible_to<std::size_t>;
-    { s[std::size_t {}] } -> std::convertible_to<double>;
-  };
+  struct IsIndexable<State, std::void_t<decltype(std::declval<const State&>().size()),
+    decltype(std::declval<const State&>()[std::size_t {}])>>
+    : std::bool_constant<std::is_convertible_v<decltype(std::declval<const State&>().size()), std::size_t>
+        && std::is_convertible_v<decltype(std::declval<const State&>()[std::size_t {}]), double>> {};
+
+  template <class State>
+  inline constexpr bool Indexable = IsIndexable<State>::value;
 
   template <class Allocator>
   inline void
@@ -148,7 +165,7 @@ namespace atstep::detail {
     /// to the caller, which can be interpolated. The relative part and the
     /// variable's own magnitude continue to use the last accepted internal
     /// state.
-    template <Indexable State>
+    template <class State, std::enable_if_t<Indexable<State>, int> = 0>
     double operator()(const State& error,
       const State& reference,
       const State& returned) const

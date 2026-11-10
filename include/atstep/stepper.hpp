@@ -13,11 +13,11 @@
 #include <cstddef>
 #include <functional>
 #include <optional>
-#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace atstep {
 
@@ -180,8 +180,10 @@ namespace atstep {
   /// during the call; `interpolate` writes into the caller's. The formulation is
   /// in doc/design.md.
   template <class State>
-    requires detail::StateVector<State>
   class TimeStepper {
+    static_assert(detail::StateVector<State>,
+      "atstep: State must be default-constructible, copyable and support axpy");
+
   public:
     /// The solve of one step: whether its nonlinear iteration converged. A step
     /// that did not is retried at a quarter of its size.
@@ -380,7 +382,7 @@ namespace atstep {
     /// Integrate from the start time to the end time, reporting the values the
     /// storage asks for. Call after `start`, before any `advance`; `output_times`
     /// increases from the start time to the end time, and the schedule copies it.
-    RunReport run(std::span<const double> output_times,
+    RunReport run(const std::vector<double>& output_times,
       RunHooks<State> hooks = {})
     {
       require_started();

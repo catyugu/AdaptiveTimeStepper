@@ -213,10 +213,10 @@ jobs:
       - name: Test
         run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
 
-  # --- C++20 pinned, and every header compiled on its own -------------------
+  # --- C++17 pinned, and every header compiled on its own -------------------
 
   standards:
-    name: standards C++20 and standalone headers
+    name: standards C++17 and standalone headers
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -230,11 +230,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends g++-13 ninja-build
 
-      - name: Configure with C++20 pinned
+      - name: Configure with C++17 pinned
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_STANDARD=20 \
+            -DCMAKE_CXX_STANDARD=17 \
             -DCMAKE_CXX_STANDARD_REQUIRED=ON \
             -DCMAKE_CXX_EXTENSIONS=OFF \
             -DATSTEP_BUILD_TESTS=OFF \
@@ -243,12 +243,12 @@ jobs:
       - name: Compile every header first in its own translation unit
         run: |
           mkdir -p build/standalone
-          for header in include/atstep/*.hpp; do
-            name=$(basename "$header" .hpp)
+          for header in $(find include/atstep -name '*.hpp' | sort); do
+            name=$(echo "${header#include/}" | tr / _)
             printf '#include <%s>\n\nint main() { return 0; }\n' "${header#include/}" \
               > "build/standalone/$name.cpp"
             echo "compiling $header"
-            g++-13 -std=c++20 -pedantic-errors -Wall -Wextra -Werror -I include \
+            g++-13 -std=c++17 -pedantic-errors -Wall -Wextra -Werror -I include \
               -c "build/standalone/$name.cpp" -o "build/standalone/$name.o"
           done
 
@@ -289,6 +289,9 @@ jobs:
           cat > build/consumer/CMakeLists.txt <<'CMAKE'
           cmake_minimum_required(VERSION 3.20)
           project(atstep_consumer LANGUAGES CXX)
+          set(CMAKE_CXX_STANDARD 17)
+          set(CMAKE_CXX_STANDARD_REQUIRED ON)
+          set(CMAKE_CXX_EXTENSIONS OFF)
 
           find_package(AdaptiveTimeStepper CONFIG REQUIRED)
 

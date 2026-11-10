@@ -8,7 +8,6 @@
 #include <cstddef>
 #include <limits>
 #include <optional>
-#include <span>
 #include <stdexcept>
 #include <variant>
 #include <vector>
@@ -61,7 +60,7 @@ namespace atstep::detail {
     /// the run begins with, which the stepper stores before it steps. The
     /// schedule copies them.
     StepSchedule(const Settings& settings,
-      std::span<const double> output_times,
+      const std::vector<double>& output_times,
       double start_time,
       double end_time);
 
@@ -136,7 +135,7 @@ namespace atstep::detail {
   }
 
   inline StepSchedule::StepSchedule(const Settings& settings,
-    std::span<const double> output_times,
+    const std::vector<double>& output_times,
     double start_time,
     double end_time)
     : times_(output_times.begin(), output_times.end())
