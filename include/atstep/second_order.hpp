@@ -114,13 +114,13 @@ namespace atstep {
     static Norm default_norm(const ErrorTest& error)
     {
       if constexpr (detail::Indexable<State>) {
-        detail::WeightedRmsNorm weights = detail::WeightedRmsNorm::from(error);
-        return [weights](const Pair& estimate,
+        return [weights = detail::WeightedRmsNorm::from(error)](
+                 const Pair& estimate,
                  const Pair& accepted,
                  const Pair& returned,
-                 std::size_t accepted_steps) mutable {
-          weights.accepted_steps = accepted_steps;
-          return std::sqrt(0.5) * weights(estimate.value, accepted.value, returned.value);
+                 std::size_t accepted_steps) {
+          return std::sqrt(0.5)
+            * weights(estimate.value, accepted.value, returned.value, accepted_steps);
         };
       }
       else {

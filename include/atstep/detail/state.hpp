@@ -137,9 +137,6 @@ namespace atstep::detail {
     /// which is COMSOL's default.
     std::vector<bool> scaled_tolerance;
 
-    /// The accepted steps the run has behind it: COMSOL's `j`.
-    std::size_t accepted_steps = 0;
-
     /// The norm of COMSOL's settings. An empty `variables` is one variable of
     /// scale one over the whole state, whose size the caller supplies.
     static WeightedRmsNorm from(const ErrorTest& error)
@@ -168,7 +165,8 @@ namespace atstep::detail {
     template <class State, std::enable_if_t<Indexable<State>, int> = 0>
     double operator()(const State& error,
       const State& reference,
-      const State& returned) const
+      const State& returned,
+      std::size_t accepted_steps) const
     {
       const std::size_t n = reference.size();
       if (error.size() != n or returned.size() != n)
