@@ -6,9 +6,12 @@
 
 #include <cmath>
 #include <cstddef>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <stdexcept>
+#include <type_traits>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -34,6 +37,21 @@ namespace atstep::detail {
       adaptive.placement != Placement::strict and adaptive.interpolate_end_time};
   }
 
+  /// A range of times the schedule can copy: iterable values convertible to
+  /// `double`, so a vector with an allocator of the model's own included.
+  template <class Times, class = void>
+  struct IsTimeRange : std::false_type {};
+
+  template <class Times>
+  struct IsTimeRange<Times, std::void_t<decltype(std::begin(std::declval<const Times&>())),
+    decltype(std::end(std::declval<const Times&>())),
+    decltype(*std::begin(std::declval<const Times&>()))>>
+    : std::bool_constant<std::is_convertible_v<
+        decltype(*std::begin(std::declval<const Times&>())), double>> {};
+
+  template <class Times>
+  inline constexpr bool TimeRange = IsTimeRange<Times>::value;
+
   /// Owns requested times and resolves step placement and output selection.
   /// `next_` is the first output time not yet stored.
   class StepSchedule {
@@ -47,11 +65,12 @@ namespace atstep::detail {
 
     /// @param[in] settings the placement and storage of the run.
     /// @param[in] output_times the times to store, increasing, from the start
-    /// time to the end time of the run. The value at the start time is the one
-    /// the run begins with, which the stepper stores before it steps. The
-    /// schedule copies them.
+    /// time to the end time of the run, as any range of `double` values. The
+    /// value at the start time is the one the run begins with, which the
+    /// stepper stores before it steps. The schedule copies them.
+    template <class Times>
     StepSchedule(const Settings& settings,
-      const std::vector<double>& output_times,
+      const Times& output_times,
       double start_time,
       double end_time);
 
@@ -131,8 +150,9 @@ namespace atstep::detail {
     interpolate_end_time_ = rule.interpolate_end_time;
   }
 
+  template <class Times>
   inline StepSchedule::StepSchedule(const Settings& settings,
-    const std::vector<double>& output_times,
+    const Times& output_times,
     double start_time,
     double end_time)
     : times_(output_times.begin(), output_times.end())

@@ -165,8 +165,10 @@ namespace atstep {
     }
 
     /// Integrate the rest of the run, reporting the values the store mode asks
-    /// for, with the derivative each of them pairs with.
-    RunReport run(const std::vector<double>& output_times,
+    /// for, with the derivative each of them pairs with. `output_times` is any
+    /// range of `double` that increases from the start time to the end time.
+    template <class Times, std::enable_if_t<detail::TimeRange<Times>, int> = 0>
+    RunReport run(const Times& output_times,
       SecondOrderHooks<State> hooks = {})
     {
       RunHooks<Pair> inner_hooks;

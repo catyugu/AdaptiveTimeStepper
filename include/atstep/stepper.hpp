@@ -352,8 +352,10 @@ namespace atstep {
 
     /// Integrate from the start time to the end time, reporting the values the
     /// storage asks for. Call after `start`, before any `advance`; `output_times`
-    /// increases from the start time to the end time, and the schedule copies it.
-    RunReport run(const std::vector<double>& output_times,
+    /// is any range of `double` that increases from the start time to the end
+    /// time, and the schedule copies it.
+    template <class Times, std::enable_if_t<detail::TimeRange<Times>, int> = 0>
+    RunReport run(const Times& output_times,
       RunHooks<State> hooks = {})
     {
       require_started();

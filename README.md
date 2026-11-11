@@ -101,8 +101,9 @@ backward-Euler solves, so the initial reported state can differ slightly from
 derivative. The overload accepting a derivative uses it directly and skips probes.
 
 Use `run(times, hooks)` after a fresh `start`, or drive the run with
-`advance()` until `finished()`. `run` copies a strictly increasing
-`std::vector<double>` schedule starting at `t0` and ending at `end`.
+`advance()` until `finished()`. `run` copies a strictly increasing schedule of
+`double` values — any range, so a vector with the model's own allocator works —
+starting at `t0` and ending at `end`.
 Each `advance` retries until it accepts one step. `time()` and `state()` expose
 the newest accepted level; `step_size()` and `order()` describe the next step.
 `report()` holds step, rejection, failed-solve and stored-output counts.
