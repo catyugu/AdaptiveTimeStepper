@@ -13,38 +13,26 @@
 
 namespace atstep {
 
-  /// The highest BDF order, and the number of time levels the scaled-difference
-  /// table holds: the scheme reads the columns `0..max_order + 1`. The orders
-  /// are COMSOL's: its BDF runs at 1 to 5.
+  /// Maximum supported BDF order and difference-table capacity (`0..max_order+1`).
   inline constexpr int max_order = 5;
   inline constexpr int max_levels = max_order + 2;
 
-  /// The automatic initial step, as a fraction of the interval that remains
-  /// after the consistent initialization: 0.1% of what is left, not of the span
-  /// and not of the end time (doc/evidence/stepping-sweep.md).
+  /// Automatic initial-step fraction of the interval remaining after initialization.
   inline constexpr double default_initial_step_fraction = 1e-3;
 
-  /// The automatic maximum step, as a fraction of the span: COMSOL's Automatic
-  /// constraint, measured as exactly 0.1 of the span
-  /// (doc/evidence/stepping-sweep.md, the automatic maximum step).
+  /// Automatic maximum-step fraction of the run span.
   inline constexpr double automatic_max_step_fraction = 0.1;
 
-  /// The smallest step a run may be reduced to before it gives up, as a fraction
-  /// of the span: the library's own guard, with no COMSOL counterpart.
+  /// Library minimum-step guard, as a fraction of the run span.
   inline constexpr double default_min_step_fraction = 1e-10;
 
-  /// Where the solver's own steps land: COMSOL's "Steps taken by solver".
-  /// `free` lets the stepping choose, `intermediate` puts at least one step in
-  /// every interval between two output times, `strict` ends every step at an
-  /// output time.
+  /// Step placement: free, at least one step per output interval, or land on every output time.
   enum class Placement { free,
     intermediate,
     strict };
 
-  /// What the run reports: COMSOL's "Times to store". `interpolate` stores the
-  /// values at the output times, `closest` the first solver step at or past each
-  /// of them — one value per step, so a step that reaches several stores them as
-  /// one (doc/evidence/dofs.md) — and `steps` the solver's own steps.
+  /// Store requested values, the first step reaching each request, or internal steps.
+  /// Closest storage merges requests reached by the same step.
   enum class Storage { interpolate,
     closest,
     steps };
@@ -57,7 +45,7 @@ namespace atstep {
     backward_euler,
     /// None, COMSOL's "Off": the initial values are the start state, at the start
     /// time, and the derivative the run starts from is zero
-    /// (doc/evidence/consistent-init.md).
+    /// (doc/comsol-alignment.md#initialization).
     off
   };
 
@@ -127,13 +115,7 @@ namespace atstep {
     bool interpolate_end_time = true;
   };
 
-  /// One dependent variable of the model: its share of the state, the scale
-  /// COMSOL's solver uses for it, and whether its absolute tolerance follows the
-  /// solution.
-  ///
-  /// The scale divides the solution in the scaled criterion, `Y = U / scale`
-  /// (doc/evidence/tolerance-axes.md). The library cannot derive it — COMSOL
-  /// analyses the model — so the caller passes the value the solver's log prints.
+  /// A contiguous variable block and its caller-supplied scale (`Y = U / scale`).
   struct Variable {
     /// The number of degrees of freedom of the variable.
     std::size_t dofs = 0;
@@ -141,10 +123,8 @@ namespace atstep {
     /// COMSOL's "scale for dependent variable", a divisor of the solution.
     double scale = 1.0;
 
-    /// Whether the scaled absolute tolerance follows the solution. COMSOL sets
-    /// this for a variable whose scaling method is Automatic while "Update
-    /// scaled absolute tolerance" is on; every other combination leaves
-    /// `A_s = A_k` (doc/evidence/tolerance-axes.md).
+    /// Update scaled absolute tolerance from the solution. Disable for manual
+    /// scaling or when COMSOL's "Update scaled absolute tolerance" is off.
     bool scaled_tolerance = true;
   };
 
@@ -176,14 +156,8 @@ namespace atstep {
     std::vector<Variable> variables {};
   };
 
-  /// The time stepping of a run.
-  ///
-  /// The defaults are COMSOL's, read back from a COMSOL 6.2 Time-Dependent
-  /// Solver node (see doc/comsol-alignment.md): the relative tolerance 0.01, the
-  /// absolute tolerance `0.1` times it, scaled by the magnitude of each variable,
-  /// the first step `1e-3` of what remains of the interval, the largest step
-  /// `0.1` of the span, the orders 1 to 5, the consistent initialization on, and
-  /// the interpolation of the end time.
+  /// Run settings; defaults follow the generic COMSOL Time solver.
+  /// See doc/comsol-alignment.md for physics-specific defaults and measured rules.
   struct Settings {
     /// How the run takes its steps: the solver's, from the local error, or the
     /// model's own at a fixed step and order.
@@ -204,7 +178,7 @@ namespace atstep {
     Storage storage = Storage::interpolate;
 
     /// COMSOL's "Store every Nth step"; the initial state is step 0 and the
-    /// modulus is anchored on it (doc/evidence/stepping-sweep.md).
+    /// modulus is anchored on it (doc/comsol-alignment.md#stepping-and-output).
     int store_every = 1;
   };
 

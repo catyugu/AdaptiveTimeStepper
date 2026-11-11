@@ -21,35 +21,17 @@
 
 namespace atstep {
 
-  /// The error norm: COMSOL's weighted RMS of the error estimate, given the
-  /// error, the last accepted state, the state last returned to the caller
-  /// (which may be interpolated), and the accepted steps the run has behind it
-  /// — COMSOL's index `j`, which its scaled absolute tolerance follows.
+  /// Error norm context: estimate, accepted state, last returned state and step count.
   template <class State>
   using ErrorNorm = std::function<double(const State& error,
     const State& accepted,
     const State& returned,
     std::size_t accepted_steps)>;
 
-  /// Borrowed coefficients for one first-order solve.
-  ///
-  /// The equation is first order in time, and the step holds its derivative to
-  /// the affine form
-  ///
-  ///     y' = cj*y + known,   cj = derivative_weight(),
-  ///                          known = derivative_history(),
-  ///
-  /// so that `M y' + K y = f` at `request.time` is
-  ///
-  ///     (cj M + K) y_{n+1} = f(t_{n+1}) - M known.
-  ///
-  /// The solve receives the predictor in its mutable state argument and replaces
-  /// it with the solution: the correction form `known + cj*y` evaluated at the
-  /// predictor is the same affine form, and a residual that wants it can read
-  /// the predictor from that argument.
-  ///
-  /// The stepper builds the request for one solve callback. Its state references
-  /// are borrowed for that call; the request cannot be copied or retained.
+  /// Coefficients for `y' = cj*y + known` at `time`.
+  /// For `M y' + K y = f`, solve `(cj*M + K)*y = f - M*known`.
+  /// The solve receives the predictor and replaces it with the solution.
+  /// Requests and their state references are valid only during the callback.
   template <class State>
   class StepRequest {
   public:
@@ -77,11 +59,8 @@ namespace atstep {
       return known_;
     }
 
-    /// `out = y'` of the state `y`, in the correction form IDA forms it:
-    /// `derivative_predictor() + cj*(y - predictor())`. It is the same affine
-    /// form as `cj*y + known`, evaluated where the correction is small, and it is
-    /// what a residual should read: the direct form cancels where `cj` is large.
-    /// `out` is the caller's; `y` may not be.
+    /// Write `predicted_derivative + cj*(y - predictor)` to caller-owned `out`.
+    /// This correction form reduces cancellation at large `cj`; `out` may alias `y`.
     void derivative(const State& y, State& out) const
     {
       out = y;
@@ -155,10 +134,7 @@ namespace atstep {
     /// history now holds. The state is the stepper's own buffer and is only
     /// valid during the call.
     std::function<void(const StepRecord&, const State&)> on_step;
-    /// Every stored value: the time, the state, and whether it was interpolated
-    /// from the steps around it rather than being a level. The state is the
-    /// stepper's own buffer and is only valid during the call: copy it to
-    /// retain it.
+    /// Stored time, state and interpolation flag. State references last only for the call.
     std::function<void(double, const State&, bool)> on_store;
   };
 
@@ -172,13 +148,8 @@ namespace atstep {
     double final_time = 0.0;
   };
 
-  /// Adaptive BDF integration of a first-order state: the caller solves, the
-  /// stepper owns history, work buffers, error control and output. One run per
-  /// object — neither copyable nor movable, `start` resets it — and one driver:
-  /// `advance` retries internally until a step is accepted, `run` repeats it over
-  /// an output schedule. Hook states and `state()` are the run's buffers, valid
-  /// during the call; `interpolate` writes into the caller's. The formulation is
-  /// in doc/design.md.
+  /// BDF integration owning history, work buffers, error control and output.
+  /// Noncopyable and nonmovable; `start` resets the run. See doc/design.md.
   template <class State>
   class TimeStepper {
     static_assert(detail::StateVector<State>,
@@ -195,9 +166,7 @@ namespace atstep {
     TimeStepper(TimeStepper&&) = delete;
     TimeStepper& operator=(TimeStepper&&) = delete;
 
-    /// The norm COMSOL's settings describe, and the default when the caller
-    /// gives none: the weighted RMS of `detail/state.hpp`, with the partition,
-    /// the scales and the `A_s` branch the settings name.
+    /// Default weighted RMS with the configured variable partition, scales and tolerances.
     static Norm default_norm(const ErrorTest& error)
     {
       return [weights = detail::WeightedRmsNorm::from(error)](
@@ -250,13 +219,8 @@ namespace atstep {
         throw std::invalid_argument("atstep: a run needs a solve");
     }
 
-    /// Prepare the run: the state at `time`, integrated to `end_time`.
-    ///
-    /// Under `Initialization::backward_euler` two artificial backward-Euler steps
-    /// of `initialization_fraction` of the first step reconcile the initial values
-    /// with the equations and give the derivative the first step is sized from,
-    /// each a solve of the caller's. Under `Initialization::off` nothing is solved
-    /// and the derivative the run starts from is zero.
+    /// Start a run over [time, end_time]. Default initialization performs two
+    /// backward-Euler probes; initialization off uses the supplied state and zero derivative.
     void start(double time, const State& initial, double end_time)
     {
       prepare_run(time, end_time);
@@ -269,12 +233,7 @@ namespace atstep {
       }
       const double span = end_time - time;
 
-      // The probe is the initial step of the alternative the run steps in, times
-      // the fraction of it the initialization takes. A manual run has no initial
-      // step of its own, and is scaled by the library default, as it always was
-      // (doc/evidence/stepping-sweep.md, the manual startup curve). A named
-      // initial step is the one the caller gave, and the probe is a fraction of
-      // it.
+      // Probe basis: explicit initial step, or 0.1% of span/manual step.
       const auto [probe_step, probe_fraction] = std::visit(
         [span](const auto& steps) -> std::pair<double, double> {
           using Alternative = std::decay_t<decltype(steps)>;
@@ -361,13 +320,8 @@ namespace atstep {
       return controller_->order();
     }
 
-    /// Take the next step the error test accepts, retrying it smaller when the
-    /// solve or the test refuses it, and cut it to the end time when the end is
-    /// not interpolated, so a caller-driven loop lands where a scheduled one does.
-    ///
-    /// @throws std::runtime_error when the step has fallen to the smallest one the
-    /// controller proposes and still does not converge or still misses the
-    /// tolerance.
+    /// Advance one accepted step, retrying failed attempts and respecting end placement.
+    /// @throws std::runtime_error if the minimum step cannot converge or meet tolerance.
     StepRecord advance()
     {
       require_started();
@@ -434,11 +388,9 @@ namespace atstep {
       return report_;
     }
 
-    /// Write the dense-output value (derivative=0) or first derivative
-    /// (derivative=1) at `time` into `out`. At the newest level the stored
-    /// derivative is the actual solve derivative; inside a step it is the
-    /// derivative of the BDF dense-output polynomial. `out` is the caller's,
-    /// and may be the same state on every call.
+    /// Write dense value (derivative=0) or first derivative (derivative=1) to `out`.
+    /// At the newest node use the solve derivative; inside a step use the polynomial
+    /// derivative. The caller owns `out` and may reuse it.
     void interpolate(double time, State& out, int derivative = 0)
     {
       require_started();
@@ -552,10 +504,8 @@ namespace atstep {
       std::array<double, max_levels> psi {};
     };
 
-    /// Reused across attempts: predictor, its derivative, solved state, the
-    /// correction the estimates read, and one scratch that holds the known term
-    /// during the callback and serves the estimates, the accepted derivative and
-    /// the dense output after it.
+    /// Reusable predictor, predicted derivative, solution, correction and scratch.
+    /// Scratch holds `known` during the solve, then serves estimates and output.
     struct Work {
       State predictor {};
       State derivative_predictor {};

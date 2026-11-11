@@ -336,7 +336,7 @@ TEST_CASE("second order: without initialization the given velocity is the initia
 {
   // With the initialization off the pair is the level the run starts from, the
   // velocity it was given is the derivative's first half, and the acceleration is
-  // zero -- the kernel's own `u' - v = 0` (doc/evidence/consistent-init.md).
+  // zero -- the kernel's own `u' - v = 0` (doc/comsol-alignment.md#initialization).
   const Oscillator oscillator {1.0, 1.0};
   atstep::Settings settings;
   settings.initialization = atstep::Initialization::off;

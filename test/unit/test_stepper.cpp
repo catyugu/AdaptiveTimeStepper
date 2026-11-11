@@ -302,7 +302,7 @@ TEST_CASE("stepper: a run without initialization starts from the values it is gi
 {
   // No probe is solved, the level is the initial state at the start time with a
   // zero derivative, and with nothing to cap it the first step is the automatic
-  // fraction of the span alone (doc/evidence/consistent-init.md).
+  // fraction of the span alone (doc/comsol-alignment.md#initialization).
   atstep::Settings settings;
   settings.initialization = atstep::Initialization::off;
   int calls = 0;
