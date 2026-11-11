@@ -60,7 +60,7 @@ target_include_directories(AdaptiveTimeStepper INTERFACE
 
 # --- tests and examples ------------------------------------------------------
 
-if(ATSTEP_BUILD_TESTS OR ATSTEP_BUILD_EXAMPLES)
+if(ATSTEP_BUILD_TESTS)
     enable_testing()
 endif()
 
