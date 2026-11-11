@@ -90,39 +90,8 @@ absolute weights respectively, so output can affect later step decisions.
 
 ## Settings
 
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| `steps` | `AdaptiveSteps` | Adaptive or `ManualSteps` control |
-| `AdaptiveSteps::placement` | `Placement::free` | Free, intermediate or strict placement |
-| `AdaptiveSteps::max_step` | `AutomaticMaxStep` | 0.1 of span, `ConstantMaxStep`, or `ExpressionMaxStep` |
-| `AdaptiveSteps::min_order`, `::max_order` | 1, 5 | Adaptive order range |
-| `AdaptiveSteps::initial_step` | unset | Automatic initial step or explicit value |
-| `AdaptiveSteps::min_step_fraction` | 1e-10 | Minimum step as fraction of span |
-| `ManualSteps::step`, `::order` | 0.0, 2 | Required positive step and BDF order |
-| `ManualSteps::startup_fraction`, `::startup_growth` | unset | Per-order defaults; see [startup curve](doc/comsol-alignment.md#stepping-and-output) |
-| `interpolate_end_time` (either step type) | true | Allow an internal step past the end; strict placement ignores it |
-| `error.relative` | 1e-2 | Relative tolerance |
-| `error.absolute` | factor 0.1 | Factor of relative tolerance or manual absolute value |
-| `error.scaled` | true | Apply criterion to scaled variables |
-| `error.variables` | empty | Variable sizes, scales and absolute-tolerance update flags |
-| `initialization` | `backward_euler` | Two initialization probes; `off` skips them |
-| `initialization_fraction` | 1e-3 | Probe size relative to the initial-step basis |
-| `storage` | `Storage::interpolate` | Interpolated, closest-step or internal-step output |
-| `store_every` | 1 | Store every Nth internal step |
-
-The adaptive maximum order 5 follows COMSOL's generic Time solver. To match
-Heat Transfer's automatic configuration, set
-`std::get<atstep::AdaptiveSteps>(settings.steps).max_order = 2`.
-The separate manual order defaults to 2.
-
-Free placement lets error control choose steps. Intermediate placement adds at
-least one step in each output interval; strict placement lands on every requested
-time. Manual stepping follows a configured step and order with startup, disables
-the local error test, and still reduces the step on failed algebraic solves.
-
-Interpolated storage reports requested times. Closest storage reports the first
-internal step reaching each request, merging requests reached by one step.
-Step storage reports internal accepted steps, filtered by `store_every`.
+`Settings` configures step control, tolerances, initialization and output.
+See the [settings guide](doc/settings.md) for all parameters, defaults and examples.
 
 ## Run lifecycle and output
 
@@ -181,6 +150,7 @@ required only to regenerate references.
 
 ## Further documentation
 
+- [Settings](doc/settings.md): parameters, defaults and configuration examples.
 - [Design](doc/design.md): ownership, accepted history, attempts and output.
 - [COMSOL alignment and evidence](doc/comsol-alignment.md): formulas, reference suites, measured rules, known differences and reproduction.
 - [Coupled multiphysics](doc/multiphysics.md): thermoelastic reference and motor example.
