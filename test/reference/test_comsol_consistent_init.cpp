@@ -8,7 +8,7 @@
 // The switch is COMSOL's `consistent`: with it off the record starts from the
 // initial values themselves and takes the first step the rule gives, and with it
 // on the two backward-Euler probes move the level and size that step. Both are
-// replayed here (doc/evidence/consistent-init.md).
+// replayed here (doc/comsol-alignment.md#initialization).
 #include "atstep/second_order.hpp"
 #include "atstep/stepper.hpp"
 #include "reference/comsol_consistent_init.hpp"
@@ -100,7 +100,7 @@ namespace {
       stored.times.push_back(time);
       stored.values.push_back(y[0]);
       // COMSOL reports the derivative of the polynomial it stores, not the solve's
-      // (doc/evidence/consistent-init.md).
+      // (doc/comsol-alignment.md#initialization).
       State derivative;
       stepper.interpolate(time, derivative, 1);
       stored.derivatives.push_back(derivative[0]);

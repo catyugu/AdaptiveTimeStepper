@@ -24,27 +24,8 @@ namespace atstep::detail {
     double a,
     const std::vector<double, Allocator>& x);
 
-  /// The customization point that makes a state a vector of the stepper:
-  ///
-  ///     y += a * x
-  ///
-  /// It is the only arithmetic the stepper does on a state. Everything else
-  /// it needs — the operator, the matrix, the assembly — is the caller's, and
-  /// a state of any shape works: a vector of one value, a block vector of a
-  /// coupled system, a distributed vector with a layout of its own.
-  ///
-  /// `x` may be `y` itself, which rescales a state: the stepper scales stored
-  /// columns this way rather than copying them. An implementation must
-  /// therefore read an element of `x` before it writes the same element of
-  /// `y`, as `y += a * x` elementwise does.
-  ///
-  /// The default forwards to a member `axpy(a, x)`. A type that has no such
-  /// member can be wrapped in a type providing that member:
-  ///
-  ///     struct State {
-  ///         std::vector<float> values;
-  ///         void axpy(double a, const State& x);
-  ///     };
+  /// State arithmetic: `y += a*x`, forwarded to `y.axpy(a, x)`.
+  /// Must support `x == y`; read each source element before overwriting it.
   template <class State>
   auto axpy(State& y, double a, const State& x) -> decltype(y.axpy(a, x), void())
   {
@@ -92,28 +73,8 @@ namespace atstep::detail {
       y[i] += a * x[i];
   }
 
-  /// COMSOL's local error test: the weighted RMS of the error estimate over the
-  /// state, averaged over the dependent variables first and over the degrees of
-  /// freedom of a variable second.
-  ///
-  /// For a variable `j` with `N_j` degrees of freedom, its scale `sigma_j` and
-  /// its error estimate `E`:
-  ///
-  ///     Y_i     = returned_i / sigma_j
-  ///     A_s,i   = A_k (beta_j + rms(Y_j))     automatic scale, update on
-  ///     A_s,i   = A_k                          otherwise
-  ///     beta_j  = (1 - exp(-j/5)) max(abs(Y_j)) + exp(-j/5)
-  ///     W_i     = A_s,i + R abs(Y_i)           scaled method
-  ///     W_i     = A_k   + R abs(U_i)           unscaled method
-  ///     E^2     = (1/M) sum_j (1/N_j) sum_i (E_i / W_i)^2
-  ///
-  /// where `j` is the accepted-step index and `A_k` is the entered absolute
-  /// tolerance. Measured: doc/evidence/tolerance-axes.md. A single variable of
-  /// one dof at scale one reduces to COMSOL's scalar form, which is the only
-  /// case the recorded trajectories cover.
-  ///
-  /// States expose `size()` and `operator[]`; a layout that does not is given
-  /// its norm by its caller (the `Norm` parameter of `TimeStepper`).
+  /// Per-variable weighted RMS error test for indexable states.
+  /// The formula and evidence are maintained in doc/comsol-alignment.md#error-norm.
   struct WeightedRmsNorm {
     /// The relative tolerance `R`.
     double relative = 1e-2;
@@ -158,10 +119,7 @@ namespace atstep::detail {
       return norm;
     }
 
-    /// COMSOL updates the scaled absolute tolerance from the solution returned
-    /// to the caller, which can be interpolated. The relative part and the
-    /// variable's own magnitude continue to use the last accepted internal
-    /// state.
+    /// Absolute weights follow `returned`; relative weights follow `reference`.
     template <class State, std::enable_if_t<Indexable<State>, int> = 0>
     double operator()(const State& error,
       const State& reference,

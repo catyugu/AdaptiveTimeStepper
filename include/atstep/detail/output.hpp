@@ -34,17 +34,8 @@ namespace atstep::detail {
       adaptive.placement != Placement::strict and adaptive.interpolate_end_time};
   }
 
-  /// Where the steps of a run may land, and which output times a step that
-  /// reached a time stores.
-  ///
-  /// It owns the output times — a copies of the caller's schedule — and the two
-  /// settings that read them: the step placement decides the size a step is cut
-  /// to, the storage what the values reported. The stepper holds the steps
-  /// themselves.
-  ///
-  /// One invariant orders the file: `next_` is the first output time not yet
-  /// stored. A step's placement and its outputs are functions of
-  /// `(time, next_, placement, end)`, so nothing else has to be remembered.
+  /// Owns requested times and resolves step placement and output selection.
+  /// `next_` is the first output time not yet stored.
   class StepSchedule {
   public:
     /// The step the schedule takes, and the time it must end at where it must
@@ -78,15 +69,8 @@ namespace atstep::detail {
     /// runs once per schedule, so that stepping reads no variant.
     void resolve(const Settings& settings);
 
-    /// Whether the interval that starts at the last output time already holds a
-    /// step: an accepted step that crossed an output time counts as the landing
-    /// of the next interval, and then the following step may cross the rest of
-    /// this one.
-    ///
-    /// It cannot be read off the clock. The level a consistent initialization
-    /// leaves sits `2 * probe` past the start time and is not a step, so
-    /// `time > times_[next_ - 1]` would call the first interval landed before
-    /// the first step.
+    /// Whether the current output interval already contains an accepted step.
+    /// A crossing step counts toward the next interval; initialization does not.
     bool interval_has_step_ = false;
 
     Placement placement_ = Placement::free;
@@ -111,10 +95,8 @@ namespace atstep::detail {
     return std::abs(time + step - target) <= fuzz;
   }
 
-  /// The step to take instead of `step` so that a step from `time` ends at
-  /// `target`: the same step where it already does, otherwise one that leaves a
-  /// rounding margin rather than a remainder, or half the distance where the
-  /// step would leave less than that.
+  /// Preserve an existing landing; otherwise shorten with a rounding margin
+  /// or split the last two steps to avoid a tiny remainder.
   inline double landing_step(double step, double time, double target)
   {
     const double remaining = target - time;
@@ -125,19 +107,12 @@ namespace atstep::detail {
     return 2.0 * step > remaining ? 0.5 * remaining : step;
   }
 
-  /// How close the clock must come to the end for a run to have reached it, as a
-  /// fraction of the clock: a sum of steps carries one rounding per step, so it can
-  /// end a few ulps short of the end, and the spacing at the clock's own mantissa
-  /// does not bracket what COMSOL allows at every scale. Measured on 0.1 s manual
-  /// runs stopped at 1, 10 and 100 s: COMSOL stops at 9.5, 9.6 and 9.6 of these
-  /// epsilons and takes another step at 10.5, 10.4 and 10.24.
+  /// Relative end-time margin for accumulated clock roundoff.
+  /// Measured on manual runs ending at 1, 10 and 100 seconds.
   inline constexpr double end_margin_tolerance
     = 10.0 * std::numeric_limits<double>::epsilon();
 
-  /// The step to take from `time` instead of `step`, so that a step which would
-  /// stop within `end_margin_tolerance` of the end time ends on it: a sum of steps
-  /// that comes that close has arrived. A step that already passes the end, or one
-  /// that stops further short of it, is left as it is.
+  /// Snap a step ending within end_margin_tolerance to the end time.
   inline double end_landing_step(double step, double time, double end_time)
   {
     const double next = time + step;

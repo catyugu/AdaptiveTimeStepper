@@ -11,8 +11,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # --- Linux, the two GCC versions the headers are known to build with --------
-
   linux-gcc:
     name: linux-gcc ${{ matrix.compiler }} ${{ matrix.build_type }}
     runs-on: ubuntu-24.04
@@ -27,40 +25,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Resolve the toolchain
-        run: |
-          set -euo pipefail
-          export CXX="g++-${CC#gcc-}"
-          missing=()
-          for tool in "$CC" "$CXX" ninja ccache; do
-            command -v "$tool" >/dev/null || missing+=("$tool")
-          done
-          if [ ${#missing[@]} -eq 0 ]; then
-            echo "The runner has $CC, $CXX, ninja and ccache: no install"
-          else
-            echo "Installing ${missing[*]}"
-            sudo apt-get update -o Acquire::Retries=3
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-              --no-install-recommends "${missing[@]}"
-          fi
-
-      - name: Write the compiler environment
+      - name: Check the runner toolchain
         run: |
           echo "CXX=g++-${CC#gcc-}" >> "$GITHUB_ENV"
-          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
-
-      - uses: actions/cache@v4
-        with:
-          path: ~/.ccache
-          key: ccache-linux-gcc-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ github.sha }}
-          restore-keys: |
-            ccache-linux-gcc-${{ matrix.compiler }}-${{ matrix.build_type }}-
+          for tool in "$CC" "g++-${CC#gcc-}" ninja; do
+            command -v "$tool"
+          done
 
       - name: Configure
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DATSTEP_WARNINGS_AS_ERRORS=ON
 
       - name: Build
@@ -68,8 +43,6 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
-
-  # --- Linux, Clang: two versions, plus one sanitizer run --------------------
 
   linux-clang:
     name: linux-clang ${{ matrix.compiler }} ${{ matrix.build_type }} sanitizers=${{ matrix.sanitizers }}
@@ -80,15 +53,13 @@ jobs:
       matrix:
         compiler: [clang-17, clang-18]
         build_type: [Debug, Release]
-        # Quoted: an unquoted OFF is a YAML boolean, and the value is read back
-        # as a CMake cache variable.
+        # Keep CMake switches as strings.
         sanitizers: ["OFF"]
         include:
           - compiler: clang-18
             build_type: Debug
             sanitizers: "ON"
-        # The clang-18 Debug build runs once, with the sanitizers on; the
-        # include entry above adds it and this line drops the plain one.
+        # Replace the plain Debug build with the sanitizer build.
         exclude:
           - compiler: clang-18
             build_type: Debug
@@ -100,40 +71,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Resolve the toolchain
-        run: |
-          set -euo pipefail
-          export CXX="clang++-${CC#clang-}"
-          missing=()
-          for tool in "$CC" "$CXX" ninja ccache; do
-            command -v "$tool" >/dev/null || missing+=("$tool")
-          done
-          if [ ${#missing[@]} -eq 0 ]; then
-            echo "The runner has $CC, $CXX, ninja and ccache: no install"
-          else
-            echo "Installing ${missing[*]}"
-            sudo apt-get update -o Acquire::Retries=3
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-              --no-install-recommends "${missing[@]}"
-          fi
-
-      - name: Write the compiler environment
+      - name: Check the runner toolchain
         run: |
           echo "CXX=clang++-${CC#clang-}" >> "$GITHUB_ENV"
-          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
-
-      - uses: actions/cache@v4
-        with:
-          path: ~/.ccache
-          key: ccache-linux-clang-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ matrix.sanitizers }}-${{ github.sha }}
-          restore-keys: |
-            ccache-linux-clang-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ matrix.sanitizers }}-
+          for tool in "$CC" "clang++-${CC#clang-}" ninja; do
+            command -v "$tool"
+          done
 
       - name: Configure
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DATSTEP_WARNINGS_AS_ERRORS=ON \
             -DATSTEP_ENABLE_SANITIZERS=${{ matrix.sanitizers }}
 
@@ -143,8 +91,6 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
-  # --- macOS: arm64 and x86_64, AppleClang ----------------------------------
-
   macos:
     name: macos ${{ matrix.os }} ${{ matrix.build_type }}
     runs-on: ${{ matrix.os }}
@@ -152,8 +98,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-15 is arm64, macos-15-intel is x86_64: the two architectures
-        # AppleClang is built for. macos-13 (x86_64) is retired.
+        # Cover Apple Silicon and Intel.
         os: [macos-15, macos-15-intel]
         build_type: [Debug, Release]
     steps:
@@ -170,8 +115,6 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
-
-  # --- Windows, MSVC and clang-cl -------------------------------------------
 
   windows-msvc:
     name: windows-msvc ${{ matrix.build_type }}
@@ -213,8 +156,6 @@ jobs:
       - name: Test
         run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
 
-  # --- C++17 pinned, and every header compiled on its own -------------------
-
   standards:
     name: standards C++17 and standalone headers
     runs-on: ubuntu-24.04
@@ -225,10 +166,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install the toolchain
+      - name: Check the runner toolchain
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends g++-13 ninja-build
+          command -v "$CXX"
+          command -v ninja
 
       - name: Configure with C++17 pinned
         run: |
@@ -252,12 +193,8 @@ jobs:
               -c "build/standalone/$name.cpp" -o "build/standalone/$name.o"
           done
 
-  # --- The installed package, consumed with find_package ---------------------
-
   consumer:
     name: consumer find_package
-    # The install is produced from this checkout; the gate keeps the job from
-    # running when the library does not build at all.
     needs: [linux-gcc]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -267,10 +204,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install the toolchain
+      - name: Check the runner toolchain
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends g++-13 ninja-build
+          command -v "$CXX"
+          command -v ninja
 
       - name: Install the library into a prefix
         run: |

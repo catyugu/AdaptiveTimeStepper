@@ -28,7 +28,7 @@ namespace {
   constexpr double damping = 0.1;
 
   /// The agreement on every stored time and value: the replay solves exactly, as
-  /// the record's own run does, and the residual is arithmetic (second-order.md).
+  /// the record's own run does, and the residual is arithmetic (doc/comsol-alignment.md#second-order-error-and-output).
   constexpr double agreement = 1e-8;
 
   /// One run of `count` independent oscillators, compared with the record.

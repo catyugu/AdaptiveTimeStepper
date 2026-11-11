@@ -25,7 +25,7 @@ import java.io.*;
 // solver log, which carries the scale block and the accepted-step table) and one
 // manifest.csv row. The records are test/reference/comsol_second_order.hpp and
 // test/reference/comsol_second_order_k.hpp; the two pair runs are the controls
-// quoted in doc/evidence/second-order.md.
+// quoted in doc/comsol-alignment.md#second-order-error-and-output.
 public class GeSecondOrder {
     static String directory;
     static PrintWriter manifest;

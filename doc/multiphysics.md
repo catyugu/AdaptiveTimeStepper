@@ -62,31 +62,12 @@ absolute comparison limit is `1e-7` for each quantity. Separate analytic and
 energy checks validate the model and the export's degree-of-freedom ordering.
 Reference values are only read after the C++ solve; they never enter its callback.
 
-The local MSVC Release comparison measured maximum differences of `3.79e-9`
-in time, `7.13e-10` in state and `1.28e-8` in derivative. COMSOL's own
-maximum analytic errors were `5.25e-7` in state and `1.18e-6` in derivative.
-
 This verifies a reduced coupled system implemented with Global Equations.
 It does not validate COMSOL's spatial Solid Mechanics/Heat Transfer interfaces
 or arbitrary continuum thermoelastic models.
 
-Regenerate with COMSOL installed:
-
-```text
-python tools/comsol/run_thermoelastic.py --directory .cache/comsol-thermoelastic
-```
-
-To rebuild the header from the same raw evidence without running COMSOL:
-
-```text
-python tools/comsol/run_thermoelastic.py --header-only --directory .cache/comsol-thermoelastic
-```
-
-The scalar decay reference has its own entrypoint, `tools/comsol/run_stepping.py`,
-and the second-order one `tools/comsol/run_second_order.py`.
-Both scripts use `tools/comsol/common.py` only for tool discovery, compilation
-and batch execution; their model configuration and export checks are independent.
-Normal CTest runs use the committed reference and require no COMSOL installation.
+Reference-generation commands and tool requirements are in
+[COMSOL alignment](comsol-alignment.md#reproduce-and-sources).
 
 ## Example: electrical, thermal and mechanical motor dynamics
 
@@ -106,11 +87,6 @@ changes electrical resistance. Every Newton update solves the full coupled
 Jacobian by block elimination. A failed nonlinear solve reports nonconvergence
 to the stepper for retry.
 
-The example uses `V=2 V`, `L=0.5 H`, `J=0.2 kg m^2`, `C=2 J/K`, `R0=1 ohm`,
-`alpha=0.1/K`, `k=0.5` in consistent SI torque/back-EMF units,
-`b=0.1 N m s` and `G=0.5 W/K`. It starts from rest at ambient temperature
-and integrates to 60 seconds, using maximum order 2 and relative tolerance 1e-6.
-
 It prints the trajectory and checks finite, nonnegative states, an independent
 stationary solution and the power balance
 
@@ -125,15 +101,6 @@ balance by bisection, then derives current and speed. The example requires
 maximum final-state error below `2e-5` and power defect below `1e-7 W`.
 This example has no COMSOL comparison.
 
-The local Release run took 880 steps without rejection or failed solves.
-At 60 seconds, `(i,omega,theta)` was approximately
-`(0.56068099,2.80340494,0.67090812)`. Its maximum stationary-reference error
-was `1.79e-8`; the worst power defect was `5.23e-12 W`.
-
-Build and run both cases through CTest:
-
-```text
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-ctest --test-dir build --output-on-failure
-```
+Build and test with the commands in the [README](../README.md#build-and-test).
+Run `build/examples/atstep_example_coupled_motor` separately to inspect the
+motor trajectory and its checks.
