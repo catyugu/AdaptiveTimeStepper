@@ -130,11 +130,13 @@ The six initialization references replay both modes, explicit initial-step
 selection and manual stepping. COMSOL's exported derivative can be the dense
 polynomial's derivative, so initialization regressions compare that quantity.
 
-An unresolved measured case remains: with initialization off and `rtol = 1e-5`,
-COMSOL rejects the initial 0.01 s step five times before accepting at
-`9.765625e-6 s`; the library rejects three times and accepts at `1.5625e-4 s`.
-The first-step error coefficient shrinks differently during repeated reductions.
-This case is outside the committed reference set and needs a dedicated sweep.
+With initialization off and `rtol = 1e-5`, COMSOL rejects the initial 0.01 s step
+five times and accepts at `9.765625e-6 s`. A refused first step is predicted again
+from a fresh equal-step history: the rejected proposal is not the previous step
+size of the retry, so the order-1 error coefficient stays `1/2` and the estimate
+falls with `h`, not `h²`. The first order-2 sample after that startup is not
+replayed at the `1e-8` agreement of the committed references, so the case remains
+outside the reference set and needs its own sweep.
 
 ## Second-order error and output
 

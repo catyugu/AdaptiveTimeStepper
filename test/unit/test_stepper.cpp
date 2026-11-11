@@ -327,6 +327,26 @@ TEST_CASE("stepper: a run without initialization starts from the values it is gi
   CHECK_NEAR(stepper.state().value, 1.0 / 1.01, 1e-12);
 }
 
+TEST_CASE("stepper: a refused first step is retried as a fresh first step")
+{
+  // With initialization off the first step has no accepted step behind it, so
+  // every refusal predicts again from a fresh equal-step history. Keeping the
+  // rejected proposal as the previous step would shrink the error coefficient
+  // with the step and accept too large a step
+  // (doc/comsol-alignment.md#initialization).
+  atstep::Settings settings;
+  settings.initialization = atstep::Initialization::off;
+  settings.error.relative = 1e-5;
+  atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
+  stepper.start(0.0, Scalar {1.0}, 10.0);
+
+  const auto record = stepper.advance();
+  CHECK_EQ(stepper.report().rejected, 5);
+  CHECK_NEAR(record.step, 9.765625e-6, 1e-15);
+  CHECK_NEAR(record.time, 9.765625e-6, 1e-15);
+  CHECK_NEAR(stepper.state().value, 0.9999902344703665, 1e-15);
+}
+
 TEST_CASE("stepper: a manual run without initialization takes its own first step")
 {
   atstep::Settings settings = manual_settings(2, 0.1);

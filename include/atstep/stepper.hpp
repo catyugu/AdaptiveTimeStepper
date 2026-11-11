@@ -667,9 +667,15 @@ namespace atstep {
       for (int i = 1; i <= trial.order; ++i) {
         const auto j = static_cast<std::size_t>(i);
         const double old_distance = trial.psi[j - 1];
+        // A refused first step is a fresh equal-step first step: its
+        // coefficients use the retry size, not the rejected proposal
+        // (IDA's IDAReset). The predictor still scales the stored
+        // derivative through the rejected size.
+        const double leading_distance
+          = (controller_->steps() == 0 and i == 1) ? trial.step : old_distance;
         trial.psi[j - 1] = distance;
         beta *= distance / old_distance;
-        distance = old_distance + trial.step;
+        distance = leading_distance + trial.step;
         gamma += alpha / trial.step;
         alpha = trial.step / distance;
         if (i < trial.order)
