@@ -17,8 +17,8 @@ It reads time, state and derivative directly through `getPVals`, `getU` and
 the final label `10` may be an interpolated value from a step ending past 10.
 `tools/comsol/run_stepping.py` validates the exports against `exp(-t)` and the
 solver log, then writes `test/reference/comsol_stepping.hpp`; `run_tolerance.py`,
-`run_twofield.py`, `run_thermoelastic.py`, `run_second_order.py` and
-`run_dofs.py` do the same for the other five models.
+`run_twofield.py`, `run_thermoelastic.py`, `run_second_order.py`, `run_dofs.py` and
+`run_consistent_init.py` do the same for the other six models.
 The 1,231 samples in that file come from COMSOL, not from this library.
 
 The regression checks each stored time, value and derivative, the accepted,
@@ -172,10 +172,22 @@ runs use the manual step instead of the span. The independent 0.2 s manual
 case confirms that dependence. The initialization solves are not counted as
 accepted time steps.
 
+It can also be turned off, which is the solver property `consistent`: `bweuler`
+(the default) runs the probes and `off` does not. With it off the record's first
+state is the initial value itself at the start time, with a zero derivative for a
+first-order equation, and the first step is the rule's own — 0.1% of the span, the
+step the case names, or the manual step — with no measured derivative to cap it.
+A second-order form keeps the velocity it was given as that derivative and starts
+its acceleration at zero, so its automatic first step is still capped by
+`0.5 / norm(y')`. `Settings::initialization` is that switch, replayed on six runs
+of two models ([evidence/consistent-init.md](evidence/consistent-init.md)).
+
 Strict stepping and end-time landing avoid a small remainder by splitting the
 last two steps. When a proposed step overshoots a required landing time, the
 clipped step includes the floating-point safety margin. A step already landing
-on that time is retained. These details matter because changes of step size
+on that time is retained, and a step that would stop within the clock's own
+roundings of the end takes the rest of it, as COMSOL's end-of-run test does. These
+details matter because changes of step size
 reset the equal-step counter and can reset nonlinear convergence estimates.
 
 Intermediate mode counts an accepted step that crossed an output time as a
@@ -222,6 +234,7 @@ system, not in the local error (doc/evidence/second-order.md).
 ```text
 python tools/comsol/run_stepping.py --directory .cache/comsol-reference
 python tools/comsol/run_second_order.py --directory .cache/comsol-reference
+python tools/comsol/run_consistent_init.py --directory .cache/comsol-reference
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DATSTEP_WARNINGS_AS_ERRORS=ON
 cmake --build build
 ctest --test-dir build --output-on-failure

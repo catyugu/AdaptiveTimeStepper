@@ -331,6 +331,54 @@ TEST_CASE("second order: the velocity the run starts from is an initial conditio
   CHECK(worst < 1e-5);
 }
 
+TEST_CASE("second order: without initialization the given velocity is the initial "
+          "derivative")
+{
+  // With the initialization off the pair is the level the run starts from, the
+  // velocity it was given is the derivative's first half, and the acceleration is
+  // zero -- the kernel's own `u' - v = 0` (doc/evidence/consistent-init.md).
+  const Oscillator oscillator {1.0, 1.0};
+  atstep::Settings settings;
+  settings.initialization = atstep::Initialization::off;
+  int calls = 0;
+  atstep::SecondOrderStepper<State> stepper(settings,
+    [&calls, oscillator](
+      const atstep::StepRequest<atstep::SecondOrderState<State>>& request,
+      atstep::SecondOrderState<State>& y) {
+      ++calls;
+      return oscillator.solve(request, y);
+    });
+  stepper.start(0.0, atstep::SecondOrderState<State> {{oscillator.u0}, {oscillator.v0}},
+    10.0);
+
+  CHECK_EQ(calls, 0);
+  CHECK_EQ(stepper.time(), 0.0);
+  CHECK_EQ(stepper.state()[0], oscillator.u0);
+  CHECK_EQ(stepper.derivative()[0], oscillator.v0);
+  State derivative;
+  stepper.interpolate(stepper.time(), derivative, 1);
+  CHECK_EQ(derivative[0], oscillator.v0);
+
+  // The first step the velocity justifies, over the two variables of the pair.
+  const double weight = 1e-3 * (oscillator.u0 + 1.0) + 1e-2 * oscillator.u0;
+  const double norm = std::sqrt(0.5) * oscillator.v0 / weight;
+  CHECK_NEAR(stepper.step_size(), std::min(1e-2, 0.5 / norm), 1e-9);
+
+  // The level the pair's rows imply for that step, whose derivative starts at
+  // `(v0, 0)`: the predictor is `(u0 + h v0, v0)`, and with `cj h = 1`,
+  //
+  //     v1 = cj (u1 - u0),      u1 + (cj + c) v1 = cj v0.
+  const double first = stepper.step_size();
+  stepper.advance();
+  const double cj = 1.0 / first;
+  const double expected_u
+    = (cj * oscillator.v0 + (cj + damping) * cj * oscillator.u0)
+    / (1.0 + cj * (cj + damping));
+  CHECK_NEAR(stepper.time(), first, 1e-15);
+  CHECK_NEAR(stepper.state()[0], expected_u, 1e-12);
+  CHECK_NEAR(stepper.derivative()[0], cj * (expected_u - oscillator.u0), 1e-12);
+}
+
 TEST_CASE("second order: a run of no solve is refused, and a norm of the caller's "
           "own measures the pair")
 {

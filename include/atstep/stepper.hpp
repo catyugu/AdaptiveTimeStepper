@@ -225,6 +225,7 @@ namespace atstep {
       // object triggers GCC 13/14's maybe-uninitialized diagnostic in optimized
       // consumers, on the inactive std::function storage.
       settings_.error = settings.error;
+      settings_.initialization = settings.initialization;
       settings_.initialization_fraction = settings.initialization_fraction;
       settings_.storage = settings.storage;
       settings_.store_every = settings.store_every;
@@ -249,14 +250,23 @@ namespace atstep {
         throw std::invalid_argument("atstep: a run needs a solve");
     }
 
-    /// Prepare the run: the state at `time`, integrated to `end_time`. Two
-    /// artificial backward-Euler steps of `initialization_fraction` of the first
-    /// step are COMSOL's measured consistent initialization: they reconcile the
-    /// initial values with the equations and give the derivative the first step
-    /// is sized from. Each is a solve of the caller's.
+    /// Prepare the run: the state at `time`, integrated to `end_time`.
+    ///
+    /// Under `Initialization::backward_euler` two artificial backward-Euler steps
+    /// of `initialization_fraction` of the first step reconcile the initial values
+    /// with the equations and give the derivative the first step is sized from,
+    /// each a solve of the caller's. Under `Initialization::off` nothing is solved
+    /// and the derivative the run starts from is zero.
     void start(double time, const State& initial, double end_time)
     {
       prepare_run(time, end_time);
+      if (settings_.initialization == Initialization::off) {
+        State derivative = initial;
+        detail::axpy(derivative, -1.0, initial);
+        begin_run(
+          time, initial, derivative, norm_(derivative, initial, initial, 0), time, end_time);
+        return;
+      }
       const double span = end_time - time;
 
       // The probe is the initial step of the alternative the run steps in, times
@@ -314,8 +324,9 @@ namespace atstep {
         initialized_time, end_time);
     }
 
-    /// Start from a state and a derivative the caller gives, without the
-    /// consistent initialization: COMSOL's "Consistent initialization: Off".
+    /// Start from a state and a derivative the caller gives, as a restart from a
+    /// recorded level does. The initialization setting is not read: the derivative
+    /// is the caller's, so a probe has none to measure.
     void start(double time, const State& initial, const State& derivative, double end_time)
     {
       prepare_run(time, end_time);
@@ -376,6 +387,13 @@ namespace atstep {
     const RunReport& report() const noexcept
     {
       return report_;
+    }
+
+    /// The settings the run was built from: the copy the constructor took, which an
+    /// adapter layered on this kernel reads instead of keeping its own.
+    const Settings& settings() const noexcept
+    {
+      return settings_;
     }
 
     /// Integrate from the start time to the end time, reporting the values the
@@ -584,6 +602,11 @@ namespace atstep {
           if (detail::lands_on(from, step, end_time_))
             boundary = end_time_;
         }
+        // A step that would stop within the clock's own roundings of the end time
+        // ends on it, so the end is a time the run reaches and not one it misses by
+        // a few ulps.
+        if (not boundary)
+          step = detail::end_landing_step(step, from, end_time_);
         if (not(step > 0.0))
           throw std::runtime_error(
             "atstep: no step is left at t = " + std::to_string(from));

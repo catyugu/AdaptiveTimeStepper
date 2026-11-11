@@ -68,8 +68,9 @@ unattainable. The error test measures the state alone, divided by the two
 variables the augmented system solves for (`sqrt(1/2)`), which is what COMSOL
 does; a norm of the caller's is typed over
 `SecondOrderState`. `run` reports the first derivative with every stored value,
-and `start` runs the two initialization probes for a pair and skips them when the
-caller also gives the pair's derivative. See
+and `start` runs the two initialization probes for a pair; with
+`Initialization::off` the pair's own `u'` is the derivative the run starts from, and
+a start that also gives the pair's derivative takes neither. See
 [the oscillator example](examples/second_order.cpp) and the
 [design](doc/design.md#second-order-equations).
 
@@ -147,22 +148,23 @@ whose variables are not one dof each:
 alternative holds only the fields it reads. The shape is COMSOL's own, and
 doc/design.md records how the kernel reads it.
 
-| Setting                                   | Default                | Meaning                                                    |
-| :---------------------------------------- | :--------------------- | :--------------------------------------------------------- |
-| `steps`                                   | `AdaptiveSteps`        | The solver's steps, or `ManualSteps`                       |
-| `AdaptiveSteps::placement`                | `Placement::free`      | Where the solver's steps land                              |
-| `AdaptiveSteps::max_step`                 | `AutomaticMaxStep`     | `AutomaticMaxStep`, `ConstantMaxStep`, `ExpressionMaxStep` |
-| `AdaptiveSteps::min_order`, `::max_order` | 1, 5                   | Adaptive order range; startup uses available history       |
-| `AdaptiveSteps::initial_step`             | unset                  | The first step; unset means the automatic rule             |
-| `AdaptiveSteps::min_step_fraction`        | 1e-10                  | Minimum step as a fraction of the span                     |
-| `ManualSteps::step`, `::order`            | 0.0, 2                 | The fixed step of a manual run, and its BDF order          |
-| `error.relative`                          | 1e-2                   | Relative error weight                                      |
-| `error.absolute`                          | factor 0.1             | The absolute tolerance: a factor of `relative`, or a value |
-| `error.scaled`                            | true                   | Scale the solution by each variable's scale                |
-| `error.variables`                         | empty                  | The dependent variables, their scales, their `A_s` branch  |
-| `initialization_fraction`                 | 1e-3                   | COMSOL's "Fraction of initial step for Backward Euler"     |
-| `storage`                                 | `Storage::interpolate` | Output selection                                           |
-| `store_every`                             | 1                      | Store every Nth step                                       |
+| Setting                                   | Default                | Meaning                                                      |
+| :---------------------------------------- | :--------------------- | :----------------------------------------------------------- |
+| `steps`                                   | `AdaptiveSteps`        | The solver's steps, or `ManualSteps`                         |
+| `AdaptiveSteps::placement`                | `Placement::free`      | Where the solver's steps land                                |
+| `AdaptiveSteps::max_step`                 | `AutomaticMaxStep`     | `AutomaticMaxStep`, `ConstantMaxStep`, `ExpressionMaxStep`   |
+| `AdaptiveSteps::min_order`, `::max_order` | 1, 5                   | Adaptive order range; startup uses available history         |
+| `AdaptiveSteps::initial_step`             | unset                  | The first step; unset means the automatic rule               |
+| `AdaptiveSteps::min_step_fraction`        | 1e-10                  | Minimum step as a fraction of the span                       |
+| `ManualSteps::step`, `::order`            | 0.0, 2                 | The fixed step of a manual run, and its BDF order            |
+| `error.relative`                          | 1e-2                   | Relative error weight                                        |
+| `error.absolute`                          | factor 0.1             | The absolute tolerance: a factor of `relative`, or a value   |
+| `error.scaled`                            | true                   | Scale the solution by each variable's scale                  |
+| `error.variables`                         | empty                  | The dependent variables, their scales, their `A_s` branch    |
+| `initialization`                          | `backward_euler`       | COMSOL's "Consistent initialization"; `off` skips the probes |
+| `initialization_fraction`                 | 1e-3                   | COMSOL's "Fraction of initial step for Backward Euler"       |
+| `storage`                                 | `Storage::interpolate` | Output selection                                             |
+| `store_every`                             | 1                      | Store every Nth step                                         |
 
 ### Why the default maximum order is 5
 
@@ -198,10 +200,16 @@ Store modes, `settings.storage`:
   value per step — a step that reaches several requested times stores them as one.
 - `Steps`: return every accepted internal step.
 
-`start(t0, initial, end)` resets the run. Initialization performs two artificial
-backward-Euler solves, so the first returned state can differ slightly from
-`initial`; a second-order run gives `start(t0, u0, du0, end)` its first derivative as the
-second initial value and advances the pair the same way. `run(times, hooks)`
+`start(t0, initial, end)` resets the run. Its consistent initialization — COMSOL's,
+two artificial backward-Euler solves — reconciles the initial values with the
+equations, so the first returned state can differ slightly from `initial` and its
+derivative sizes the first step. `settings.initialization = Initialization::off`
+skips it, as COMSOL's "Consistent initialization: Off" does: the run starts from
+`initial` at `t0` with a zero derivative, nothing is solved, and the first step is
+the automatic one alone. A second-order run gives `start(t0, u0, du0, end)` its
+first derivative as the second initial value and advances the pair the same way;
+with the initialization off the pair's own `u'` is the initial derivative and the
+acceleration starts at zero. `run(times, hooks)`
 takes output times as `const std::vector<double>&` and requires a fresh `start`
 and strictly increasing times starting at `t0` and ending at `end`; it copies them. Use either `run` for the complete schedule or `advance` for a
 caller-driven loop; call `start` before switching to a new run.

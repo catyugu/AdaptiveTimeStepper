@@ -125,6 +125,28 @@ namespace atstep::detail {
     return 2.0 * step > remaining ? 0.5 * remaining : step;
   }
 
+  /// How close the clock must come to the end for a run to have reached it, as a
+  /// fraction of the clock: a sum of steps carries one rounding per step, so it can
+  /// end a few ulps short of the end, and the spacing at the clock's own mantissa
+  /// does not bracket what COMSOL allows at every scale. Measured on 0.1 s manual
+  /// runs stopped at 1, 10 and 100 s: COMSOL stops at 9.5, 9.6 and 9.6 of these
+  /// epsilons and takes another step at 10.5, 10.4 and 10.24.
+  inline constexpr double end_margin_tolerance
+    = 10.0 * std::numeric_limits<double>::epsilon();
+
+  /// The step to take from `time` instead of `step`, so that a step which would
+  /// stop within `end_margin_tolerance` of the end time ends on it: a sum of steps
+  /// that comes that close has arrived. A step that already passes the end, or one
+  /// that stops further short of it, is left as it is.
+  inline double end_landing_step(double step, double time, double end_time)
+  {
+    const double next = time + step;
+    if (next > end_time
+      or end_time - next > end_margin_tolerance * std::abs(next))
+      return step;
+    return end_time - time;
+  }
+
   inline void StepSchedule::resolve(const Settings& settings)
   {
     store_ = settings.storage;

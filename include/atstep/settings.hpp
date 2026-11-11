@@ -49,6 +49,18 @@ namespace atstep {
     closest,
     steps };
 
+  /// How a run reconciles its initial values with the equations before its first
+  /// step: COMSOL's "Consistent initialization".
+  enum class Initialization {
+    /// Two artificial backward-Euler steps: the level they leave is the run's start
+    /// state, and the derivative they measure sizes its first step.
+    backward_euler,
+    /// None, COMSOL's "Off": the initial values are the start state, at the start
+    /// time, and the derivative the run starts from is zero
+    /// (doc/evidence/consistent-init.md).
+    off
+  };
+
   /// The largest step: COMSOL's "Maximum step constraint".
   struct AutomaticMaxStep { };
 
@@ -170,7 +182,8 @@ namespace atstep {
   /// Solver node (see doc/comsol-alignment.md): the relative tolerance 0.01, the
   /// absolute tolerance `0.1` times it, scaled by the magnitude of each variable,
   /// the first step `1e-3` of what remains of the interval, the largest step
-  /// `0.1` of the span, the orders 1 to 5, and the interpolation of the end time.
+  /// `0.1` of the span, the orders 1 to 5, the consistent initialization on, and
+  /// the interpolation of the end time.
   struct Settings {
     /// How the run takes its steps: the solver's, from the local error, or the
     /// model's own at a fixed step and order.
@@ -179,10 +192,12 @@ namespace atstep {
     /// The tolerance the local error is held to.
     ErrorTest error {};
 
-    /// COMSOL's "Fraction of initial step for Backward Euler": the size of each
-    /// of the two artificial steps a consistent initialization takes, as a
-    /// fraction of the run's first step. A start that is given the initial
-    /// derivative takes none.
+    /// COMSOL's "Consistent initialization".
+    Initialization initialization = Initialization::backward_euler;
+
+    /// COMSOL's "Fraction of initial step for Backward Euler": the size of each of
+    /// the two artificial steps, as a fraction of the run's first step. Read only
+    /// by a run that initializes.
     double initialization_fraction = 1e-3;
 
     /// Which times the run reports.
@@ -231,7 +246,8 @@ namespace atstep {
       if (const auto* constant = std::get_if<ConstantMaxStep>(&adaptive.max_step))
         require("steps.adaptive.max_step.seconds", finite_positive(constant->seconds));
     }
-    require("initialization_fraction", finite_positive(settings.initialization_fraction));
+    if (settings.initialization == Initialization::backward_euler)
+      require("initialization_fraction", finite_positive(settings.initialization_fraction));
     require("store_every", settings.store_every >= 1);
   }
 

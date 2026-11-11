@@ -298,6 +298,116 @@ TEST_CASE(
     1e-9);
 }
 
+TEST_CASE("stepper: a run without initialization starts from the values it is given")
+{
+  // No probe is solved, the level is the initial state at the start time with a
+  // zero derivative, and with nothing to cap it the first step is the automatic
+  // fraction of the span alone (doc/evidence/consistent-init.md).
+  atstep::Settings settings;
+  settings.initialization = atstep::Initialization::off;
+  int calls = 0;
+  atstep::TimeStepper<Scalar> stepper(settings,
+    [&calls](const atstep::StepRequest<Scalar>& request, Scalar& y) {
+      ++calls;
+      return solve_decay(request, y);
+    });
+  stepper.start(0.0, Scalar {1.0}, 10.0);
+
+  CHECK_EQ(calls, 0);
+  CHECK_EQ(stepper.time(), 0.0);
+  CHECK_EQ(stepper.state().value, 1.0);
+  Scalar derivative;
+  stepper.interpolate(stepper.time(), derivative, 1);
+  CHECK_EQ(derivative.value, 0.0);
+  CHECK_NEAR(stepper.step_size(), 10.0 * 1e-3, 1e-12);
+
+  stepper.advance();
+  CHECK_EQ(calls, 1);
+  CHECK_NEAR(stepper.time(), 1e-2, 1e-15);
+  CHECK_NEAR(stepper.state().value, 1.0 / 1.01, 1e-12);
+}
+
+TEST_CASE("stepper: a manual run without initialization takes its own first step")
+{
+  atstep::Settings settings = manual_settings(2, 0.1);
+  settings.initialization = atstep::Initialization::off;
+  int calls = 0;
+  atstep::TimeStepper<Scalar> stepper(settings,
+    [&calls](const atstep::StepRequest<Scalar>& request, Scalar& y) {
+      ++calls;
+      return solve_decay(request, y);
+    });
+  stepper.start(0.0, Scalar {1.0}, 1.0);
+
+  CHECK_EQ(calls, 0);
+  CHECK_EQ(stepper.time(), 0.0);
+  CHECK_NEAR(stepper.step_size(), 0.1, 1e-15);
+  stepper.advance();
+  // A step of a second-order run with no history behind it is a backward-Euler one.
+  CHECK_NEAR(stepper.time(), 0.1, 1e-15);
+  CHECK_NEAR(stepper.state().value, 1.0 / 1.1, 1e-12);
+}
+
+TEST_CASE("stepper: the initialization fraction is read only by a run that "
+          "initializes")
+{
+  // The field sizes the probes, so a run without them does not read it.
+  atstep::Settings settings;
+  settings.initialization_fraction = 0.0;
+  CHECK_THROWS(atstep::TimeStepper<Scalar>(settings, solve_decay));
+
+  settings.initialization = atstep::Initialization::off;
+  atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
+  stepper.start(0.0, Scalar {1.0}, 1.0);
+  CHECK_NEAR(stepper.step_size(), 1e-3, 1e-15);
+}
+
+TEST_CASE("stepper: a step that would stop within the clock's roundings of the "
+          "end lands on it")
+{
+  // A run's clock carries one rounding per step, so a step can stop a few ulps
+  // short of the end. COMSOL stops there rather than taking another whole step;
+  // the library takes the rest, so the end becomes a time the run reaches
+  // (doc/comsol-alignment.md, the end of a run).
+  double clock = 0.0;
+  for (int i = 0; i < 10; ++i)
+    clock += 0.1;
+  const double ulp = std::nextafter(clock, 2.0) - clock;
+
+  struct Run {
+    int steps = 0;
+    double time = 0.0;
+    std::vector<double> stored;
+  };
+  const auto run_to = [](double end) {
+    Run result;
+    atstep::Settings settings = manual_settings(2, 0.1);
+    settings.initialization = atstep::Initialization::off;
+    atstep::TimeStepper<Scalar> stepper(settings, solve_decay);
+    stepper.start(0.0, Scalar {1.0}, end);
+    atstep::RunHooks<Scalar> hooks;
+    hooks.on_store = [&result](double time, const Scalar&, bool) {
+      result.stored.push_back(time);
+    };
+    result.steps = stepper.run(std::vector<double> {0.0, 0.5, end}, hooks).steps;
+    result.time = stepper.time();
+    return result;
+  };
+
+  // One ulp short of the end: the tenth step lands on it, and the end is a stored
+  // value with nothing interpolated.
+  const Run arrived = run_to(1.0);
+  CHECK_EQ(arrived.steps, 10);
+  CHECK_EQ(arrived.time, 1.0);
+  CHECK_EQ(arrived.stored.size(), 3);
+  CHECK_EQ(arrived.stored.back(), 1.0);
+
+  // Past the margin: the step is left as it is, and one more step passes the end.
+  const Run past = run_to(clock + 21.0 * ulp);
+  CHECK_EQ(past.steps, 11);
+  CHECK(past.time > clock + 21.0 * ulp);
+}
+
 TEST_CASE("stepper: the interpolation reproduces the polynomial through the "
           "levels")
 {

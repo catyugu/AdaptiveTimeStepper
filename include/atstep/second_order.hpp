@@ -141,17 +141,28 @@ namespace atstep {
     }
 
     /// Prepare the run from the pair at `time`, integrated to `end_time`, with
-    /// COMSOL's consistent initialization: two artificial backward-Euler steps
-    /// that reconcile both initial values with the equations.
+    /// COMSOL's two backward-Euler steps reconciling both initial values.
+    ///
+    /// Under `Initialization::off` the derivative the pair starts from is its own
+    /// `u' = v` with a zero acceleration: the second initial value is the velocity,
+    /// and COMSOL keeps it as the derivative it does not compute
+    /// (doc/evidence/consistent-init.md).
     void start(double time, const Pair& initial, double end_time)
     {
+      if (inner_.settings().initialization == Initialization::off) {
+        Pair derivative {};
+        derivative.value = initial.derivative;
+        derivative.derivative = initial.derivative;
+        detail::axpy(derivative.derivative, -1.0, initial.derivative);
+        inner_.start(time, initial, derivative, end_time);
+        return;
+      }
       inner_.start(time, initial, end_time);
     }
 
-    /// Prepare the run from a pair and its time derivative, `(u', u'')`, without
-    /// the consistent initialization: COMSOL's "Consistent initialization: Off".
-    /// The derivative completes the affine form, so the probes have nothing to
-    /// derive.
+    /// Prepare the run from a pair and its time derivative, `(u', u'')`, as a
+    /// restart from a recorded pair does. The initialization setting is not read:
+    /// the derivative is the caller's, so a probe has none to measure.
     void start(double time, const Pair& initial, const Pair& derivative, double end_time)
     {
       inner_.start(time, initial, derivative, end_time);

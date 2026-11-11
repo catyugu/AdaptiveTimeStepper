@@ -20,6 +20,7 @@ set(ATSTEP_TEST_SOURCES
     reference/test_comsol_decay.cpp
     reference/test_comsol_twofield.cpp
     reference/test_comsol_dofs.cpp
+    reference/test_comsol_consistent_init.cpp
     support/main.cpp)
 
 add_executable(atstep_tests ${ATSTEP_TEST_SOURCES})

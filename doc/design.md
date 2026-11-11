@@ -110,6 +110,15 @@ second. Their times must be finite, advance time and remain inside the run;
 their derivative weight must be finite. A failed restart cannot expose old
 history paired with newly assigned run bounds.
 
+`Settings::initialization` decides whether those probes run at all. With
+`Initialization::off` the level is the initial state, labelled with the start time,
+the derivative is zero, and the controller is begun from a zero derivative, so the
+first step is the automatic rule alone, with no `DT yp_norm <= 1/2` to cap it.
+Measured on COMSOL 6.2, whose property is `consistent = bweuler | off`
+([evidence/consistent-init.md](evidence/consistent-init.md)). A start that is given
+the derivative does not read the setting: the derivative is the caller's, so a
+probe has none to measure.
+
 The stepper holds five work buffers, seven difference columns, and the accepted
 state, derivative and the value last returned: fifteen state objects, whatever the
 order and whatever the equation. A state's storage is allocated when a step
@@ -187,14 +196,21 @@ Two consequences of the layering are deliberate:
 The initialization is the kernel's: two artificial backward-Euler steps of the
 pair. The initial derivative is a second initial value, and the increment of the
 state over the probe is what the first step is sized from, as the
-measured derivative is for a first-order run.
+measured derivative is for a first-order run. With `Initialization::off` the
+adapter supplies what the second-order form keeps of its two initial values: the
+derivative is the pair's own `u' = v`, which is the system's first row, and the
+acceleration is zero. The first step is then the one that velocity justifies
+([evidence/consistent-init.md](evidence/consistent-init.md)).
 
 ## Output and error weights
 
 Step placement and stored output are separate settings. Strict mode lands on
 each requested time; intermediate mode ensures a step in each output interval.
 Landing logic preserves a step already reaching its target, otherwise shortens
-it with a rounding margin or splits the final two steps. `StepSchedule` holds
+it with a rounding margin or splits the final two steps; a step that would stop
+within the clock's own roundings of the end time takes the rest of it instead
+(`end_margin_tolerance`), so the end is a time the run reaches. `StepSchedule`
+holds
 the output times and the two modes, and answers the two questions a step asks of
 them: the size it must be cut to, and the values to report once it ended.
 It owns a copy of the times and emits each output synchronously, without
@@ -244,10 +260,13 @@ the three examples and `test/acceptance`, the COMSOL conformance target of the
 rewrite. The [COMSOL regressions](comsol-alignment.md) compare 1,231 recorded
 samples of 19 stepping configurations, 155 samples of 3 two-field
 configurations, 110 samples of 4 variables-of-several-dofs configurations
-([the multi-dof evidence](evidence/dofs.md)), and the 17 tolerance
-configurations of [the tolerance evidence](evidence/tolerance-axes.md) at the
-level that evidence establishes. The orders in COMSOL's solver log are printed
-as a diagnostic. Reference data is never injected into the numerical solve.
+([the multi-dof evidence](evidence/dofs.md)), 315 samples of 6
+consistent-initialization configurations
+([the initialization evidence](evidence/consistent-init.md)), and the 17
+tolerance configurations of [the tolerance
+evidence](evidence/tolerance-axes.md) at the level that evidence establishes. The
+orders in COMSOL's solver log are printed as a diagnostic. Reference data is
+never injected into the numerical solve.
 
 The [thermoelastic regression](multiphysics.md) additionally compares 161
 COMSOL states of a reciprocal three-variable coupled system, including all
