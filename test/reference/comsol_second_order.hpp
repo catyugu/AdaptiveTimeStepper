@@ -8,7 +8,7 @@
 //
 // COMSOL carries no separate variable for the auxiliary velocity, so the
 // record is the state alone: the velocity is checked through the decisions
-// it drives, not through its values (doc/evidence/second-order.md).
+// it drives, not through its values (doc/comsol-alignment.md#second-order-error-and-output).
 // SPDX-License-Identifier: MIT
 // clang-format off
 #pragma once

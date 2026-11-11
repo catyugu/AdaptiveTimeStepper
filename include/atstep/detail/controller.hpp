@@ -28,14 +28,8 @@ namespace atstep::detail {
     }
   };
 
-  /// Scalar BDF step-size and order control, following IDA's startup, error test
-  /// and completion rules, independent of state and equations: startup raises the
-  /// order and doubles the step until a failure or the maximum order ends it;
-  /// later the growth estimate `(2*error + 1e-4)^(-1/(q+1))` selects a reduction
-  /// in [0.5, 0.9], the same size, or a doubling. A failed error test reduces by
-  /// [0.25, 0.9] once and by 0.25 after, and the third one asks for order 1; a
-  /// failed solve reduces by 0.25; an order increase needs enough steps at a
-  /// constant size and order.
+  /// Scalar BDF control: startup, order selection, size bounds and retries.
+  /// Independent of state storage and equations; constants follow IDA.
   class StepController {
   public:
     /// @param[in] settings the alternative the run steps in, with its order range,
@@ -44,13 +38,8 @@ namespace atstep::detail {
     /// the automatic largest one are taken.
     StepController(const Settings& settings, double span);
 
-    /// Begin the run at the time `time`: the first step, from the weighted norm
-    /// `derivative_norm` of the time derivative the initial state starts with,
-    /// and the first order. The automatic first step is a fraction of
-    /// `remaining`, the interval that is left after the consistent
-    /// initialization, and at most `1/2 / derivative_norm` — the rule COMSOL
-    /// states as `DT yp_norm <= 1/2`; a manual run takes its startup curve's
-    /// first step instead.
+    /// Initialize order and step size. Automatic size is bounded by the remaining
+    /// interval and `0.5 / derivative_norm`; manual size follows its startup curve.
     void begin(double derivative_norm, double remaining, double time);
 
     /// The largest step the run may take at the current time: COMSOL's
@@ -95,10 +84,7 @@ namespace atstep::detail {
       return max_order_;
     }
 
-    /// Announce an attempt: the step of size `step` at `order`, which the
-    /// history may have forced below the proposed one. It is what counts
-    /// the steps taken at a constant size and order, on which the order
-    /// selection insists.
+    /// Record attempted size/order and update the equal-step counter.
     void begin_attempt(double step, int order);
 
     /// Accept the step just taken, whose error estimates are `errors`:
@@ -128,13 +114,10 @@ namespace atstep::detail {
     double manual_step() const;
 
     /// The factor a step of size `step` is multiplied by after an estimate
-    /// of `error` at `order` (see the deadbeat band above).
+    /// of `error` at `order` (see the constants in namespace ida).
     double factor(double error, int order) const;
 
-    /// The configuration the control reads, resolved from the alternative the
-    /// run steps in. A manual run holds its step and its order, and takes no
-    /// maximum step constraint; the error-controlled one holds the order range
-    /// and the fractions its first step and its smallest step come from.
+    /// Resolved adaptive/manual settings; manual steps have no maximum-step constraint.
     bool is_manual_ = false;
     double manual_step_ = 0.0;
     int manual_order_ = 2;

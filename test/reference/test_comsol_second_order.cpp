@@ -35,7 +35,7 @@ namespace {
   /// exactly, as the record's own run does, so every decision agrees; what is
   /// left is arithmetic: the record's first step is 2.4e-13 relative away from
   /// the replay's, which the rejection cascade at t = 9.4 amplifies to 2.2e-10
-  /// relative in the last states (doc/evidence/second-order.md).
+  /// relative in the last states (doc/comsol-alignment.md#second-order-error-and-output).
   constexpr double agreement = 1e-8;
 
 } // namespace

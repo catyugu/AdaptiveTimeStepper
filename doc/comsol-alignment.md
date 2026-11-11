@@ -1,251 +1,191 @@
-# COMSOL BDF alignment
+# COMSOL alignment and evidence
 
-The first-order BDF implementation is checked against COMSOL 6.2.0.290 on
-`u' + u = 0`, `u(0) = 1`, over `[0,10]`. All 21 recorded configurations agree
-on accepted-step counts, rejection counts, stored times, values and
-derivatives. The tests compare actual trajectories, rather than accepting a
-band around the step count. The orders in COMSOL's solver log are printed as
-a diagnostic: the log is sampled on the wall clock, so its rows are not
-reproducible (doc/evidence/stepping-sweep.md, "The log is sampled unless told
-otherwise").
+The regression data comes from independent COMSOL 6.2.0.290 runs. C++ tests
+replay the models from their initial values; reference samples never enter solve
+callbacks. Agreement establishes the recorded configurations, including scalar,
+multi-variable, multi-dof and second-order models. Nonlinear physics, other
+COMSOL versions and mixed first-/second-order systems require separate evidence.
 
-## Evidence and acceptance
+## Reference suites
 
-`tools/comsol/GeSteppingSweep.java` builds and solves the COMSOL models.
-It reads time, state and derivative directly through `getPVals`, `getU` and
-`getUDot`. Data-export time labels were unsuitable: they round the time, and
-the final label `10` may be an interpolated value from a step ending past 10.
-`tools/comsol/run_stepping.py` validates the exports against `exp(-t)` and the
-solver log, then writes `test/reference/comsol_stepping.hpp`; `run_tolerance.py`,
-`run_twofield.py`, `run_thermoelastic.py`, `run_second_order.py`, `run_dofs.py` and
-`run_consistent_init.py` do the same for the other six models.
-The 1,231 samples in that file come from COMSOL, not from this library.
+Paths below are relative to `test/reference/`; generators are in `tools/comsol/`.
+The test source is authoritative for comparison thresholds and recorded counts.
 
-The regression checks each stored time, value and derivative, the accepted,
-error-test-failure and failed-solve counts, and the order of every logged step.
-One tolerance covers every recorded quantity: `1e-8`. The measured worst case
-over all 21 configurations is `5e-10` in time and `7e-10` in the derivative — the
-latter is a consistent-initialization derivative, reconstructed by dividing by a
-backward-Euler step as small as `1e-7 s` — so the single number keeps an order of
-magnitude of margin without a special case per quantity.
+| Reference header | Generator | Coverage |
+| --- | --- | --- |
+| `comsol_stepping.hpp` | `run_stepping.py` | Scalar decay: order, tolerance, placement, step bounds, manual steps and storage |
+| `comsol_tolerance.hpp` | `run_tolerance.py` | Scaled/unscaled, factor/manual tolerance and scale-update branches |
+| `comsol_twofield.hpp` | `run_twofield.py` | Unequal field sizes and per-variable weighting |
+| `comsol_dofs.hpp` | `run_dofs.py` | Nonuniform six-dof field, variable partitions and closest-step output |
+| `comsol_second_order.hpp` | `run_second_order.py` | Damped oscillator and equivalent first-order pair |
+| `comsol_second_order_k.hpp` | `run_second_order.py` | One, two and three independent oscillators |
+| `comsol_consistent_init.hpp` | `run_consistent_init.py` | Initialization on/off, explicit initial step and manual stepping |
+| `comsol_thermoelastic.hpp` | `run_thermoelastic.py` | Reciprocal coupled model; see [multiphysics](multiphysics.md) |
 
-| Configuration                                      | COMSOL accepted steps |
-| -------------------------------------------------- | :-------------------- |
-| Global-equation baseline, maximum order 5          | 37                    |
-| Maximum orders 1, 2, 3, 4                          | 108, 58, 39, 39       |
-| Relative tolerances 1e-3, 1e-5                     | 60, 98                |
-| Strict, intermediate                               | 49, 37                |
-| Maximum step 0.05 s                                | 204                   |
-| Land exactly at the end                            | 37                    |
-| Exact algebraic solve, default / tight / strict    | 44, 101, 45           |
-| Nonuniform output times, strict / intermediate     | 47, 42                |
-| Manual step 0.1 s, default / exact algebraic solve | 100, 100              |
-| Manual step 0.2 s                                  | 50                    |
-| Closest-step / interpolated output                 | 37, 35                |
+Scalar decay is `u' + u = 0`, `u(0) = 1`, over `[0,10]`. Scalar regressions
+compare stored times, values, derivatives and solver counts at `1e-8`.
+Logged orders are diagnostic: COMSOL's default log sampling is wall-clock based.
+Setting `sol1/t1/aDef.logsampling = 0` records every accepted step.
+Full-precision samples come from `getPVals`, `getU` and `getUDot`; export labels
+round times and can label an interpolated endpoint as an internal step.
 
-The nonuniform schedule is `0 .001 .01 .05 .2 .3 .7 1 1.1 1.4 2 3 5 8 10`.
-It forces the mode constraints to act; checking only equally spaced outputs
-with a smaller maximum step would not exercise intermediate stepping.
+## Default order
 
-## Default order depends on the physics interface
+| COMSOL configuration | Maximum adaptive order | Manual order |
+| --- | --- | --- |
+| Direct Time solver node | 5 | 2 |
+| Automatically generated Global Equations solver | 5 | 2 |
+| Automatically generated Heat Transfer solver | 2 | 2 |
 
-There is no single maximum-order default for all COMSOL transient models.
-The generic Time solver's API default is `maxorder = 5`, but physics-controlled
-solver generation can select a lower maximum.
+These defaults were read back locally without assigning the order properties.
+The library's `AdaptiveSteps::max_order = 5` follows the generic solver;
+set it to 2 to match Heat Transfer. Navier–Stokes documentation also specifies
+a maximum of 2, but that interface was not included in the readback.
+An adaptive order limit permits lower orders during startup and error control.
 
-A local COMSOL 6.2.0.290 readback on 2026-10-23, without setting `maxorder`,
-`bdforder` or `timemethod`, gave:
+## Error norm
 
-| Configuration                                    | Method | Maximum BDF order (`maxorder`) | Manual BDF order (`bdforder`) |
-| ------------------------------------------------ | ------ | ------------------------------ | ----------------------------- |
-| Directly created Time solver node                | BDF    | 5                              | 2                             |
-| Global Equations, automatically generated solver | BDF    | 5                              | 2                             |
-| Heat Transfer, automatically generated solver    | BDF    | 2                              | 2                             |
-
-The [COMSOL 6.2 Time API](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/comsol_api_solver.49.48.html)
-lists `maxorder = 5` and the separate manual-mode `bdforder = 2`.
-The [Heat Transfer documentation](https://doc.comsol.com/6.3/doc/com.comsol.help.comsol/comsol_ref_heattransfer.30.65.html)
-specifies second-order BDF as its physics default. The
-[Navier–Stokes solver documentation](https://doc.comsol.com/6.4/doc/com.comsol.help.cfd/cfd_ug_fluidflow_single.06.103.html)
-also specifies a maximum order of two; that interface was not included in
-the local readback above.
-
-`Settings::max_order = 5` follows the generic solver default. Set it to 2 to
-match the automatic Heat Transfer or Navier–Stokes configuration. This limits
-adaptive orders to 1–2; it does not force every step to use order 2.
-
-The recorded case named `default` uses Global Equations and explicitly sets
-`maxorder = 5` in `GeSteppingSweep.java`. It is a configured regression
-baseline, not evidence that all COMSOL physics interfaces default to 5.
-
-## What caused the mismatch
-
-### Fixed-leading BDF history
-
-COMSOL's state/derivative pairs distinguish its method from a classical BDF
-stencil reconstructed from recent time levels. The confirmed first-derivative
-formula is
+For variable `m` with `N_m` degrees of freedom and caller-supplied scale `s_m`,
+let `returned` be the most recently stored state, `accepted` the last internal
+state, and `j` the accepted-step count:
 
 ```text
-cj = (1 + 1/2 + ... + 1/k) / h
-y' = predicted_derivative + cj * (y - predicted_state).
+Y_i = returned_i / s_m
+b_m = max(abs(Y_i)) over the variable
+beta_m = (1 - exp(-j/5))*b_m + exp(-j/5)    if 0 < b_m < 1
+beta_m = 1                                otherwise
+
+A_m = A_k * (beta_m + rms(Y))    scaled tolerance follows the solution
+A_m = A_k                       otherwise
+
+W_i = A_m + R*abs(accepted_i/s_m)    scaled criterion
+W_i = A_k + R*abs(accepted_i)        unscaled criterion
+z_i = error_i/s_m                   scaled criterion
+z_i = error_i                       unscaled criterion
+E^2 = (1/M) sum_m (1/N_m) sum_i (z_i/W_i)^2
 ```
 
-The predictor and error estimates use persistent scaled divided differences.
-Each attempt scales every column it reads by the factor its step size gives it,
-and writes none of them; a rejection leaves the accepted table as it is.
-Lower-order estimates use the corresponding difference columns plus the
-correction. Reconstructing a lower-degree Lagrange polynomial is not equivalent
-after a step or order change. This is a change to the numerical formula, not a
-constant fitted to the reference step counts.
+A step passes when `E <= 1`. `A_k` is the manual absolute tolerance or
+`R * factor`; `R` is the relative tolerance. An empty variable list means one
+variable over the entire state at scale one. A nonzero error with zero weight
+has infinite norm. Variable partitions must cover the state exactly.
 
-Use `request.derivative_weight()`, `request.derivative_history()` and
-`request.derivative(y, dy)` when assembling first-order systems. A second time
-derivative is not a weight of this formula: `SecondOrderStepper` hands the same
-first-derivative weight to the pair `(u, u')` and lets the solve fill both halves,
-which is what COMSOL's IDA path does. The classical stencil
-version 1.0 offered for a second derivative is gone: it is a different
-discretization, first order whatever the scheme's order.
+The following measurements distinguish the branches:
 
-### Tolerances and output
+| Question | Discriminating observation |
+| --- | --- |
+| Per-variable or flat average? | Refining one field from 26 to 101 dofs preserves the trajectory; a flat mean predicts a substantial step change. |
+| Variables or interfaces? | Moving two global equations between interfaces preserves the trajectory; a `(6,1,1)` variable partition reproduces the multi-dof run. |
+| Scale as divisor? | Changing manual scales changes the scaled first step as `U/s`; unscaled runs remain identical. |
+| When does `A_m` update? | Manual scaling or disabled updates freezes it at `A_k`; automatic scaling with updates uses the RMS branch. |
+| Maximum or RMS in `beta`? | A nonuniform six-dof field replays with the maximum; the RMS reading diverges after eleven samples. |
+| Which state supplies the weight? | Only updating the absolute magnitude from returned output reproduces the interpolated-output run; the relative reference stays internal. |
 
-The recorded references are one scalar equation, and for a single dof the
-weight of the error test is
+Tolerance sweeps measure initial weights through `h = 0.5 / norm(y')`.
+Whole-run multi-dof references use Jacobian rebuilding and tight algebraic
+convergence to separate integration from iterative-solver effects. COMSOL's
+automatic scale selection is not reproduced: callers must supply scales.
 
-```text
-A_i = rtol * factor * ( |y_i| + s_i ),
-s_i = (1 - exp(-j/5)) |y_i| + exp(-j/5) * sigma_i,
-```
+## Stepping and output
 
-with `j` the accepted-step count and `sigma_i` the scale of the variable — the
-"Scales for dependent variables" line of the solver log. Three measurements fix
-that form, each of them a model the recorded reference cannot see:
+The implementation uses fixed-leading BDF history with `cj = H_k/h`, persistent
+scaled divided differences and correction-based estimates. A classical stencil
+rebuilt from recent time levels gives different results after size/order changes.
 
-| Measurement                                            | Result                                                                                                                                                      |
-| ------------------------------------------------------ | :---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `u' = -1`, `u(0) = c`, four magnitudes                 | The first step is `0.5 (A + rtol \|y\|)` with `A = 2 rtol factor c` to five digits. The first term is `\|y_i\|`; a single dof's scale is its own magnitude. |
-| `u' + u = 0`, the recorded 44-step exact run           | A constant `sigma = 1` gives 31 steps; `s_i = \|y_i\|` gives 45. The `exp(-j/5)` blend gives 44.                                                            |
-| `u' = -1e-9 u, v' = -1` and `u' = -u + v, v' = -100 v` | The first step needs `sigma = (1, 1)` and `(1, 0.32)`, respectively: scale is per variable and comes from the model.                                        |
+| Rule | Measured behavior |
+| --- | --- |
+| Automatic initial step | Minimum of 0.1% of the interval remaining after initialization and `0.5 / norm(y')` |
+| Automatic maximum step | 0.1 of the run span, including runs with nonzero start time |
+| Constant/expression maximum | Absolute time value; expressions evaluated during integration |
+| Manual startup | Order ramps `1,1,2,3,...` to the configured order; size follows the per-order startup curve below |
+| Strict placement | Lands on each requested time, splitting the last two steps when needed |
+| Intermediate placement | A crossing step counts as a landing in the next interval; no entire interval may be skipped |
+| Closest storage | First step reaching a requested time; several requests reached by one step produce one sample |
+| Store every Nth step | Modulus anchored on initial step 0; endpoint stored regardless of modulus |
 
-That form is COMSOL's general rule for a variable of one dof whose scale is
-chosen automatically and updated. The general rule is per variable:
+Manual startup uses `min(fraction * step * growth^(k-1), step)`:
 
-```text
-Y_i   = U_i / sigma_variable
-A_s,i = A_k (beta + rms(Y over the variable))   automatic scale, update on
-A_s,i = A_k                                     otherwise
-beta  = (1 - exp(-j/5)) max(abs(Y over the variable)) + exp(-j/5)
-```
+| Order | Initial fraction | Growth |
+| --- | --- | --- |
+| 1–2 | 1 | 1.5 |
+| 3 | 0.1 | 1.2 |
+| 4 | 0.01 | 1.15 |
+| 5 | 0.001 | 1.1 |
 
-so the single-dof form is what its name says — a special case, not the rule.
-The measured three-branch table, the scale's role as a divisor of the solution,
-and the two recorded switches ("Update scaled absolute tolerance" off, and a
-scale the model gives) are in [evidence/tolerance-axes.md](evidence/tolerance-axes.md).
-The kernel implements the special case only: for a state of more than one
-variable, or for a scale the model gives, its first step misses the record by up
-to 9% before the repair; every recorded first step now reproduces (doc/evidence/tolerance-axes.md).
+Order 4 defaults were read back rather than established by a trajectory sweep.
+The stepping sweep does not settle rejection inside a store-N phase or its
+anchor in output-time storage modes.
 
-Two readings of that formula are decided on a model whose variables are not one
-dof each ([evidence/dofs.md](evidence/dofs.md)). `M` counts dependent variables,
-not physics interfaces: two global equations in one interface and the same two in
-an interface each are one trajectory to the last bit, while a partition of
-unequal size changes the step count. And `beta`'s argument is the maximum of
-`abs(Y)` over the variable's dofs, not their RMS: the RMS reading agrees with the
-44-sample record of a six-dof field for eleven samples and then leaves it by
-1.9e-3. A variable of six dofs replays over its whole run once the algebraic
-solve is exact, which is what the tolerance sweep's own records could not do.
+## Initialization
 
-COMSOL also updates the *magnitude inside* `A_i` from the solution returned to
-the caller, including an interpolated solution. Its relative reference remains
-the internal state. This was tested against three alternatives: unchanged
-references, updating only the absolute one, and updating both. Only updating the
-absolute one reproduced the 35-step interpolated-output run and its stored
-values. Assuming that output cannot affect the internal step sequence would miss
-this COMSOL behavior.
+COMSOL property `consistent = bweuler` runs two short backward-Euler probes.
+The resulting state is labelled with the requested start time; probe solves are
+not accepted integration steps. Probe size uses `initialization_fraction` and
+the initial-step basis: automatic 0.1% of the span, an explicitly supplied initial
+step, or 0.1% of the manual step. The measured derivative caps the automatic first step.
 
-### Initialization and mode constraints
+With `consistent = off`, the first-order run starts at the supplied state with
+zero derivative. A second-order run starts at `(u,v)` with derivative `(v,0)`.
+The six initialization references replay both modes, explicit initial-step
+selection and manual stepping. COMSOL's exported derivative can be the dense
+polynomial's derivative, so initialization regressions compare that quantity.
 
-The recorded consistent initialization takes two short backward-Euler solves
-and labels the resulting state with the requested start time. Automatic runs
-use 0.1% of the span times `initialization_fraction` for each solve; manual
-runs use the manual step instead of the span. The independent 0.2 s manual
-case confirms that dependence. The initialization solves are not counted as
-accepted time steps.
+An unresolved measured case remains: with initialization off and `rtol = 1e-5`,
+COMSOL rejects the initial 0.01 s step five times before accepting at
+`9.765625e-6 s`; the library rejects three times and accepts at `1.5625e-4 s`.
+The first-step error coefficient shrinks differently during repeated reductions.
+This case is outside the committed reference set and needs a dedicated sweep.
 
-It can also be turned off, which is the solver property `consistent`: `bweuler`
-(the default) runs the probes and `off` does not. With it off the record's first
-state is the initial value itself at the start time, with a zero derivative for a
-first-order equation, and the first step is the rule's own — 0.1% of the span, the
-step the case names, or the manual step — with no measured derivative to cap it.
-A second-order form keeps the velocity it was given as that derivative and starts
-its acceleration at zero, so its automatic first step is still capped by
-`0.5 / norm(y')`. `Settings::initialization` is that switch, replayed on six runs
-of two models ([evidence/consistent-init.md](evidence/consistent-init.md)).
+## Second-order error and output
 
-Strict stepping and end-time landing avoid a small remainder by splitting the
-last two steps. When a proposed step overshoots a required landing time, the
-clipped step includes the floating-point safety margin. A step already landing
-on that time is retained, and a step that would stop within the clock's own
-roundings of the end takes the rest of it, as COMSOL's end-of-run test does. These
-details matter because changes of step size
-reset the equal-step counter and can reset nonlinear convergence estimates.
+The oscillator `q'' + 0.1 q' + q = 0`, `q(0)=1`, `q'(0)=100` distinguishes
+velocity-inclusive error tests from displacement-only tests. The exact-solve
+reference reproduces its full trajectory using `E = rms(displacement)/sqrt(2)`;
+including velocity diverges near its zero crossing. One, two and three identical
+oscillators have identical trajectories, confirming a divisor of `2K` for `K`
+second-order variables. Mixed first-/second-order systems were not measured.
 
-Intermediate mode counts an accepted step that crossed an output time as a
-landing in the next interval. It also prevents a jump across an entire empty
-interval. The first shortened step becomes the base for startup growth.
+At interpolated times COMSOL reports the derivative of the displacement's dense
+polynomial, which can differ from the interpolated velocity component. At an
+accepted node the adapter returns the solved velocity. The callback solves both
+components to avoid roundoff amplification when recovering velocity from a
+small displacement difference; see [design](design.md#second-order-equations).
 
-COMSOL's `tstepsclosest` stores the first accepted step reaching an output
-time; it can choose a later point even when the previous point is nearer. A step
-stores one value however many output times it reaches, so several outputs inside
-one step collapse into that step's time (evidence/dofs.md). At an internal node
-the stored derivative is the derivative from the solve. Between nodes it is the
-dense-output polynomial's derivative.
+## Algebraic solve and scope
 
-## Separate the algebraic solve from time stepping
+COMSOL's default Fully Coupled solver reuses its Jacobian and may accept nonzero
+residuals even for linear equations. The test-only `ComsolDecaySolve` reproduces
+that scalar iteration behavior without reference samples. Other references set
+`jtech=onevery` and `ntolfact=1e-8` and use independent exact-solve callbacks.
+Matching trajectories requires matching both integration and algebraic solution.
+The library owns only the integration.
 
-COMSOL's default Fully Coupled node uses `jtech=minimal`, reusing a Jacobian.
-Even this scalar linear equation can therefore have a nonzero residual at an
-accepted step. An exact linear solve is not an equivalent comparison.
+The multi-dof models use linear elements and linear equations. The default
+Jacobian-reuse strategy for general coupled models, automatic scale selection,
+and arbitrary continuum multiphysics are not validated. Backward-Euler algebraic
+termination safety factors belong to the caller's solver. Generalized-alpha,
+explicit methods and events are outside the implementation.
 
-The test-only `ComsolDecaySolve` reproduces the scalar Jacobian-reuse and
-iteration-termination behavior. It contains no reference trajectory values.
-It remains outside the library, where the caller owns algebraic solution.
-Independent COMSOL runs set `jtech=onevery` and `ntolfact=1e-8`; those runs are
-compared with a separate exact-solve callback. Changing the COMSOL algebraic
-strategy changes the trajectory, and both strategies are reproduced.
+## Reproduce and sources
 
-IDA source supplied hypotheses and a control-law reference; COMSOL experiments
-decided whether those hypotheses held. The validation does not establish
-bitwise equality for arbitrary models or undocumented COMSOL configurations.
-Coupled-field weighting has its own reference run (the two-field sweep) and the
-kernel implements it; the scaled tolerance's branch structure is measured in
-doc/evidence/tolerance-axes.md and implemented.
-The recorded references still cover one scalar equation, so a state of several
-variables is validated by the acceptance cases of the tolerance sweep rather
-than by a long trajectory. Nonlinear physics, events and other COMSOL versions
-need their own reference runs. A second-order equation keeps the validated BDF path, through
-the state augmentation COMSOL documents, rather than a separate discretization:
-the pair `(u, u')` is the solve's unknown, and the error test measures the state
-alone divided by the two variables the augmentation adds — the velocity is in the
-system, not in the local error (doc/evidence/second-order.md).
+Normal CTest runs use committed headers and need no COMSOL installation.
+To regenerate a suite, run its generator from the table, for example:
 
-## Reproduce
-
-```text
+```sh
 python tools/comsol/run_stepping.py --directory .cache/comsol-reference
 python tools/comsol/run_second_order.py --directory .cache/comsol-reference
 python tools/comsol/run_consistent_init.py --directory .cache/comsol-reference
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DATSTEP_WARNINGS_AS_ERRORS=ON
-cmake --build build
-ctest --test-dir build --output-on-failure
 ```
 
-COMSOL is required only to regenerate the reference. Normal tests use the
-recorded data and have no COMSOL dependency. Put `comsolcompile` and
-`comsolbatch` on PATH, or set `COMSOL_ROOT`. Compilation and batch logs are
-checked because these launchers can report errors while returning exit code 0.
+Put `comsolcompile` and `comsolbatch` on PATH or set `COMSOL_ROOT`.
+Generators validate exported data and logs before writing headers, since COMSOL
+launchers can report errors with exit code zero. Raw models, CSV and logs stay
+in the selected directory. The thermoelastic generator also accepts
+`--header-only` to reuse existing raw evidence.
 
-Primary references: [COMSOL time-dependent solver API](https://doc.comsol.com/6.3/doc/com.comsol.help.comsol/comsol_api_solver.51.50.html),
-[COMSOL time-step control](https://www.comsol.com/support/knowledgebase/1254),
-and [SUNDIALS IDA source](https://github.com/LLNL/sundials/tree/main/src/ida).
-The measurements above are from the locally executed COMSOL 6.2 model.
+Documentary sources, separate from the measurements above:
+
+- [COMSOL 6.2 Reference Manual](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/COMSOL_ReferenceManual.pdf): pp. 1581–1583 (augmentation and error test), 1617–1622 (output, stepping and initialization), 1165 and 1238 (physics defaults).
+- [COMSOL 6.4 time-dependent solver](https://doc.comsol.com/6.4/doc/com.comsol.help.comsol/comsol_ref_solver.36.122.html): augmented second-order systems and generalized-alpha.
+- [COMSOL Time API](https://doc.comsol.com/6.2/doc/com.comsol.help.comsol/comsol_api_solver.49.48.html) and [time-step control](https://www.comsol.com/support/knowledgebase/1254): settings and solver behavior.
+- [SUNDIALS IDA source](https://github.com/LLNL/sundials/tree/main/src/ida): control-law reference; COMSOL experiments determine which rules apply here.

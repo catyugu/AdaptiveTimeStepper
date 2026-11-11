@@ -1,13 +1,7 @@
 # AdaptiveTimeStepper — COMSOL-style adaptive BDF time stepping
 # SPDX-License-Identifier: MIT
 #
-# A header-only C++17 library. It is used three ways:
-#
-#   add_subdirectory    add_subdirectory(AdaptiveTimeStepper) or FetchContent
-#   find_package        find_package(AdaptiveTimeStepper CONFIG REQUIRED)
-#                       target_link_libraries(app PRIVATE AdaptiveTimeStepper::AdaptiveTimeStepper)
-#
-# The sources are listed explicitly: this project takes no glob.
+# Header-only C++17 library with optional tests and examples.
 
 cmake_minimum_required(VERSION 3.20)
 
@@ -47,8 +41,6 @@ include(cmake/ProjectOptions.cmake)
 
 atstep_require_compiler()
 
-# --- the library -------------------------------------------------------------
-
 add_library(AdaptiveTimeStepper INTERFACE)
 add_library(AdaptiveTimeStepper::AdaptiveTimeStepper
     ALIAS AdaptiveTimeStepper)
@@ -57,8 +49,6 @@ target_compile_features(AdaptiveTimeStepper INTERFACE cxx_std_17)
 target_include_directories(AdaptiveTimeStepper INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-
-# --- tests and examples ------------------------------------------------------
 
 if(ATSTEP_BUILD_TESTS)
     enable_testing()
@@ -71,8 +61,6 @@ endif()
 if(ATSTEP_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
-
-# --- installation ------------------------------------------------------------
 
 set(ATSTEP_INSTALL_CMAKEDIR
     ${CMAKE_INSTALL_LIBDIR}/cmake/AdaptiveTimeStepper)

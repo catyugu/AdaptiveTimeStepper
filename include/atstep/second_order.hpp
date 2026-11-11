@@ -15,9 +15,7 @@
 
 namespace atstep {
 
-  /// The pair a second-order equation is integrated as: the state and its first
-  /// derivative. It is public because it is the solve's unknown and the error
-  /// test's argument, not an implementation detail.
+  /// Displacement and velocity: the solved unknowns of a second-order run.
   template <class State>
   struct SecondOrderState {
     State value {};
@@ -30,8 +28,7 @@ namespace atstep {
     }
   };
 
-  /// The error norm of a second-order run: COMSOL's weighted RMS over both
-  /// halves of the pair, averaged over the two.
+  /// Custom error norm over the full pair. The default measures displacement / sqrt(2).
   template <class State>
   using SecondOrderNorm = std::function<double(const SecondOrderState<State>& error,
     const SecondOrderState<State>& accepted,
@@ -45,40 +42,14 @@ namespace atstep {
     /// The states are the stepper's own buffers and are only valid during the
     /// call.
     std::function<void(const StepRecord&, const State&, const State&)> on_step;
-    /// Every stored value: the time, the state, its first derivative, and
-    /// whether the value was interpolated from the steps around it. An
-    /// interpolated value's derivative is the dense output's, which is what
-    /// COMSOL reports there. The states are the stepper's own buffers and are
-    /// only valid during the call.
+    /// Stored time, displacement, first derivative and interpolation flag.
+    /// Interpolated derivatives come from dense output. References last only for the call.
     std::function<void(double, const State&, const State&, bool)> on_store;
   };
 
-  /// `M u'' + C u' + K u = f(t)` as the first-order system COMSOL's IDA path
-  /// integrates,
-  ///
-  ///     u' = v,     M v' + C v + K u = f,
-  ///
-  /// over the pair `(u, v)`: the kernel's state is `SecondOrderState`, and the
-  /// caller's solve receives the pair's two affine forms
-  ///
-  ///     u' = cj u + known.value,
-  ///     v' = cj v + known.derivative,
-  ///
-  /// to assemble the step for both halves. The velocity is a solved unknown
-  /// here, not something this class reconstructs from the displacement: a
-  /// reconstruction is a divided difference, and its round-off is the state's
-  /// divided by the step, so it doubles as the step shrinks until a tight
-  /// absolute tolerance on the velocity cannot be met at all. With the pair
-  /// solved, each unknown comes from the equation that determines it best, and
-  /// what accuracy is left over belongs to the caller's solver.
-  ///
-  /// The error test measures the state alone, as COMSOL's does: the velocity is
-  /// carried by the system but left out of the local error, while the average
-  /// over the variables the augmented system solves for still counts it, so the
-  /// state's weighted norm enters divided by `sqrt(2)`
-  /// (doc/evidence/second-order.md).
-  ///
-  /// The integrator is neither copyable nor movable.
+  /// Second-order integration over `(u, v = u')` using the first-order BDF kernel.
+  /// The callback solves both components; the default norm measures displacement
+  /// error / sqrt(2). See doc/design.md for the formulation and roundoff rationale.
   template <class State>
   class SecondOrderStepper {
     static_assert(detail::StateVector<State>,
@@ -88,16 +59,10 @@ namespace atstep {
     using Inner = TimeStepper<Pair>;
 
   public:
-    /// The solve of one step of the pair: the caller fills both halves, and
-    /// reports whether its nonlinear iteration converged. For a linear
-    /// `M u'' + C u' + K u = f` the step is
+    /// Solve both unknowns and return convergence. For `M u'' + C u' + K u = f`:
     ///
-    ///     cj u - v = -known.value
-    ///     u + (cj M + C) v = f - M known.derivative
-    ///
-    /// and `v` is read from the second row, whose right-hand side is `O(cj |v|)`
-    /// rather than `O(|u|)`; reading it back from `cj u + known.value` instead
-    /// throws away the digits the velocity has.
+    ///     cj*u - v = -known.value
+    ///     K*u + (cj*M + C)*v = f - M*known.derivative
     using Solve = std::function<bool(const StepRequest<Pair>&, Pair&)>;
     using Norm = SecondOrderNorm<State>;
 
@@ -106,11 +71,7 @@ namespace atstep {
     SecondOrderStepper(SecondOrderStepper&&) = delete;
     SecondOrderStepper& operator=(SecondOrderStepper&&) = delete;
 
-    /// The norm COMSOL's settings describe: the weighted RMS of the state alone,
-    /// divided by the two variables the augmented system solves for. COMSOL adds
-    /// the velocity to the system its integrator carries but leaves it out of the
-    /// error test, while the average over `M` still counts it, so with `M = 2` the
-    /// state's norm enters as `rms / sqrt(2)`. A state must expose its dofs.
+    /// Default displacement weighted RMS / sqrt(2); requires size() and operator[].
     static Norm default_norm(const ErrorTest& error)
     {
       if constexpr (detail::Indexable<State>) {
@@ -140,13 +101,8 @@ namespace atstep {
     {
     }
 
-    /// Prepare the run from the pair at `time`, integrated to `end_time`, with
-    /// COMSOL's two backward-Euler steps reconciling both initial values.
-    ///
-    /// Under `Initialization::off` the derivative the pair starts from is its own
-    /// `u' = v` with a zero acceleration: the second initial value is the velocity,
-    /// and COMSOL keeps it as the derivative it does not compute
-    /// (doc/evidence/consistent-init.md).
+    /// Start from displacement and velocity, with two initialization probes.
+    /// With initialization off, the pair derivative starts at `(v, 0)`.
     void start(double time, const Pair& initial, double end_time)
     {
       if (inner_.settings().initialization == Initialization::off) {
@@ -226,7 +182,7 @@ namespace atstep {
           }
           // An interpolated value's derivative is the dense output's, not the
           // pair's own velocity there: `u'` of the polynomial that produced the
-          // value is what COMSOL reports (doc/evidence/second-order.md).
+          // value is what COMSOL reports (doc/comsol-alignment.md#second-order-error-and-output).
           inner_.interpolate(time, dense_, 1);
           hooks.on_store(time, y.value, dense_.value, true);
         };
@@ -239,13 +195,9 @@ namespace atstep {
       return inner_.report();
     }
 
-    /// Write the dense-output state (derivative=0) or its first derivative
-    /// (derivative=1) at `time` into `out`. The pair's dense output of order
-    /// `derivative` is `(u, u')^(derivative)`, so its first half is the state's
-    /// derivative of that order. At the newest level it is the derivative the
-    /// solve left; between the levels it is the dense-output polynomial's, which
-    /// need not be the pair's own `u'` there. `out` is the caller's, and may be
-    /// the same state on every call.
+    /// Write displacement (derivative=0) or its first derivative (derivative=1).
+    /// Between nodes the derivative comes from the displacement polynomial,
+    /// which can differ from the interpolated velocity component. `out` is caller-owned.
     void interpolate(double time, State& out, int derivative = 0)
     {
       inner_.interpolate(time, dense_, derivative);

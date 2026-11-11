@@ -26,7 +26,7 @@
 // checks the decisions the criterion drives.
 //
 // The measured three-branch table and the residual uncertainty live in
-// doc/evidence/tolerance-axes.md.
+// doc/comsol-alignment.md#error-norm.
 #include "atstep/stepper.hpp"
 #include "reference/comsol_tolerance.hpp"
 #include "support/check.hpp"

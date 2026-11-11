@@ -1,15 +1,9 @@
 # AdaptiveTimeStepper — COMSOL-style adaptive BDF time stepping
 # SPDX-License-Identifier: MIT
 #
-# The compiler gate, the warning flags and the sanitizer flags of the project's
-# own binaries. The library is header-only, so none of this reaches a consumer:
-# it is applied to the test and example executables, never to the interface
-# target that is exported.
+# Compiler requirements and private options for tests and examples.
 
-# Conservative compiler baselines retained for the C++17 build. The
-# comparison is against CMAKE_CXX_COMPILER_VERSION, a dotted version string on
-# every one of them; MSVC_VERSION is reported as 1929, not 19.29, and does not
-# compare against the bound.
+# Use dotted CMAKE_CXX_COMPILER_VERSION, including for MSVC (19.29).
 set(ATSTEP_MINIMUM_MSVC 19.29)
 set(ATSTEP_MINIMUM_GCC 11)
 set(ATSTEP_MINIMUM_CLANG 14)
@@ -83,12 +77,8 @@ function(atstep_apply_project_options target)
         if(ATSTEP_WARNINGS_AS_ERRORS)
             target_compile_options(${target} PRIVATE -Werror)
         endif()
-        # GCC 13 and 14 report libstdc++'s own std::function and std::variant
-        # internals as possibly uninitialized at -O2 and above: the diagnostic
-        # points into <bits/std_function.h>, at a manager the standard library
-        # sets in its constructor. Kept visible and taken out of -Werror, in
-        # place of turning the warning off. Clang does not know the option, and
-        # under -Werror an unknown -W option is itself an error.
+        # Keep GCC's optimized std::function/variant false positives visible
+        # without failing -Werror. Clang does not support this option.
         if(ATSTEP_WARNINGS_AS_ERRORS AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
             target_compile_options(${target}
                 PRIVATE -Wno-error=maybe-uninitialized)
